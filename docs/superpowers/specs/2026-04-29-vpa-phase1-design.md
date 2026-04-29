@@ -40,7 +40,7 @@ VPA is a greenfield desktop studio that **speeds up the post-recording phase of 
 2. Names the project, picks a folder root.
 3. Uploads either:
    - **Multi-file:** one MP4 per scene. Each becomes a scene; user names them.
-   - **Single-file:** one long MP4. AI proposes scene boundaries (timestamp + name). User confirms/edits in a list view. (No scrubber UI in Phase 1.)
+   - **Single-file:** one long MP4. AI proposes scene boundaries — each as `{ start_sec, end_sec, suggested_name }`. User confirms/edits in a list view (numeric inputs, no scrubber). On confirm, ffmpeg clips the source into per-scene MP4s under `recordings/`; the original is kept under `recordings/_source.mp4` for re-splitting if the user changes their mind.
 4. AI generates scene descriptions by watching each clip. `storyboard.yaml` is written.
 5. From here, identical to Ideation-first step 7.
 
@@ -148,6 +148,8 @@ interface TtsProvider {
 ```
 
 Providers are registered at startup. The TTS dropdown in the UI lists registered providers. New providers (e.g., a local Voicebox) drop in by adding a file under `src/services/tts/providers/` and registering it.
+
+**Emotive validation is non-blocking.** Before a TTS call, the narration service compares emotive tags in the script to the chosen provider's `supportedEmotives`. Unsupported tags surface as a yellow warning in the UI ("`[curious]` may not work with xAI") but the call proceeds — Gemini's superset works in xAI in practice often enough to be worth letting through.
 
 ### 3.5 Repo layout
 
@@ -376,7 +378,7 @@ Two-column split:
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-- The timeline strip shows narration waveform + LT block positions + playhead synced to the video. **Read-only.** Drag-to-edit deferred to Potential Enhancement; LT timing edits via numeric input.
+- The timeline strip shows narration waveform + LT block positions + playhead synced to the video. **Read-only for editing** — drag-to-edit deferred to Potential Enhancement; LT timing edits via numeric input. Clicking the timeline *does* scrub the video preview (cheap to implement, big UX win).
 - "Preview" on a lower third renders just that overlay on a 5-second window of the recording (fast, for tweaking copy/style).
 - "Render scene with LTs" produces `overlays/scene-N-with-lower-thirds.mp4` (full scene, all LTs baked in).
 
@@ -421,7 +423,7 @@ type Job = {
 
 1. UI POSTs to `/api/jobs` with `{ kind, ...params }`. Server enqueues, returns `{ jobId }`.
 2. Server runs at most `concurrencyCap` jobs concurrently (default 2).
-3. UI subscribes to `/api/jobs/:id/events` (SSE). Receives status/progress/message events.
+3. UI subscribes to `/api/jobs/:id/events` (SSE). Receives status/progress/message events. **On (re)connect, the server replays the full event history for that job** (kept in memory while the job is alive, then for 5 minutes after completion) so a tab switch or page reload doesn't lose progress display.
 4. On completion, server writes outputs to disk, updates `storyboard.yaml` and `state.yaml`, emits a final `complete` event, and persists job to `~/.vpa/jobs.log` (last 500).
 5. On failure, server emits `failed` event with error message; no auto-retry.
 
