@@ -36,3 +36,6 @@ coverage/
 
 # Superpowers brainstorm scratch
 .superpowers/
+
+# Git worktrees
+.worktrees/
