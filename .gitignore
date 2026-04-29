@@ -1,0 +1,35 @@
+# Plans / scratch — keep local
+app-plans.md
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+coverage/
+.nyc_output/
