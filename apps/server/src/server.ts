@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
+import { projectsRoutes } from './routes/projects.js';
+import { ProjectStore } from './services/project/store.js';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -12,9 +14,15 @@ export async function buildServer() {
     credentials: false,
   });
 
-  await app.register(healthRoutes);
+  const store = new ProjectStore({
+    vpaHome: config.vpaHome,
+    projectsDefault: config.projectsDefault,
+  });
 
-  return { app, config };
+  await app.register(healthRoutes);
+  await app.register(async (instance) => projectsRoutes(instance, { store, config }));
+
+  return { app, config, store };
 }
 
 async function main() {
