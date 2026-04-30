@@ -1,10 +1,26 @@
-import { readFile } from 'node:fs/promises';
-import { ProjectTrackerSchema, type ProjectTracker } from '@vpa/shared';
-import { trackerPath } from './paths.js';
+import { readFile, mkdir, readdir } from 'node:fs/promises';
+import { v4 as uuidv4 } from 'uuid';
+import {
+  ProjectSchema,
+  ProjectTrackerSchema,
+  type Project,
+  type ProjectTracker,
+  type ProjectTrackerEntry,
+} from '@vpa/shared';
+import { atomicWriteFile } from '../../lib/fs-atomic.js';
+import { dumpYaml, loadYaml } from '../../lib/yaml.js';
+import { projectFiles, resolveProjectRoot, trackerPath } from './paths.js';
 
 export interface ProjectStoreOptions {
   vpaHome: string;
   projectsDefault: string;
+}
+
+export interface CreateProjectInput {
+  name: string;
+  parentDir?: string;
+  objective?: string;
+  audience?: string;
 }
 
 export class ProjectStore {
@@ -21,7 +37,59 @@ export class ProjectStore {
       }
       throw err;
     }
-    const raw = JSON.parse(text);
-    return ProjectTrackerSchema.parse(raw);
+    return ProjectTrackerSchema.parse(JSON.parse(text));
+  }
+
+  private async writeTracker(tracker: ProjectTracker): Promise<void> {
+    const p = trackerPath(this.opts.vpaHome);
+    await atomicWriteFile(p, JSON.stringify(tracker, null, 2));
+  }
+
+  async create(input: CreateProjectInput): Promise<Project> {
+    const parent = input.parentDir ?? this.opts.projectsDefault;
+    const root = resolveProjectRoot(parent, input.name);
+
+    // tracker dup check first: gives a precise error before touching the FS
+    const tracker = await this.readTracker();
+    if (tracker.projects.some((p) => p.name === input.name)) {
+      throw new Error(`Project with name "${input.name}" already exists in tracker`);
+    }
+
+    // ensure root does not already contain content
+    try {
+      const entries = await readdir(root);
+      if (entries.length > 0) {
+        throw new Error(`Project root ${root} is not empty`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      // ENOENT is fine — we'll create it
+    }
+    await mkdir(root, { recursive: true });
+
+    const project: Project = ProjectSchema.parse({
+      id: uuidv4(),
+      name: input.name,
+      path: root,
+      created: new Date().toISOString(),
+      objective: input.objective,
+      audience: input.audience,
+    });
+
+    const files = projectFiles(root);
+    await atomicWriteFile(files.metadata, dumpYaml(project));
+
+    const entry: ProjectTrackerEntry = {
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      lastOpened: project.created,
+    };
+    await this.writeTracker({ version: 1, projects: [...tracker.projects, entry] });
+
+    return project;
   }
 }
+
+// loadYaml is imported for use in Task 8 (project read/load). Keep until then.
+void loadYaml;
