@@ -1,0 +1,34 @@
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: '.',
+  timeout: 30_000,
+  fullyParallel: false,
+  retries: 0,
+  workers: 1,
+  reporter: 'list',
+  use: {
+    baseURL: 'http://localhost:5173',
+    trace: 'retain-on-failure',
+    headless: true,
+  },
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  webServer: [
+    {
+      command: 'npm run dev -w @vpa/server',
+      url: 'http://127.0.0.1:3000/api/health',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+      env: {
+        VPA_HOME: '/tmp/vpa-e2e-home',
+        VPA_PROJECTS_DEFAULT: '/tmp/vpa-e2e-projects',
+      },
+    },
+    {
+      command: 'npm run dev -w @vpa/web',
+      url: 'http://localhost:5173',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  ],
+});
