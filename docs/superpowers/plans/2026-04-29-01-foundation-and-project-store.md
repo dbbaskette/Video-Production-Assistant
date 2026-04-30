@@ -85,7 +85,7 @@ tests/
 **Files:**
 - Create: `package.json`
 - Create: `tsconfig.base.json`
-- Create: `.eslintrc.cjs`
+- Create: `eslint.config.js`  (ESLint 9 flat config — `.eslintrc.*` is deprecated)
 - Create: `.prettierrc.json`
 - Create: `README.md`
 - Create: `.env.example`
@@ -107,19 +107,19 @@ tests/
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "lint": "eslint . --ext .ts,.tsx --max-warnings=0",
+    "lint": "eslint . --max-warnings=0 --no-error-on-unmatched-pattern",
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
     "typecheck": "tsc -b",
     "e2e": "playwright test"
   },
   "devDependencies": {
+    "@eslint/js": "^9.0.0",
     "@playwright/test": "^1.48.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
-    "eslint-config-prettier": "^9.1.0",
+    "eslint-config-prettier": "^10.0.0",
     "prettier": "^3.3.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -153,25 +153,28 @@ tests/
 }
 ```
 
-- [ ] **Step 3: Create `.eslintrc.cjs`**
+- [ ] **Step 3: Create `eslint.config.js`** (ESLint 9 flat config)
 
 ```js
-module.exports = {
-  root: true,
-  parser: '@typescript-eslint/parser',
-  parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
-  plugins: ['@typescript-eslint'],
-  extends: [
-    'eslint:recommended',
-    'plugin:@typescript-eslint/recommended',
-    'prettier',
-  ],
-  ignorePatterns: ['dist/', 'node_modules/', '*.cjs'],
-  rules: {
-    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import prettier from 'eslint-config-prettier/flat';
+
+export default [
+  { ignores: ['dist/', 'node_modules/', '**/*.cjs', '**/*.config.js'] },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  prettier,
+  {
+    files: ['**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    },
   },
-};
+];
 ```
+
+Note: ESLint 9 deprecated `.eslintrc.*` — flat config (`eslint.config.js`) is the only config format auto-discovered. `typescript-eslint` (the unified meta-package) replaces the older `@typescript-eslint/parser` + `@typescript-eslint/eslint-plugin` pair. `eslint-config-prettier/flat` is the flat-config export of `eslint-config-prettier`.
 
 - [ ] **Step 4: Create `.prettierrc.json`**
 
@@ -207,7 +210,7 @@ npm install
 ## Development
 
 ```bash
-npm run dev          # runs server (port 3000) and web (port 5173) in parallel
+npm run dev          # runs each workspace's dev script (parallel runner added in Task 17)
 npm run build        # build all packages
 npm run test         # unit tests across workspaces
 npm run e2e          # Playwright smoke tests (requires `npm run dev` running)
@@ -252,7 +255,7 @@ Expected: clean install with no errors. `node_modules/` and `package-lock.json` 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add package.json tsconfig.base.json .eslintrc.cjs .prettierrc.json README.md .env.example package-lock.json
+git add package.json tsconfig.base.json eslint.config.js .prettierrc.json README.md .env.example package-lock.json
 git commit -m "chore: bootstrap npm workspace with TS/ESLint/Prettier baseline"
 ```
 
