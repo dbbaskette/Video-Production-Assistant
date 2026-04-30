@@ -21,6 +21,7 @@ export interface CreateProjectInput {
   parentDir?: string;
   objective?: string;
   audience?: string;
+  brand?: { id: string; applied_version: number } | null;
 }
 
 export class ProjectStore {
@@ -74,6 +75,7 @@ export class ProjectStore {
       created: new Date().toISOString(),
       objective: input.objective,
       audience: input.audience,
+      brand: input.brand ?? null,
     });
 
     const files = projectFiles(root);

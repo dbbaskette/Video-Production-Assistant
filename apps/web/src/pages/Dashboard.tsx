@@ -1,7 +1,44 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { ProjectList } from '../components/ProjectList.js';
 import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
+import { brandsApi } from '../lib/api.js';
+import { BrandCard } from '../components/BrandCard.js';
+
+function BrandsSection() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['brands'],
+    queryFn: () => brandsApi.list(),
+  });
+
+  if (isLoading) return <section><h2>Brands</h2><p>Loading...</p></section>;
+  if (error) return <section><h2>Brands</h2><p>Failed to load brands.</p></section>;
+
+  const list = data!.brands;
+  return (
+    <section aria-label="Brands" style={{ marginTop: 32 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 14, textTransform: 'uppercase', color: 'var(--fg-muted)', letterSpacing: 1 }}>
+          Brands
+        </h2>
+        <Link to="/brands/new" className="primary" style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--accent)', background: 'var(--accent-bg)', color: 'var(--fg)', textDecoration: 'none', fontSize: 13 }}>
+          + New Brand
+        </Link>
+      </div>
+      {list.length === 0 ? (
+        <p style={{ color: 'var(--fg-muted)' }}>No brands yet. Create your first brand to apply consistent visual identity across video projects.</p>
+      ) : (
+        <div className="brand-grid">
+          {list.map((entry) => (
+            <BrandCard key={entry.id} entry={entry} isDefault={entry.id === data!.default_brand_id} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 type Modal = 'none' | 'new' | 'open';
 
@@ -90,6 +127,8 @@ export function Dashboard() {
         </div>
         <ProjectList onOpen={(p) => handleOpen(p.id)} />
       </section>
+
+      <BrandsSection />
 
       <NewProjectDialog
         open={modal === 'new'}

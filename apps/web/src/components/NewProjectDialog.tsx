@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
-import { api, ApiError } from '../lib/api.js';
+import { api, ApiError, brandsApi } from '../lib/api.js';
+import { BrandPicker } from './BrandPicker.js';
 
 interface Props {
   open: boolean;
@@ -11,9 +12,24 @@ interface Props {
 export function NewProjectDialog({ open, onClose, onCreated }: Props) {
   const queryClient = useQueryClient();
   const defaults = useQuery({ queryKey: ['defaults'], queryFn: api.getDefaults });
+  const brandsQuery = useQuery({ queryKey: ['brands'], queryFn: () => brandsApi.list() });
   const [name, setName] = useState('');
   const [parentDir, setParentDir] = useState('');
   const [objective, setObjective] = useState('');
+  const [brand, setBrand] = useState<{ id: string; applied_version: number } | null>(null);
+
+  // Pre-select default brand when brands load
+  useEffect(() => {
+    if (brandsQuery.data && brand === null) {
+      const defaultId = brandsQuery.data.default_brand_id;
+      if (defaultId) {
+        const entry = brandsQuery.data.brands.find((b) => b.id === defaultId);
+        if (entry) {
+          setBrand({ id: entry.id, applied_version: entry.version });
+        }
+      }
+    }
+  }, [brandsQuery.data, brand]);
 
   const create = useMutation({
     mutationFn: () =>
@@ -21,6 +37,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
         name,
         parentDir: parentDir.trim() ? parentDir : undefined,
         objective: objective.trim() ? objective : undefined,
+        brand,
       }),
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -28,6 +45,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
       setName('');
       setParentDir('');
       setObjective('');
+      setBrand(null);
       onClose();
     },
   });
@@ -92,6 +110,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             style={{ width: '100%', resize: 'vertical' }}
           />
         </label>
+        <BrandPicker value={brand} onChange={setBrand} />
         {errorMsg && (
           <div style={{ color: 'var(--danger)', marginBottom: 12, fontSize: 13 }}>{errorMsg}</div>
         )}

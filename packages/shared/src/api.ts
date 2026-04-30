@@ -7,6 +7,10 @@ export const CreateProjectRequestSchema = z.object({
   parentDir: z.string().optional(),
   objective: z.string().optional(),
   audience: z.string().optional(),
+  brand: z.object({
+    id: z.string(),
+    applied_version: z.number().int().positive(),
+  }).nullable().default(null),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
 
