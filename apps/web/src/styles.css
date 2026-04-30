@@ -122,3 +122,53 @@ a { color: var(--accent); }
 /* Labels and hints */
 .label { display: block; font-size: 13px; color: var(--fg-muted); margin-bottom: 4px; margin-top: 12px; }
 .hint { font-size: 12px; color: var(--fg-muted); margin: 4px 0 0; }
+
+/* Source list */
+.source-list { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+.source-list li { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px; }
+
+/* Wizard layout */
+.brand-new { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+.brand-new--review { max-width: 1200px; }
+.brand-new__panes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.brand-new__actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.progress { list-style: none; padding: 0; margin: 8px 0; font-family: monospace; font-size: 12px; color: var(--fg-muted); }
+
+/* Review form */
+.review-form fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+.review-form legend { padding: 0 6px; color: var(--fg-muted); font-size: 12px; }
+.review-form label { display: block; font-size: 11px; color: var(--fg-muted); margin-top: 6px; }
+.review-form input, .review-form textarea, .review-form select {
+  width: 100%; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg); font: inherit;
+}
+.color-grid { display: grid; gap: 6px; grid-template-columns: 1fr 1fr; }
+.color-row { display: flex; align-items: center; gap: 6px; }
+.color-swatch { width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0; }
+.color-name { font-size: 11px; color: var(--fg-muted); min-width: 70px; }
+.color-input { font-family: monospace; font-size: 11px; }
+
+/* Preview pane */
+.preview-pane { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; min-height: 520px; display: flex; flex-direction: column; }
+.preview-tabs { display: flex; border-bottom: 1px solid var(--border); }
+.preview-tabs button { padding: 8px 14px; background: transparent; color: var(--fg-muted); border: none; cursor: pointer; font: inherit; }
+.preview-tabs button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
+.preview-body { padding: 14px; overflow: auto; flex: 1; }
+.palette { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 16px; }
+.palette-cell { height: 50px; border-radius: 5px; display: flex; align-items: flex-end; padding: 4px; font-family: monospace; font-size: 10px; }
+.type-sample { padding: 12px; border-radius: 5px; margin-bottom: 16px; }
+.lower-third-mock { background: var(--bg-elev); border-radius: 5px; height: 100px; display: flex; align-items: flex-end; padding: 14px 0; }
+.lower-third-bar { padding: 8px 18px 8px 12px; border-left: 4px solid currentColor; display: flex; flex-direction: column; }
+.design-md-source { background: var(--bg-elev); padding: 10px; border-radius: 4px; font-size: 11px; white-space: pre-wrap; color: var(--fg-muted); }
+
+/* Brand detail */
+.brand-detail { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+.brand-detail__header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.brand-detail__meta { color: var(--fg-muted); font-size: 13px; }
+.brand-detail__default { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); cursor: pointer; }
+.brand-detail__actions { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+.button--danger { background: var(--danger); border-color: var(--danger); }
+.brand-detail__tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.brand-detail__tabs button { padding: 6px 12px; background: transparent; color: var(--fg-muted); border: none; border-bottom: 2px solid transparent; cursor: pointer; font: inherit; }
+.brand-detail__tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tokens-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tokens-table td, .tokens-table th { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; }
