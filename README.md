@@ -1,6 +1,10 @@
 # Video Production Assistant
 
-Greenfield desktop studio that speeds up post-recording demo video creation. See `docs/superpowers/specs/` for design.
+Greenfield desktop studio that speeds up the post-recording phase of demo video creation. See `docs/superpowers/specs/` for design and `docs/superpowers/plans/` for implementation plans.
+
+## Status
+
+Plan 01 — Foundation & Project Store: **complete**. Server + web shells stand up, projects can be created and imported, dashboard lists them. No video features yet (Plans 02+).
 
 ## Prerequisites
 
@@ -11,19 +15,53 @@ Greenfield desktop studio that speeds up post-recording demo video creation. See
 
 ```bash
 npm install
+npx playwright install chromium    # only needed for E2E tests
 ```
 
-## Development
+## Run in development
 
 ```bash
-npm run dev          # runs each workspace's dev script (parallel runner added in Task 17)
-npm run build        # build all packages
-npm run test         # unit tests across workspaces
-npm run e2e          # Playwright smoke tests (requires `npm run dev` running)
-npm run typecheck    # tsc -b
-npm run lint
+npm run dev
 ```
 
-## Environment
+This starts:
+- `vpa-server` on http://127.0.0.1:3000 (Fastify)
+- `vpa-web` on http://localhost:5173 (Vite)
 
-Copy `.env.example` to `.env` and adjust if needed. All defaults work for local single-user use.
+Open http://localhost:5173 in your browser.
+
+## Verification commands
+
+```bash
+npm run typecheck   # tsc -b across workspaces
+npm run lint        # ESLint
+npm test            # Vitest unit/integration tests
+npm run build       # build all packages
+npm run e2e         # Playwright smoke (boots dev servers automatically)
+```
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust if needed.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VPA_HOME` | `~/.vpa` | App config directory (tracker, future brands/voices) |
+| `VPA_PROJECTS_DEFAULT` | `~/Movies/VPA` | Default parent directory for new projects |
+| `VPA_SERVER_PORT` | `3000` | Server port |
+| `VPA_SERVER_HOST` | `127.0.0.1` | Server bind address (localhost-only) |
+| `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app's API base URL |
+
+## Repo layout
+
+```
+apps/server/          Fastify server (services + routes)
+apps/web/             Vite + React studio
+packages/shared/      Shared zod schemas + types
+tests/e2e/            Playwright smoke tests
+docs/superpowers/     Spec and plan documents
+```
+
+## License
+
+TBD.
