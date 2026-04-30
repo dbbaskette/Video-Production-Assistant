@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev --workspaces --if-present",
+    "predev": "npm run build -w @vpa/shared",
+    "dev": "concurrently --names server,web --prefix-colors blue,magenta \"npm run dev -w @vpa/server\" \"npm run dev -w @vpa/web\"",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint . --max-warnings=0 --no-error-on-unmatched-pattern",
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@playwright/test": "^1.48.0",
+    "concurrently": "^9.0.0",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^10.0.0",
     "prettier": "^3.3.0",
