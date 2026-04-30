@@ -1,10 +1,13 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { projectsRoutes } from './routes/projects.js';
 import { registerJobRoutes } from './routes/jobs.js';
+import { registerBrandRoutes } from './routes/brands.js';
 import { ProjectStore } from './services/project/store.js';
+import { brandPaths } from './services/brand/paths.js';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -15,14 +18,28 @@ export async function buildServer() {
     credentials: false,
   });
 
+  await app.register(multipart, {
+    limits: {
+      fileSize: 50 * 1024 * 1024, // 50 MB per file
+      files: 10,
+    },
+  });
+
   const store = new ProjectStore({
     vpaHome: config.vpaHome,
     projectsDefault: config.projectsDefault,
   });
 
+  const bPaths = brandPaths(config.vpaHome, config.vpaHome);
+
   await app.register(healthRoutes);
   await app.register(async (instance) => projectsRoutes(instance, { store, config }));
   await registerJobRoutes(app);
+  await registerBrandRoutes(app, {
+    paths: bPaths,
+    registryFile: bPaths.registryFile,
+    workspaceRoot: config.vpaHome,
+  });
 
   return { app, config, store };
 }
