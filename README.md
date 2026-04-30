@@ -62,6 +62,30 @@ tests/e2e/            Playwright smoke tests
 docs/superpowers/     Spec and plan documents
 ```
 
+## Brand Library
+
+VPA's Brand Library lets you create reusable brand profiles from documents (PDF, markdown, URL, free text, or existing design.md files). Each brand is stored as a Google Labs `design.md` file extended with VPA-specific fields under a `vpa:` namespace.
+
+### Optional: install MarkItDown for higher-quality extraction
+
+VPA ships with native PDF and URL extractors as a fallback, but PDF brand guidelines are typically better parsed by Microsoft's MarkItDown, which produces cleaner LLM-ready markdown. To enable it:
+
+```bash
+pip install 'markitdown[all]'
+```
+
+Restart the VPA server after installing.
+
+### Where brands live
+
+- Brand directories: `<vpa-home>/brands/<slug>/design.md`
+- Registry: `<vpa-home>/brands.json`
+- Editable LLM prompts: `prompts/brand-extract-tokens.md`, `prompts/brand-write-rationale.md`
+
+### LLM provider
+
+The current build uses a fake LLM provider that returns deterministic results for development. Real provider implementations are in a follow-on plan.
+
 ## License
 
 TBD.
