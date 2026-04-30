@@ -16,7 +16,7 @@ npm install
 ## Development
 
 ```bash
-npm run dev          # runs server (port 3000) and web (port 5173) in parallel
+npm run dev          # runs each workspace's dev script (parallel runner added in Task 17)
 npm run build        # build all packages
 npm run test         # unit tests across workspaces
 npm run e2e          # Playwright smoke tests (requires `npm run dev` running)
