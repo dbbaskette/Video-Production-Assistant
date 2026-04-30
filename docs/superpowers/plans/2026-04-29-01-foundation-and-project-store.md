@@ -1098,7 +1098,16 @@ export class ProjectStore {
     const parent = input.parentDir ?? this.opts.projectsDefault;
     const root = resolveProjectRoot(parent, input.name);
 
-    // ensure root does not already contain content
+    // Check tracker for duplicate name FIRST. This must come before the
+    // empty-dir check, otherwise re-creating the same name would trip the
+    // empty-dir error (because the first project's project.yaml lives there)
+    // and surface the wrong error to the caller.
+    const tracker = await this.readTracker();
+    if (tracker.projects.some((p) => p.name === input.name)) {
+      throw new Error(`Project with name "${input.name}" already exists in tracker`);
+    }
+
+    // Then ensure the target dir doesn't have foreign content sitting in it.
     try {
       const entries = await readdir(root);
       if (entries.length > 0) {
@@ -1109,11 +1118,6 @@ export class ProjectStore {
       // ENOENT is fine — we'll create it
     }
     await mkdir(root, { recursive: true });
-
-    const tracker = await this.readTracker();
-    if (tracker.projects.some((p) => p.name === input.name)) {
-      throw new Error(`Project with name "${input.name}" already exists in tracker`);
-    }
 
     const project: Project = ProjectSchema.parse({
       id: uuidv4(),
