@@ -1,8 +1,8 @@
 import yaml from 'js-yaml';
-import type { ZodSchema } from 'zod';
+import type { ZodTypeAny, z } from 'zod';
 
 /** Parse YAML text against a zod schema. Uses js-yaml's safe schema (no js/function etc.). */
-export function loadYaml<T>(text: string, schema: ZodSchema<T>): T {
+export function loadYaml<S extends ZodTypeAny>(text: string, schema: S): z.output<S> {
   const raw = yaml.load(text, { schema: yaml.CORE_SCHEMA });
   const result = schema.safeParse(raw);
   if (!result.success) {

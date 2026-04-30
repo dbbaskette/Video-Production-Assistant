@@ -12,6 +12,10 @@ export const ProjectSchema = z.object({
   created: z.string().datetime(),
   objective: z.string().optional(),
   audience: z.string().optional(),
+  brand: z.object({
+    id: z.string(),
+    applied_version: z.number().int().positive(),
+  }).nullable().default(null),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
