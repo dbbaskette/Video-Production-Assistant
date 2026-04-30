@@ -89,7 +89,47 @@ export class ProjectStore {
 
     return project;
   }
-}
 
-// loadYaml is imported for use in Task 8 (project read/load). Keep until then.
-void loadYaml;
+  async import(projectRoot: string): Promise<Project> {
+    const files = projectFiles(projectRoot);
+    let text: string;
+    try {
+      text = await readFile(files.metadata, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`No project.yaml found at ${files.metadata}`);
+      }
+      throw err;
+    }
+    const project = loadYaml(text, ProjectSchema);
+
+    const tracker = await this.readTracker();
+    const existingIndex = tracker.projects.findIndex((p) => p.id === project.id);
+    const entry: ProjectTrackerEntry = {
+      id: project.id,
+      name: project.name,
+      path: projectRoot,
+      lastOpened: new Date().toISOString(),
+    };
+    const updated =
+      existingIndex >= 0
+        ? tracker.projects.map((p, i) => (i === existingIndex ? entry : p))
+        : [...tracker.projects, entry];
+    await this.writeTracker({ version: 1, projects: updated });
+
+    if (project.path !== projectRoot) {
+      const corrected: Project = { ...project, path: projectRoot };
+      await atomicWriteFile(files.metadata, dumpYaml(corrected));
+      return corrected;
+    }
+    return project;
+  }
+
+  async touch(id: string): Promise<void> {
+    const tracker = await this.readTracker();
+    const next = tracker.projects.map((p) =>
+      p.id === id ? { ...p, lastOpened: new Date().toISOString() } : p,
+    );
+    await this.writeTracker({ version: 1, projects: next });
+  }
+}

@@ -102,3 +102,84 @@ describe('ProjectStore.create', () => {
     await expect(store.create({ name: 'busy' })).rejects.toThrow(/not empty|exists/i);
   });
 });
+
+describe('ProjectStore.import', () => {
+  let home: string;
+  beforeEach(async () => { home = await makeHome(); });
+  afterEach(async () => { await rm(home, { recursive: true, force: true }); });
+
+  it('imports an existing project folder with valid project.yaml', async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), 'vpa-existing-'));
+    try {
+      const yaml = `id: 22222222-2222-2222-2222-222222222222
+name: imported
+path: ${projectDir}
+created: 2026-04-29T10:00:00.000Z
+objective: pre-existing
+`;
+      await writeFile(path.join(projectDir, 'project.yaml'), yaml);
+      const store = new ProjectStore({ vpaHome: home, projectsDefault: '/unused' });
+      const project = await store.import(projectDir);
+      expect(project.name).toBe('imported');
+      expect(project.id).toBe('22222222-2222-2222-2222-222222222222');
+      const tracker = await store.readTracker();
+      expect(tracker.projects).toHaveLength(1);
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when project.yaml is missing', async () => {
+    const empty = await mkdtemp(path.join(tmpdir(), 'vpa-empty-'));
+    try {
+      const store = new ProjectStore({ vpaHome: home, projectsDefault: '/unused' });
+      await expect(store.import(empty)).rejects.toThrow(/project\.yaml/);
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('updates path if importing a project whose id already exists in tracker', async () => {
+    const oldDir = await mkdtemp(path.join(tmpdir(), 'vpa-old-'));
+    const newDir = await mkdtemp(path.join(tmpdir(), 'vpa-new-'));
+    try {
+      const id = '33333333-3333-3333-3333-333333333333';
+      const oldYaml = `id: ${id}
+name: moved
+path: ${oldDir}
+created: 2026-04-29T10:00:00.000Z
+`;
+      await writeFile(path.join(oldDir, 'project.yaml'), oldYaml);
+      const store = new ProjectStore({ vpaHome: home, projectsDefault: '/unused' });
+      await store.import(oldDir);
+
+      const newYaml = oldYaml.replace(oldDir, newDir);
+      await writeFile(path.join(newDir, 'project.yaml'), newYaml);
+      await store.import(newDir);
+
+      const tracker = await store.readTracker();
+      expect(tracker.projects).toHaveLength(1);
+      expect(tracker.projects[0]?.path).toBe(newDir);
+    } finally {
+      await rm(oldDir, { recursive: true, force: true });
+      await rm(newDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ProjectStore.touch', () => {
+  let home: string;
+  beforeEach(async () => { home = await makeHome(); });
+  afterEach(async () => { await rm(home, { recursive: true, force: true }); });
+
+  it('updates lastOpened for a tracker entry', async () => {
+    const projectsDefault = path.join(home, 'projects-root');
+    const store = new ProjectStore({ vpaHome: home, projectsDefault });
+    const project = await store.create({ name: 'a' });
+    const before = (await store.readTracker()).projects[0]?.lastOpened;
+    await new Promise((r) => setTimeout(r, 5));
+    await store.touch(project.id);
+    const after = (await store.readTracker()).projects[0]?.lastOpened;
+    expect(after).not.toBe(before);
+  });
+});
