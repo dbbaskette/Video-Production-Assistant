@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { projectsRoutes } from './routes/projects.js';
+import { registerJobRoutes } from './routes/jobs.js';
 import { ProjectStore } from './services/project/store.js';
 
 export async function buildServer() {
@@ -21,6 +22,7 @@ export async function buildServer() {
 
   await app.register(healthRoutes);
   await app.register(async (instance) => projectsRoutes(instance, { store, config }));
+  await registerJobRoutes(app);
 
   return { app, config, store };
 }
