@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { settingsApi, type ModelEntry } from '../lib/api.js';
+import { settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -316,8 +316,283 @@ function AddModelForm({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+/* ── Voice Profiles ──────────────────────────────────── */
+
+function VoiceProfileCard({
+  profile,
+  engineName,
+  onDelete,
+}: {
+  profile: VoiceProfileInfo;
+  engineName: string;
+  onDelete: () => void;
+}) {
+  return (
+    <div style={card}>
+      <div>
+        <div style={{ fontWeight: 600, fontSize: 15 }}>
+          {profile.name}
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 4 }}>
+          {engineName} &mdash; <code style={{ fontSize: 12 }}>{profile.voice}</code>
+          <span style={{ marginLeft: 8, fontSize: 12 }}>
+            {profile.speed}x speed
+          </span>
+        </div>
+        {profile.description && (
+          <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 2 }}>
+            {profile.description}
+          </div>
+        )}
+      </div>
+      <button
+        onClick={onDelete}
+        title="Remove this voice profile"
+        style={{
+          padding: '6px 10px',
+          borderRadius: 6,
+          border: '1px solid var(--danger, #c44)',
+          background: 'transparent',
+          color: 'var(--danger, #c44)',
+          cursor: 'pointer',
+          fontSize: 13,
+        }}
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
+function AddVoiceProfileForm({ onAdded }: { onAdded: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [engineId, setEngineId] = useState('');
+  const [voiceId, setVoiceId] = useState('');
+  const [speed, setSpeed] = useState(1.0);
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+
+  const { data: engines } = useQuery({
+    queryKey: ['tts', 'engines'],
+    queryFn: () => ttsApi.listEngines(),
+    enabled: open,
+  });
+
+  const selectedEngine = engines?.find((e) => e.id === engineId);
+
+  // Auto-select first engine & voice when engines load
+  const enginesLoaded = engines && engines.length > 0;
+  if (enginesLoaded && !engineId) {
+    setEngineId(engines[0]!.id);
+    if (engines[0]!.voices.length > 0) {
+      setVoiceId(engines[0]!.voices[0]!.id);
+    }
+  }
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      voiceApi.create({
+        name,
+        engine: engineId,
+        voice: voiceId,
+        speed,
+        description: description.trim() || undefined,
+      }),
+    onSuccess: () => {
+      setName('');
+      setEngineId('');
+      setVoiceId('');
+      setSpeed(1.0);
+      setDescription('');
+      setError('');
+      setOpen(false);
+      onAdded();
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        style={{
+          width: '100%',
+          padding: '14px',
+          borderRadius: 10,
+          border: '2px dashed var(--border)',
+          background: 'transparent',
+          color: 'var(--fg-muted)',
+          cursor: 'pointer',
+          fontSize: 14,
+          marginTop: 4,
+        }}
+      >
+        + Add Voice Profile
+      </button>
+    );
+  }
+
+  const fieldStyle: React.CSSProperties = {
+    width: '100%',
+    padding: '8px 12px',
+    borderRadius: 6,
+    border: '1px solid var(--border)',
+    background: 'var(--bg)',
+    color: 'var(--fg)',
+    fontSize: 14,
+    boxSizing: 'border-box',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: 'block',
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 4,
+    color: 'var(--fg)',
+  };
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: 20,
+        background: 'var(--surface)',
+        marginTop: 4,
+      }}
+    >
+      <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>Add a Voice Profile</h3>
+
+      <div style={{ display: 'grid', gap: 14 }}>
+        <div>
+          <label style={labelStyle}>Profile Name</label>
+          <input
+            style={fieldStyle}
+            placeholder="e.g. Demo Narrator"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>TTS Engine</label>
+          {!engines ? (
+            <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>Loading engines...</div>
+          ) : engines.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
+              No TTS engines available. Only a development/test engine is currently registered.
+            </div>
+          ) : (
+            <select
+              style={fieldStyle}
+              value={engineId}
+              onChange={(e) => {
+                setEngineId(e.target.value);
+                const eng = engines.find((x) => x.id === e.target.value);
+                if (eng && eng.voices.length > 0) setVoiceId(eng.voices[0]!.id);
+                else setVoiceId('');
+              }}
+            >
+              {engines.map((e) => (
+                <option key={e.id} value={e.id}>{e.displayName}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {selectedEngine && selectedEngine.voices.length > 0 && (
+          <div>
+            <label style={labelStyle}>Voice</label>
+            <select
+              style={fieldStyle}
+              value={voiceId}
+              onChange={(e) => setVoiceId(e.target.value)}
+            >
+              {selectedEngine.voices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}{v.description ? ` — ${v.description}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div>
+          <label style={labelStyle}>Speed ({speed.toFixed(1)}x)</label>
+          <input
+            type="range"
+            min="0.5"
+            max="2.0"
+            step="0.1"
+            value={speed}
+            onChange={(e) => setSpeed(parseFloat(e.target.value))}
+            style={{ width: '100%' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--fg-muted)' }}>
+            <span>0.5x</span>
+            <span>1.0x</span>
+            <span>2.0x</span>
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Description (optional)</label>
+          <input
+            style={fieldStyle}
+            placeholder="e.g. Calm, professional tone for product demos"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 12, color: 'var(--danger, #c44)', fontSize: 13 }}>{error}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => { setOpen(false); setError(''); }}
+          style={{
+            padding: '8px 16px',
+            borderRadius: 6,
+            border: '1px solid var(--border)',
+            background: 'transparent',
+            cursor: 'pointer',
+            fontSize: 13,
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => createMutation.mutate()}
+          disabled={!name || !engineId || !voiceId || createMutation.isPending}
+          style={{
+            padding: '8px 16px',
+            borderRadius: 6,
+            border: 'none',
+            background: 'var(--accent)',
+            color: '#fff',
+            cursor: !name || !engineId || !voiceId ? 'not-allowed' : 'pointer',
+            fontSize: 13,
+            fontWeight: 600,
+            opacity: !name || !engineId || !voiceId ? 0.5 : 1,
+          }}
+        >
+          {createMutation.isPending ? 'Adding...' : 'Add Voice Profile'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Settings Page ──────────────────────────────────── */
+
 export function Settings() {
   const qc = useQueryClient();
+
+  // Models
   const { data: models, isLoading, error } = useQuery({
     queryKey: ['settings', 'models'],
     queryFn: () => settingsApi.listModels(),
@@ -333,15 +608,34 @@ export function Settings() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
   });
 
+  // Voice Profiles
+  const { data: voices, isLoading: voicesLoading, error: voicesError } = useQuery({
+    queryKey: ['settings', 'voices'],
+    queryFn: () => voiceApi.list(),
+  });
+
+  const { data: engines } = useQuery({
+    queryKey: ['tts', 'engines'],
+    queryFn: () => ttsApi.listEngines(),
+  });
+
+  const deleteVoiceMutation = useMutation({
+    mutationFn: (id: string) => voiceApi.remove(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'voices'] }),
+  });
+
+  const engineNameMap = new Map(engines?.map((e) => [e.id, e.displayName]) ?? []);
+
   return (
     <main className="page page--narrow">
       <header style={{ marginBottom: 32 }}>
         <h1>Settings</h1>
         <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: 0 }}>
-          Manage LLM model configurations
+          Manage LLM models and TTS voice configurations
         </p>
       </header>
 
+      {/* Models section */}
       <section>
         <div className="section-header" style={{ marginBottom: 18 }}>
           <span className="section-label">Models</span>
@@ -367,6 +661,38 @@ export function Settings() {
               />
             ))}
             <AddModelForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'models'] })} />
+          </>
+        )}
+      </section>
+
+      {/* Voice Profiles section */}
+      <section style={{ marginTop: 48 }}>
+        <div className="section-header" style={{ marginBottom: 18 }}>
+          <span className="section-label">Voice Profiles</span>
+        </div>
+        <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 16px' }}>
+          Configure TTS voices for narration. Each profile pairs a TTS engine with a voice and speed setting.
+        </p>
+
+        {voicesLoading && <p className="hint">Loading voice profiles...</p>}
+        {voicesError && <p style={{ color: 'var(--danger)' }}>Failed to load voice profiles.</p>}
+
+        {voices && (
+          <>
+            {voices.length === 0 && (
+              <div className="empty-state">
+                No voice profiles yet. Add one below to use for narration.
+              </div>
+            )}
+            {voices.map((v) => (
+              <VoiceProfileCard
+                key={v.id}
+                profile={v}
+                engineName={engineNameMap.get(v.engine) ?? v.engine}
+                onDelete={() => deleteVoiceMutation.mutate(v.id)}
+              />
+            ))}
+            <AddVoiceProfileForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'voices'] })} />
           </>
         )}
       </section>
