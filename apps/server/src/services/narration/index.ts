@@ -21,6 +21,35 @@ export interface NarrationResult {
   unsupportedEmotives: string[];
 }
 
+export interface ChunkNarrationInput {
+  projectPath: string;
+  sceneId: string;
+  chunkIndex: number;
+  text: string;
+  engine: string;
+  voice: string;
+  speed?: number;
+}
+
+export interface ChunkNarrationResult {
+  chunkIndex: number;
+  audioPath: string;
+  durationSec: number;
+  timingCount: number;
+  unsupportedEmotives: string[];
+}
+
+/** Split script into paragraphs (chunks) by double-newline. */
+export function splitIntoParagraphs(script: string): string[] {
+  return script
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+/**
+ * Generate narration for the full script (legacy single-file mode).
+ */
 export async function generateNarration(
   input: NarrationInput,
   tts: TtsService,
@@ -85,6 +114,72 @@ export async function generateNarration(
     audioPath: audioRelPath,
     srtPath: srtRelPath,
     vttPath: vttRelPath,
+    durationSec: ttsResult.durationSec,
+    timingCount: ttsResult.timings?.length ?? 0,
+    unsupportedEmotives,
+  };
+}
+
+/**
+ * Generate narration for a single paragraph chunk.
+ */
+export async function generateChunkNarration(
+  input: ChunkNarrationInput,
+  tts: TtsService,
+): Promise<ChunkNarrationResult> {
+  const { projectPath, sceneId, chunkIndex, text, engine, voice, speed } = input;
+
+  const sb = await loadStoryboard(projectPath);
+  if (!sb) throw new Error('No storyboard found');
+
+  const scene = sb.scenes.find((s) => s.id === sceneId);
+  if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+
+  const unsupportedEmotives = tts.checkEmotives(engine, text);
+
+  // Generate audio for this chunk
+  const ttsResult = await tts.generate(engine, text, { voice, speed });
+
+  // Write chunk audio file
+  const narrationDir = join(projectPath, 'narration');
+  await mkdir(narrationDir, { recursive: true });
+
+  const chunkTag = String(chunkIndex).padStart(2, '0');
+  const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}.mp3`;
+  await writeFile(join(projectPath, audioRelPath), ttsResult.audio);
+
+  // Update chunk in storyboard
+  const existingChunks = scene.narration?.chunks ?? [];
+  const newChunk = {
+    index: chunkIndex,
+    text,
+    audio: audioRelPath,
+    durationSec: ttsResult.durationSec,
+    timings: ttsResult.timings ?? [],
+  };
+
+  // Replace existing chunk or append
+  const chunkIdx = existingChunks.findIndex((c) => c.index === chunkIndex);
+  const updatedChunks = [...existingChunks];
+  if (chunkIdx >= 0) {
+    updatedChunks[chunkIdx] = newChunk;
+  } else {
+    updatedChunks.push(newChunk);
+    updatedChunks.sort((a, b) => a.index - b.index);
+  }
+
+  const narration = {
+    ...(scene.narration ?? { script: text }),
+    tts: { engine, voice, speed: speed ?? 1.0 },
+    chunks: updatedChunks,
+  };
+
+  const updated = updateScene(sb, sceneId, { narration: narration as any });
+  await saveStoryboard(projectPath, updated);
+
+  return {
+    chunkIndex,
+    audioPath: audioRelPath,
     durationSec: ttsResult.durationSec,
     timingCount: ttsResult.timings?.length ?? 0,
     unsupportedEmotives,

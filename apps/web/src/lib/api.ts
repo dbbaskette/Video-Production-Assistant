@@ -319,6 +319,14 @@ export interface VoiceProfileInfo {
   description?: string;
 }
 
+export interface NarrationChunkInfo {
+  index: number;
+  text: string;
+  hasAudio: boolean;
+  audio: string | null;
+  durationSec: number | null;
+}
+
 export interface NarrationState {
   sceneId: string;
   hasScript: boolean;
@@ -327,12 +335,21 @@ export interface NarrationState {
   subtitles: { srt?: string; vtt?: string } | null;
   tts: { engine?: string; voice?: string; speed?: number } | null;
   timingCount: number;
+  chunks: NarrationChunkInfo[];
 }
 
 export interface NarrationResult {
   audioPath: string;
   srtPath: string;
   vttPath: string;
+  durationSec: number;
+  timingCount: number;
+  unsupportedEmotives: string[];
+}
+
+export interface ChunkNarrationResult {
+  chunkIndex: number;
+  audioPath: string;
   durationSec: number;
   timingCount: number;
   unsupportedEmotives: string[];
@@ -371,8 +388,29 @@ export const narrationApi = {
       opts,
     );
   },
+  async generateChunk(
+    projectId: string,
+    sceneId: string,
+    opts: { chunkIndex: number; text: string; engine: string; voice: string; speed?: number },
+  ): Promise<ChunkNarrationResult> {
+    return request<ChunkNarrationResult>(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/narration/generate-chunk`,
+      opts,
+    );
+  },
+  async saveScript(
+    projectId: string,
+    sceneId: string,
+    script: string,
+  ): Promise<{ saved: boolean; script: string }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/script`, { script });
+  },
   audioUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/audio`;
+  },
+  chunkAudioUrl(projectId: string, sceneId: string, chunkIndex: number): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/chunk/${chunkIndex}/audio`;
   },
 };
 

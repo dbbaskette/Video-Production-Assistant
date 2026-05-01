@@ -13,6 +13,15 @@ export const TimingSchema = z.object({
 });
 export type Timing = z.infer<typeof TimingSchema>;
 
+export const NarrationChunkSchema = z.object({
+  index: z.number(),
+  text: z.string(),
+  audio: z.string().optional(),        // e.g. "narration/scene-01-chunk-00.mp3"
+  durationSec: z.number().optional(),
+  timings: z.array(TimingSchema).optional(),
+});
+export type NarrationChunk = z.infer<typeof NarrationChunkSchema>;
+
 export const NarrationSchema = z.object({
   script: z.string(),
   audio: z.string().optional(),
@@ -26,6 +35,7 @@ export const NarrationSchema = z.object({
     speed: z.number().positive().optional(),
   }).optional(),
   timings: z.array(TimingSchema).optional(),
+  chunks: z.array(NarrationChunkSchema).optional(),
 });
 export type Narration = z.infer<typeof NarrationSchema>;
 

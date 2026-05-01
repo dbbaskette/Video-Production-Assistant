@@ -93,11 +93,18 @@ export async function buildServer() {
   }
 
   // Fish Audio — local model via mlx_audio, no API key needed
+  // Only register if both the model dir AND the Python module exist
   const fishModelPath = process.env.FISH_AUDIO_MODEL
     || `${process.env.HOME}/.lmstudio/models/mlx-community/fish-audio-s2-pro-bf16`;
   if (existsSync(fishModelPath)) {
-    tts.register(createFishTtsProvider());
-    app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath})`);
+    try {
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('python3', ['-c', 'import mlx_audio'], { timeout: 5000, stdio: 'pipe' });
+      tts.register(createFishTtsProvider());
+      app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath})`);
+    } catch {
+      app.log.warn(`TTS: Fish Audio model found at ${fishModelPath} but mlx_audio Python module is not installed. Run: pip install mlx_audio`);
+    }
   }
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
