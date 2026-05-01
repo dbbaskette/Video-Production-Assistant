@@ -44,7 +44,7 @@ function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
 }
 
 const SAMPLE_RATE = 24000;
-const MODEL = 'gemini-2.5-flash-preview-tts';
+const DEFAULT_MODEL = 'gemini-3.1-flash-tts-preview';
 
 /**
  * Full catalog of Gemini prebuilt voices.
@@ -71,7 +71,8 @@ const GEMINI_VOICES = [
   { id: 'Zephyr',    name: 'Zephyr',     description: 'Light, airy female — great for intros' },
 ] as const;
 
-export function createGeminiTtsProvider(apiKey: string): TtsProvider {
+export function createGeminiTtsProvider(apiKey: string, model?: string): TtsProvider {
+  const ttsModel = model || process.env.GEMINI_TTS_MODEL || DEFAULT_MODEL;
   return {
     id: 'gemini',
     displayName: 'Google Gemini TTS',
@@ -93,7 +94,7 @@ export function createGeminiTtsProvider(apiKey: string): TtsProvider {
       const cleanText = stripEmotiveTags(script);
 
       const response = await ai.models.generateContent({
-        model: MODEL,
+        model: ttsModel,
         contents: [{ parts: [{ text: cleanText }] }],
         config: {
           responseModalities: ['AUDIO'],
