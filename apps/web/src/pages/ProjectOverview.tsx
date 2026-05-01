@@ -150,7 +150,7 @@ export function ProjectOverview() {
       </div>
 
       {/* Action buttons */}
-      <div style={{ marginTop: 32, display: 'flex', gap: 12 }}>
+      <div style={{ marginTop: 32, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         {!hasStoryboard ? (
           <>
             <Link
@@ -198,6 +198,19 @@ export function ProjectOverview() {
               View Storyboard
             </Link>
             <Link
+              to={`/project/${project.id}/recordings`}
+              style={{
+                padding: '12px 24px',
+                background: 'var(--bg-elev)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'var(--fg)',
+                textDecoration: 'none',
+              }}
+            >
+              Recordings
+            </Link>
+            <Link
               to={`/project/${project.id}/ideation`}
               style={{
                 padding: '12px 24px',
@@ -227,6 +240,39 @@ export function ProjectOverview() {
           </>
         )}
       </div>
+
+      {/* Workflow guide */}
+      {hasStoryboard && (
+        <div style={{ marginTop: 32 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Per-Scene Workflow</div>
+          <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 12px', lineHeight: 1.6 }}>
+            Click any scene in the sidebar to access its full editing pipeline:
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            {[
+              { icon: '📹', title: 'Recording', desc: 'Upload screen recording' },
+              { icon: '📝', title: 'Script', desc: 'Write or AI-generate narration script' },
+              { icon: '🔊', title: 'Narration', desc: 'Select TTS engine, voice & speed' },
+              { icon: '🏷️', title: 'Lower Thirds', desc: 'Add title/subtitle overlays' },
+            ].map((step) => (
+              <div
+                key={step.title}
+                style={{
+                  background: 'var(--bg-elev)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '14px 16px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 22, marginBottom: 6 }}>{step.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{step.title}</div>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>{step.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

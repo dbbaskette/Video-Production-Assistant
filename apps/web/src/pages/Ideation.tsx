@@ -64,7 +64,7 @@ export function Ideation() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
+    <div style={{ display: 'flex', height: '100%' }}>
       {/* Left column — Chat */}
       <div
         style={{
