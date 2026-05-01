@@ -25,7 +25,11 @@ import { ModelRegistry } from './services/llm/model-registry.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
+import { createGeminiTtsProvider } from './services/tts/providers/gemini.js';
+import { createXaiTtsProvider } from './services/tts/providers/xai.js';
+import { createFishTtsProvider } from './services/tts/providers/fish.js';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -74,6 +78,27 @@ export async function buildServer() {
 
   const tts = new TtsService();
   tts.register(createFakeTtsProvider());
+
+  // ── Register real TTS providers from .env ────────────────────
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    tts.register(createGeminiTtsProvider(geminiKey));
+    app.log.info('TTS: Gemini provider registered');
+  }
+
+  const xaiKey = process.env.XAI_API_KEY;
+  if (xaiKey) {
+    tts.register(createXaiTtsProvider(xaiKey));
+    app.log.info('TTS: xAI provider registered');
+  }
+
+  // Fish Audio — local model via mlx_audio, no API key needed
+  const fishModelPath = process.env.FISH_AUDIO_MODEL
+    || `${process.env.HOME}/.lmstudio/models/mlx-community/fish-audio-s2-pro-bf16`;
+  if (existsSync(fishModelPath)) {
+    tts.register(createFishTtsProvider());
+    app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath})`);
+  }
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
 

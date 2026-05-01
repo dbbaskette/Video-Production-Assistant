@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useOutletContext } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, recordingsApi, scriptApi, ttsApi, narrationApi, lowerThirdsApi, overlayApi } from '../lib/api.js';
-import type { LowerThirdItem } from '../lib/api.js';
+import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi } from '../lib/api.js';
+import type { LowerThirdItem, VoiceProfileInfo } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
@@ -82,6 +82,12 @@ export function ScenePage() {
   const { data: engines } = useQuery({
     queryKey: ['tts-engines'],
     queryFn: () => ttsApi.listEngines(),
+    enabled: activeTab === 'Narration',
+  });
+
+  const { data: voiceProfiles } = useQuery({
+    queryKey: ['voice-profiles'],
+    queryFn: () => voiceApi.list(),
     enabled: activeTab === 'Narration',
   });
 
@@ -403,134 +409,238 @@ export function ScenePage() {
           {/* TTS controls */}
           {narrationState?.hasScript && (
             <div>
+              {/* ── Saved Voice Profiles (quick-select) ────────── */}
+              {voiceProfiles && voiceProfiles.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: 12,
+                      color: 'var(--fg-muted)',
+                      marginBottom: 8,
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    Saved Voice Profiles
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {voiceProfiles.map((p: VoiceProfileInfo) => {
+                      const isActive =
+                        selectedEngine === p.engine &&
+                        selectedVoice === p.voice &&
+                        Math.abs(selectedSpeed - p.speed) < 0.05;
+                      const engineLabel = engines?.find((e) => e.id === p.engine)?.displayName ?? p.engine;
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedEngine(p.engine);
+                            setSelectedVoice(p.voice);
+                            setSelectedSpeed(p.speed);
+                          }}
+                          title={`${engineLabel} / ${p.voice} @ ${p.speed}x${p.description ? `\n${p.description}` : ''}`}
+                          style={{
+                            padding: '8px 14px',
+                            borderRadius: 8,
+                            border: isActive
+                              ? '2px solid var(--accent)'
+                              : '1px solid var(--border)',
+                            background: isActive ? 'var(--accent)10' : 'var(--surface)',
+                            color: isActive ? 'var(--accent)' : 'var(--fg)',
+                            cursor: 'pointer',
+                            fontSize: 13,
+                            fontWeight: isActive ? 600 : 400,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'flex-start',
+                            gap: 2,
+                            minWidth: 120,
+                          }}
+                        >
+                          <span>{p.name}</span>
+                          <span style={{ fontSize: 10, color: 'var(--fg-muted)', fontWeight: 400 }}>
+                            {engineLabel} &middot; {p.voice} &middot; {p.speed}x
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Manual engine/voice/speed controls ────────── */}
               <div
                 style={{
-                  display: 'flex',
-                  gap: 16,
-                  alignItems: 'end',
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  padding: 16,
                   marginBottom: 16,
-                  flexWrap: 'wrap',
                 }}
               >
-                {/* Engine selector */}
-                <div>
-                  <label
-                    style={{
-                      display: 'block',
-                      fontSize: 11,
-                      color: 'var(--fg-muted)',
-                      marginBottom: 4,
-                      fontWeight: 600,
-                    }}
-                  >
-                    TTS Engine
-                  </label>
-                  <select
-                    value={selectedEngine}
-                    onChange={(e) => {
-                      setSelectedEngine(e.target.value);
-                      // Reset voice when engine changes
-                      const eng = engines?.find((x) => x.id === e.target.value);
-                      if (eng?.voices[0]) setSelectedVoice(eng.voices[0].id);
-                    }}
-                    style={{
-                      padding: '6px 10px',
-                      borderRadius: 6,
-                      border: '1px solid var(--border)',
-                      background: 'var(--surface)',
-                      color: 'var(--fg)',
-                      fontSize: 13,
-                      minWidth: 140,
-                    }}
-                  >
-                    {engines?.map((eng) => (
-                      <option key={eng.id} value={eng.id}>
-                        {eng.displayName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Voice selector */}
-                <div>
-                  <label
-                    style={{
-                      display: 'block',
-                      fontSize: 11,
-                      color: 'var(--fg-muted)',
-                      marginBottom: 4,
-                      fontWeight: 600,
-                    }}
-                  >
-                    Voice
-                  </label>
-                  <select
-                    value={selectedVoice}
-                    onChange={(e) => setSelectedVoice(e.target.value)}
-                    style={{
-                      padding: '6px 10px',
-                      borderRadius: 6,
-                      border: '1px solid var(--border)',
-                      background: 'var(--surface)',
-                      color: 'var(--fg)',
-                      fontSize: 13,
-                      minWidth: 140,
-                    }}
-                  >
-                    {currentEngine?.voices.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Speed control */}
-                <div>
-                  <label
-                    style={{
-                      display: 'block',
-                      fontSize: 11,
-                      color: 'var(--fg-muted)',
-                      marginBottom: 4,
-                      fontWeight: 600,
-                    }}
-                  >
-                    Speed: {selectedSpeed.toFixed(1)}x
-                  </label>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={2.0}
-                    step={0.1}
-                    value={selectedSpeed}
-                    onChange={(e) => setSelectedSpeed(parseFloat(e.target.value))}
-                    style={{ width: 120 }}
-                  />
-                </div>
-
-                {/* Generate button */}
-                <button
-                  onClick={() => generateNarrationMutation.mutate()}
-                  disabled={generateNarrationMutation.isPending}
+                <div
                   style={{
-                    padding: '8px 16px',
-                    background: 'var(--accent)',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 6,
-                    cursor: generateNarrationMutation.isPending ? 'wait' : 'pointer',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    opacity: generateNarrationMutation.isPending ? 0.7 : 1,
+                    display: 'flex',
+                    gap: 16,
+                    alignItems: 'end',
+                    flexWrap: 'wrap',
                   }}
                 >
-                  {generateNarrationMutation.isPending
-                    ? 'Generating...'
-                    : narrationState.hasAudio
-                      ? 'Regenerate'
-                      : 'Generate Narration'}
-                </button>
+                  {/* Engine selector */}
+                  <div style={{ flex: '1 1 160px', minWidth: 140 }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        marginBottom: 4,
+                        fontWeight: 600,
+                      }}
+                    >
+                      TTS Engine
+                    </label>
+                    <select
+                      value={selectedEngine}
+                      onChange={(e) => {
+                        setSelectedEngine(e.target.value);
+                        const eng = engines?.find((x) => x.id === e.target.value);
+                        if (eng?.voices[0]) setSelectedVoice(eng.voices[0].id);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--fg)',
+                        fontSize: 13,
+                      }}
+                    >
+                      {engines?.map((eng) => (
+                        <option key={eng.id} value={eng.id}>
+                          {eng.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Voice selector with descriptions */}
+                  <div style={{ flex: '2 1 200px', minWidth: 180 }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        marginBottom: 4,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Voice
+                    </label>
+                    <select
+                      value={selectedVoice}
+                      onChange={(e) => setSelectedVoice(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 6,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                        color: 'var(--fg)',
+                        fontSize: 13,
+                      }}
+                    >
+                      {currentEngine?.voices.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.name}{v.description ? ` — ${v.description}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Speed control */}
+                  <div style={{ flex: '0 0 130px' }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        marginBottom: 4,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Speed: {selectedSpeed.toFixed(1)}x
+                    </label>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2.0}
+                      step={0.1}
+                      value={selectedSpeed}
+                      onChange={(e) => setSelectedSpeed(parseFloat(e.target.value))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* Generate button */}
+                  <div style={{ flex: '0 0 auto' }}>
+                    <button
+                      onClick={() => generateNarrationMutation.mutate()}
+                      disabled={generateNarrationMutation.isPending}
+                      style={{
+                        padding: '8px 20px',
+                        background: 'var(--accent)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 6,
+                        cursor: generateNarrationMutation.isPending ? 'wait' : 'pointer',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        opacity: generateNarrationMutation.isPending ? 0.7 : 1,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {generateNarrationMutation.isPending
+                        ? 'Generating...'
+                        : narrationState.hasAudio
+                          ? 'Regenerate'
+                          : 'Generate Narration'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Voice description detail */}
+                {currentEngine && (() => {
+                  const voice = currentEngine.voices.find((v) => v.id === selectedVoice);
+                  return voice?.description ? (
+                    <div style={{ marginTop: 10, fontSize: 12, color: 'var(--fg-muted)', fontStyle: 'italic' }}>
+                      {voice.description}
+                    </div>
+                  ) : null;
+                })()}
+
+                {/* Supported emotive tags */}
+                {currentEngine && currentEngine.supportedEmotives.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-muted)' }}>
+                    Supported tags:{' '}
+                    {currentEngine.supportedEmotives.map((tag) => (
+                      <code
+                        key={tag}
+                        style={{
+                          background: 'var(--bg)',
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          marginRight: 4,
+                          fontSize: 10,
+                        }}
+                      >
+                        [{tag}]
+                      </code>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Error display */}
@@ -570,7 +680,7 @@ export function ScenePage() {
                   style={{
                     background: 'var(--surface)',
                     border: '1px solid var(--border)',
-                    borderRadius: 8,
+                    borderRadius: 10,
                     padding: 16,
                     marginBottom: 16,
                   }}
@@ -583,31 +693,45 @@ export function ScenePage() {
                   <div
                     style={{
                       display: 'flex',
-                      gap: 24,
+                      gap: 16,
                       fontSize: 12,
                       color: 'var(--fg-muted)',
+                      flexWrap: 'wrap',
                     }}
                   >
                     {narrationState.tts?.engine && (
-                      <span>Engine: {narrationState.tts.engine}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontWeight: 600 }}>Engine:</span>
+                        {engines?.find((e) => e.id === narrationState.tts?.engine)?.displayName ?? narrationState.tts.engine}
+                      </span>
                     )}
                     {narrationState.tts?.voice && (
-                      <span>Voice: {narrationState.tts.voice}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontWeight: 600 }}>Voice:</span> {narrationState.tts.voice}
+                      </span>
                     )}
                     {narrationState.tts?.speed && (
-                      <span>Speed: {narrationState.tts.speed}x</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontWeight: 600 }}>Speed:</span> {narrationState.tts.speed}x
+                      </span>
                     )}
                     {narrationState.timingCount > 0 && (
-                      <span>{narrationState.timingCount} word timings</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontWeight: 600 }}>Timings:</span> {narrationState.timingCount} words
+                      </span>
                     )}
                   </div>
 
                   {/* Subtitle info */}
                   {narrationState.subtitles && (
-                    <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fg-muted)' }}>
-                      Subtitles:
-                      {narrationState.subtitles.srt && <span style={{ marginLeft: 8 }}>SRT</span>}
-                      {narrationState.subtitles.vtt && <span style={{ marginLeft: 8 }}>VTT</span>}
+                    <div style={{ marginTop: 10, fontSize: 12, color: 'var(--fg-muted)', display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600 }}>Subtitles:</span>
+                      {narrationState.subtitles.srt && (
+                        <span style={{ background: 'var(--bg)', padding: '2px 8px', borderRadius: 4, fontSize: 11 }}>SRT</span>
+                      )}
+                      {narrationState.subtitles.vtt && (
+                        <span style={{ background: 'var(--bg)', padding: '2px 8px', borderRadius: 4, fontSize: 11 }}>VTT</span>
+                      )}
                     </div>
                   )}
                 </div>
