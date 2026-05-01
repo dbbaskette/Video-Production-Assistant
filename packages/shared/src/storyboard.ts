@@ -19,8 +19,18 @@ export const NarrationChunkSchema = z.object({
   audio: z.string().optional(),        // e.g. "narration/scene-01-chunk-00.mp3"
   durationSec: z.number().optional(),
   timings: z.array(TimingSchema).optional(),
+  speaker: z.string().optional(),      // "A" | "B" — dialog mode speaker assignment
 });
 export type NarrationChunk = z.infer<typeof NarrationChunkSchema>;
+
+/** Per-speaker voice configuration (used in dialog mode). */
+export const SpeakerConfigSchema = z.object({
+  engine: z.string(),
+  voice: z.string(),
+  speed: z.number().positive().default(1.0),
+  label: z.string().optional(),        // e.g. "Narrator", "Host", "Guest"
+});
+export type SpeakerConfig = z.infer<typeof SpeakerConfigSchema>;
 
 export const NarrationSchema = z.object({
   script: z.string(),
@@ -36,6 +46,8 @@ export const NarrationSchema = z.object({
   }).optional(),
   timings: z.array(TimingSchema).optional(),
   chunks: z.array(NarrationChunkSchema).optional(),
+  mode: z.enum(['monologue', 'dialog']).optional(),   // default: 'monologue'
+  speakers: z.record(z.string(), SpeakerConfigSchema).optional(), // keyed by "A", "B"
 });
 export type Narration = z.infer<typeof NarrationSchema>;
 

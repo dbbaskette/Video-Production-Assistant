@@ -40,5 +40,8 @@ playwright/.cache/
 # Superpowers brainstorm scratch
 .superpowers/
 
+# Python virtual environment
+.venv/
+
 # Git worktrees
 .worktrees/

@@ -92,6 +92,8 @@ export async function buildServer() {
     app.log.info('TTS: xAI provider registered');
   }
 
+  const wsRoot = resolve(import.meta.dirname, '../../..');
+
   // Fish Audio — local model via mlx_audio, no API key needed
   // Only register if both the model dir AND the Python module exist
   const fishModelPath = process.env.FISH_AUDIO_MODEL
@@ -99,15 +101,16 @@ export async function buildServer() {
   if (existsSync(fishModelPath)) {
     try {
       const { execFileSync } = await import('node:child_process');
-      execFileSync('python3', ['-c', 'import mlx_audio'], { timeout: 5000, stdio: 'pipe' });
+      // Prefer .venv python (mlx-audio installed there)
+      const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
+      const fishPython = existsSync(venvPython) ? venvPython : 'python3';
+      execFileSync(fishPython, ['-c', 'import mlx_audio'], { timeout: 5000, stdio: 'pipe' });
       tts.register(createFishTtsProvider());
-      app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath})`);
+      app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath}, python: ${fishPython})`);
     } catch {
-      app.log.warn(`TTS: Fish Audio model found at ${fishModelPath} but mlx_audio Python module is not installed. Run: pip install mlx_audio`);
+      app.log.warn(`TTS: Fish Audio model found at ${fishModelPath} but mlx_audio Python module is not installed. Run: scripts/setup-python.sh`);
     }
   }
-
-  const wsRoot = resolve(import.meta.dirname, '../../..');
 
   await app.register(healthRoutes);
   await app.register(async (instance) => projectsRoutes(instance, { store, config }));

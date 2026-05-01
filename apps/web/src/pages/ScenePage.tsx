@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useOutletContext } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi } from '../lib/api.js';
-import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo } from '../lib/api.js';
+import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
@@ -84,6 +84,11 @@ export function ScenePage() {
   const [generateAllProgress, setGenerateAllProgress] = useState<{ done: number; total: number } | null>(null);
   // Cache-bust key for audio elements after regeneration
   const audioCacheBust = useRef(0);
+  // Dialog mode state
+  const [narrationMode, setNarrationMode] = useState<'monologue' | 'dialog'>('monologue');
+  const [speakerConfigs, setSpeakerConfigs] = useState<Record<string, SpeakerConfig>>({});
+  const [chunkSpeakers, setChunkSpeakers] = useState<Map<number, string>>(new Map());
+  const [modeDirty, setModeDirty] = useState(false);
 
   const { data: engines } = useQuery({
     queryKey: ['tts-engines'],
@@ -110,27 +115,79 @@ export function ScenePage() {
       if (narrationState.tts.voice) setSelectedVoice(narrationState.tts.voice);
       if (narrationState.tts.speed) setSelectedSpeed(narrationState.tts.speed);
     }
+    if (narrationState?.mode) {
+      setNarrationMode(narrationState.mode);
+    }
+    if (narrationState?.speakers && Object.keys(narrationState.speakers).length > 0) {
+      setSpeakerConfigs(narrationState.speakers);
+    }
+    // Load per-chunk speaker assignments
+    if (narrationState?.chunks) {
+      const assignments = new Map<number, string>();
+      narrationState.chunks.forEach((c) => {
+        if (c.speaker) assignments.set(c.index, c.speaker);
+      });
+      setChunkSpeakers(assignments);
+    }
   }, [narrationState]);
 
+  // Initialize speaker configs with sane defaults when entering dialog mode
+  useEffect(() => {
+    if (narrationMode === 'dialog' && Object.keys(speakerConfigs).length === 0 && engines?.length) {
+      const defaultEngine = engines[0]!;
+      const voiceA = defaultEngine.voices[0];
+      const voiceB = defaultEngine.voices[1] ?? defaultEngine.voices[0];
+      setSpeakerConfigs({
+        A: { engine: defaultEngine.id, voice: voiceA?.id ?? '', speed: 1.0, label: 'Speaker A' },
+        B: { engine: defaultEngine.id, voice: voiceB?.id ?? '', speed: 1.0, label: 'Speaker B' },
+      });
+    }
+  }, [narrationMode, speakerConfigs, engines]);
+
+  // Auto-assign alternating speakers when entering dialog mode with no assignments
+  useEffect(() => {
+    if (narrationMode === 'dialog' && narrationState?.chunks && chunkSpeakers.size === 0) {
+      const auto = new Map<number, string>();
+      narrationState.chunks.forEach((c, i) => auto.set(c.index, i % 2 === 0 ? 'A' : 'B'));
+      setChunkSpeakers(auto);
+    }
+  }, [narrationMode, narrationState?.chunks, chunkSpeakers.size]);
+
   const currentEngine = engines?.find((e) => e.id === selectedEngine);
+
+  // Helper: get the engine info for a speaker's engine
+  const getEngineForSpeaker = useCallback((speakerKey: string): TtsEngineInfo | undefined => {
+    const cfg = speakerConfigs[speakerKey];
+    if (!cfg) return undefined;
+    return engines?.find((e) => e.id === cfg.engine);
+  }, [speakerConfigs, engines]);
 
   // Get the current text for a chunk (edited or original)
   const getChunkText = useCallback((chunk: NarrationChunkInfo) => {
     return editedChunks.get(chunk.index) ?? chunk.text;
   }, [editedChunks]);
 
+  // Resolve voice settings for a chunk (dialog uses per-speaker, monologue uses global)
+  const resolveChunkVoice = useCallback((chunk: NarrationChunkInfo): { engine: string; voice: string; speed: number } => {
+    if (narrationMode === 'dialog') {
+      const speaker = chunkSpeakers.get(chunk.index) ?? 'A';
+      const cfg = speakerConfigs[speaker];
+      if (cfg) return { engine: cfg.engine, voice: cfg.voice, speed: cfg.speed };
+    }
+    return { engine: selectedEngine, voice: selectedVoice, speed: selectedSpeed };
+  }, [narrationMode, chunkSpeakers, speakerConfigs, selectedEngine, selectedVoice, selectedSpeed]);
+
   // Generate a single chunk
   const generateChunk = useCallback(async (chunk: NarrationChunkInfo) => {
     if (!projectId || !sceneId) return;
     const text = getChunkText(chunk);
+    const voiceSettings = resolveChunkVoice(chunk);
     setGeneratingChunks((prev) => new Set(prev).add(chunk.index));
     try {
       await narrationApi.generateChunk(projectId, sceneId, {
         chunkIndex: chunk.index,
         text,
-        engine: selectedEngine,
-        voice: selectedVoice,
-        speed: selectedSpeed,
+        ...voiceSettings,
       });
       audioCacheBust.current++;
       queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
@@ -141,11 +198,20 @@ export function ScenePage() {
         return next;
       });
     }
-  }, [projectId, sceneId, selectedEngine, selectedVoice, selectedSpeed, getChunkText, queryClient]);
+  }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient]);
 
   // Generate all chunks sequentially with progress
   const generateAllChunks = useCallback(async () => {
     if (!narrationState?.chunks?.length) return;
+    // Save mode + speakers before generating if dirty
+    if (modeDirty && projectId && sceneId) {
+      await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
+      if (narrationMode === 'dialog') {
+        const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
+        await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
+      }
+      setModeDirty(false);
+    }
     const chunks = narrationState.chunks;
     setGenerateAllProgress({ done: 0, total: chunks.length });
     for (let i = 0; i < chunks.length; i++) {
@@ -154,7 +220,19 @@ export function ScenePage() {
     }
     setGenerateAllProgress(null);
     queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-  }, [narrationState?.chunks, generateChunk, projectId, queryClient]);
+  }, [narrationState?.chunks, generateChunk, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, modeDirty, queryClient]);
+
+  // Save mode + speaker configs
+  const saveNarrationMode = useCallback(async () => {
+    if (!projectId || !sceneId) return;
+    await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
+    if (narrationMode === 'dialog') {
+      const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
+      await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
+    }
+    setModeDirty(false);
+    queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+  }, [projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, queryClient]);
 
   // Save edited chunk texts back to the full script
   const saveChunkEdits = useCallback(async () => {
@@ -169,6 +247,12 @@ export function ScenePage() {
     queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
     queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
   }, [projectId, sceneId, narrationState?.chunks, editedChunks, queryClient]);
+
+  // Speaker color palette
+  const speakerColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
+    A: { bg: '#7aa2f710', border: '#7aa2f740', text: '#7aa2f7', badge: '#7aa2f7' },
+    B: { bg: '#c27adb10', border: '#c27adb40', text: '#c27adb', badge: '#c27adb' },
+  };
 
   // --- Lower Thirds state ---
   const [editingLTs, setEditingLTs] = useState<LowerThirdItem[] | null>(null);
@@ -457,129 +541,324 @@ export function ScenePage() {
           {/* TTS controls + chunked narration */}
           {narrationState?.hasScript && (
             <div>
-              {/* ── Voice selection bar ──────────────────────── */}
-              <div
-                style={{
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 10,
-                  padding: 14,
-                  marginBottom: 16,
-                }}
-              >
-                {/* Saved profiles row */}
-                {voiceProfiles && voiceProfiles.length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-                    {voiceProfiles.map((p: VoiceProfileInfo) => {
-                      const isActive =
-                        selectedEngine === p.engine &&
-                        selectedVoice === p.voice &&
-                        Math.abs(selectedSpeed - p.speed) < 0.05;
-                      return (
-                        <button
-                          key={p.id}
-                          onClick={() => {
-                            setSelectedEngine(p.engine);
-                            setSelectedVoice(p.voice);
-                            setSelectedSpeed(p.speed);
-                          }}
-                          style={{
-                            padding: '5px 12px',
-                            borderRadius: 6,
-                            border: isActive ? '2px solid var(--accent)' : '1px solid var(--border)',
-                            background: isActive ? 'var(--accent)15' : 'transparent',
-                            color: isActive ? 'var(--accent)' : 'var(--fg-muted)',
-                            cursor: 'pointer',
-                            fontSize: 12,
-                            fontWeight: isActive ? 600 : 400,
-                          }}
-                        >
-                          {p.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Engine / Voice / Speed row */}
-                <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
-                  <div style={{ flex: '1 1 140px', minWidth: 120 }}>
-                    <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
-                      Engine
-                    </label>
-                    <select
-                      value={selectedEngine}
-                      onChange={(e) => {
-                        setSelectedEngine(e.target.value);
-                        const eng = engines?.find((x) => x.id === e.target.value);
-                        if (eng?.voices[0]) setSelectedVoice(eng.voices[0].id);
+              {/* ── Mode toggle ─────────────────────────────── */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14,
+              }}>
+                <div style={{
+                  display: 'inline-flex', borderRadius: 8, overflow: 'hidden',
+                  border: '1px solid var(--border)', background: 'var(--surface)',
+                }}>
+                  {(['monologue', 'dialog'] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setNarrationMode(m);
+                        setModeDirty(true);
                       }}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
+                      style={{
+                        padding: '7px 18px',
+                        border: 'none',
+                        background: narrationMode === m ? 'var(--accent)' : 'transparent',
+                        color: narrationMode === m ? '#fff' : 'var(--fg-muted)',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        fontWeight: narrationMode === m ? 700 : 400,
+                        textTransform: 'capitalize',
+                        transition: 'all 0.15s ease',
+                      }}
                     >
-                      {engines?.map((eng) => (
-                        <option key={eng.id} value={eng.id}>{eng.displayName}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ flex: '2 1 180px', minWidth: 150 }}>
-                    <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
-                      Voice
-                    </label>
-                    <select
-                      value={selectedVoice}
-                      onChange={(e) => setSelectedVoice(e.target.value)}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
-                    >
-                      {currentEngine?.voices.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.name}{v.description ? ` — ${v.description}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ flex: '0 0 100px' }}>
-                    <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
-                      Speed {selectedSpeed.toFixed(1)}x
-                    </label>
-                    <input type="range" min={0.5} max={2.0} step={0.1} value={selectedSpeed}
-                      onChange={(e) => setSelectedSpeed(parseFloat(e.target.value))}
-                      style={{ width: '100%' }}
-                    />
-                  </div>
+                      {m === 'monologue' ? 'Single Voice' : 'Dialog'}
+                    </button>
+                  ))}
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  {narrationMode === 'monologue'
+                    ? 'One voice narrates the entire script'
+                    : 'Assign different voices to each paragraph'}
+                </span>
+                {modeDirty && (
                   <button
-                    onClick={() => generateAllChunks()}
-                    disabled={!!generateAllProgress || generatingChunks.size > 0}
+                    onClick={saveNarrationMode}
                     style={{
-                      padding: '7px 16px',
-                      background: 'var(--accent)',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: 6,
-                      cursor: generateAllProgress ? 'wait' : 'pointer',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      opacity: generateAllProgress ? 0.7 : 1,
-                      whiteSpace: 'nowrap',
+                      marginLeft: 'auto', padding: '4px 12px', background: 'var(--accent)', color: '#fff',
+                      border: 'none', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                     }}
                   >
-                    {generateAllProgress
-                      ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}...`
-                      : 'Generate All'}
+                    Save
                   </button>
-                </div>
-
-                {/* Emotive tags hint */}
-                {currentEngine && currentEngine.supportedEmotives.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 10, color: 'var(--fg-muted)' }}>
-                    Tags:{' '}
-                    {currentEngine.supportedEmotives.map((tag) => (
-                      <code key={tag} style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3, marginRight: 3, fontSize: 10 }}>
-                        [{tag}]
-                      </code>
-                    ))}
-                  </div>
                 )}
               </div>
+
+              {/* ── Voice selection bar (Monologue) ──────────── */}
+              {narrationMode === 'monologue' && (
+                <div
+                  style={{
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 10,
+                    padding: 14,
+                    marginBottom: 16,
+                  }}
+                >
+                  {/* Saved profiles row */}
+                  {voiceProfiles && voiceProfiles.length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                      {voiceProfiles.map((p: VoiceProfileInfo) => {
+                        const isActive =
+                          selectedEngine === p.engine &&
+                          selectedVoice === p.voice &&
+                          Math.abs(selectedSpeed - p.speed) < 0.05;
+                        return (
+                          <button
+                            key={p.id}
+                            onClick={() => {
+                              setSelectedEngine(p.engine);
+                              setSelectedVoice(p.voice);
+                              setSelectedSpeed(p.speed);
+                            }}
+                            style={{
+                              padding: '5px 12px',
+                              borderRadius: 6,
+                              border: isActive ? '2px solid var(--accent)' : '1px solid var(--border)',
+                              background: isActive ? 'var(--accent)15' : 'transparent',
+                              color: isActive ? 'var(--accent)' : 'var(--fg-muted)',
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              fontWeight: isActive ? 600 : 400,
+                            }}
+                          >
+                            {p.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Engine / Voice / Speed row */}
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
+                    <div style={{ flex: '1 1 140px', minWidth: 120 }}>
+                      <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
+                        Engine
+                      </label>
+                      <select
+                        value={selectedEngine}
+                        onChange={(e) => {
+                          setSelectedEngine(e.target.value);
+                          const eng = engines?.find((x) => x.id === e.target.value);
+                          if (eng?.voices[0]) setSelectedVoice(eng.voices[0].id);
+                        }}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
+                      >
+                        {engines?.map((eng) => (
+                          <option key={eng.id} value={eng.id}>{eng.displayName}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ flex: '2 1 180px', minWidth: 150 }}>
+                      <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
+                        Voice
+                      </label>
+                      <select
+                        value={selectedVoice}
+                        onChange={(e) => setSelectedVoice(e.target.value)}
+                        style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
+                      >
+                        {currentEngine?.voices.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name}{v.description ? ` — ${v.description}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ flex: '0 0 100px' }}>
+                      <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
+                        Speed {selectedSpeed.toFixed(1)}x
+                      </label>
+                      <input type="range" min={0.5} max={2.0} step={0.1} value={selectedSpeed}
+                        onChange={(e) => setSelectedSpeed(parseFloat(e.target.value))}
+                        style={{ width: '100%' }}
+                      />
+                    </div>
+                    <button
+                      onClick={() => generateAllChunks()}
+                      disabled={!!generateAllProgress || generatingChunks.size > 0}
+                      style={{
+                        padding: '7px 16px',
+                        background: 'var(--accent)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 6,
+                        cursor: generateAllProgress ? 'wait' : 'pointer',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        opacity: generateAllProgress ? 0.7 : 1,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {generateAllProgress
+                        ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}...`
+                        : 'Generate All'}
+                    </button>
+                  </div>
+
+                  {/* Emotive tags hint */}
+                  {currentEngine && currentEngine.supportedEmotives.length > 0 && (
+                    <div style={{ marginTop: 8, fontSize: 10, color: 'var(--fg-muted)' }}>
+                      Tags:{' '}
+                      {currentEngine.supportedEmotives.map((tag) => (
+                        <code key={tag} style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3, marginRight: 3, fontSize: 10 }}>
+                          [{tag}]
+                        </code>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Speaker configs (Dialog mode) ──────────── */}
+              {narrationMode === 'dialog' && (
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16,
+                }}>
+                  {['A', 'B'].map((key) => {
+                    const cfg = speakerConfigs[key];
+                    const colors = speakerColors[key]!;
+                    const speakerEngine = engines?.find((e) => e.id === cfg?.engine);
+
+                    return (
+                      <div
+                        key={key}
+                        style={{
+                          background: colors.bg,
+                          border: `1px solid ${colors.border}`,
+                          borderRadius: 10,
+                          padding: 14,
+                        }}
+                      >
+                        {/* Speaker label */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                            width: 24, height: 24, borderRadius: 12, background: colors.badge,
+                            color: '#fff', fontSize: 11, fontWeight: 800,
+                          }}>
+                            {key}
+                          </span>
+                          <input
+                            value={cfg?.label ?? `Speaker ${key}`}
+                            onChange={(e) => {
+                              setSpeakerConfigs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { engine: 'fake', voice: 'alice', speed: 1.0 }), label: e.target.value },
+                              }));
+                              setModeDirty(true);
+                            }}
+                            style={{
+                              flex: 1, padding: '4px 8px', border: '1px solid var(--border)',
+                              borderRadius: 5, background: 'var(--bg)', color: 'var(--fg)',
+                              fontSize: 13, fontWeight: 600,
+                            }}
+                            placeholder={`Speaker ${key}`}
+                          />
+                        </div>
+
+                        {/* Engine */}
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 2, fontWeight: 600, textTransform: 'uppercase' }}>
+                            Engine
+                          </label>
+                          <select
+                            value={cfg?.engine ?? ''}
+                            onChange={(e) => {
+                              const eng = engines?.find((x) => x.id === e.target.value);
+                              setSpeakerConfigs((prev) => ({
+                                ...prev,
+                                [key]: {
+                                  ...(prev[key] ?? { voice: '', speed: 1.0 }),
+                                  engine: e.target.value,
+                                  voice: eng?.voices[0]?.id ?? '',
+                                },
+                              }));
+                              setModeDirty(true);
+                            }}
+                            style={{ width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
+                          >
+                            {engines?.map((eng) => (
+                              <option key={eng.id} value={eng.id}>{eng.displayName}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Voice */}
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 2, fontWeight: 600, textTransform: 'uppercase' }}>
+                            Voice
+                          </label>
+                          <select
+                            value={cfg?.voice ?? ''}
+                            onChange={(e) => {
+                              setSpeakerConfigs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { engine: 'fake', speed: 1.0 }), voice: e.target.value },
+                              }));
+                              setModeDirty(true);
+                            }}
+                            style={{ width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
+                          >
+                            {speakerEngine?.voices.map((v) => (
+                              <option key={v.id} value={v.id}>
+                                {v.name}{v.description ? ` — ${v.description}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Speed */}
+                        <div>
+                          <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 2, fontWeight: 600, textTransform: 'uppercase' }}>
+                            Speed {(cfg?.speed ?? 1.0).toFixed(1)}x
+                          </label>
+                          <input type="range" min={0.5} max={2.0} step={0.1} value={cfg?.speed ?? 1.0}
+                            onChange={(e) => {
+                              setSpeakerConfigs((prev) => ({
+                                ...prev,
+                                [key]: { ...(prev[key] ?? { engine: 'fake', voice: 'alice' }), speed: parseFloat(e.target.value) },
+                              }));
+                              setModeDirty(true);
+                            }}
+                            style={{ width: '100%' }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Generate All button spanning both columns */}
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => generateAllChunks()}
+                      disabled={!!generateAllProgress || generatingChunks.size > 0}
+                      style={{
+                        padding: '8px 20px',
+                        background: 'var(--accent)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 6,
+                        cursor: generateAllProgress ? 'wait' : 'pointer',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        opacity: generateAllProgress ? 0.7 : 1,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {generateAllProgress
+                        ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}...`
+                        : 'Generate All Chunks'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* ── Progress bar ─────────────────────────────── */}
               {generateAllProgress && (
@@ -638,29 +917,74 @@ export function ScenePage() {
                     const isGenerating = generatingChunks.has(chunk.index);
                     const chunkText = getChunkText(chunk);
                     const isEdited = editedChunks.has(chunk.index);
+                    const chunkSpeaker = chunkSpeakers.get(chunk.index) ?? 'A';
+                    const colors = speakerColors[chunkSpeaker] ?? speakerColors.A!;
+                    const isDialog = narrationMode === 'dialog';
+                    const speakerLabel = isDialog ? (speakerConfigs[chunkSpeaker]?.label ?? `Speaker ${chunkSpeaker}`) : undefined;
 
                     return (
                       <div
                         key={chunk.index}
                         style={{
-                          background: 'var(--surface)',
+                          background: isDialog ? colors.bg : 'var(--surface)',
                           border: chunk.hasAudio
-                            ? '1px solid #5e8a3a40'
-                            : '1px solid var(--border)',
+                            ? `1px solid #5e8a3a40`
+                            : isDialog ? `1px solid ${colors.border}` : '1px solid var(--border)',
                           borderRadius: 10,
                           padding: 14,
                           opacity: isGenerating ? 0.7 : 1,
-                          transition: 'opacity 0.2s',
+                          transition: 'all 0.2s ease',
+                          borderLeft: isDialog ? `3px solid ${colors.badge}` : undefined,
                         }}
                       >
                         {/* Chunk header */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          {/* Speaker toggle (dialog mode) */}
+                          {isDialog && (
+                            <div style={{
+                              display: 'inline-flex', borderRadius: 6, overflow: 'hidden',
+                              border: '1px solid var(--border)',
+                            }}>
+                              {['A', 'B'].map((s) => (
+                                <button
+                                  key={s}
+                                  onClick={() => {
+                                    setChunkSpeakers((prev) => {
+                                      const next = new Map(prev);
+                                      next.set(chunk.index, s);
+                                      return next;
+                                    });
+                                    setModeDirty(true);
+                                  }}
+                                  style={{
+                                    padding: '2px 10px',
+                                    border: 'none',
+                                    background: chunkSpeaker === s ? speakerColors[s]!.badge : 'transparent',
+                                    color: chunkSpeaker === s ? '#fff' : 'var(--fg-muted)',
+                                    cursor: 'pointer',
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    transition: 'all 0.1s',
+                                  }}
+                                >
+                                  {s}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {isDialog && speakerLabel && (
+                            <span style={{ fontSize: 11, color: colors.text, fontWeight: 600 }}>
+                              {speakerLabel}
+                            </span>
+                          )}
+
                           <span style={{
                             fontSize: 10, fontWeight: 700, color: 'var(--fg-muted)',
                             background: 'var(--bg)', padding: '2px 8px', borderRadius: 4,
                             textTransform: 'uppercase', letterSpacing: '0.05em',
                           }}>
-                            Paragraph {chunk.index + 1}
+                            {isDialog ? `¶${chunk.index + 1}` : `Paragraph ${chunk.index + 1}`}
                           </span>
                           {chunk.hasAudio && (
                             <span style={{ fontSize: 10, color: '#5e8a3a', fontWeight: 600 }}>

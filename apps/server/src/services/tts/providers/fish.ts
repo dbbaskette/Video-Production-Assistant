@@ -19,13 +19,25 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { readFile, mkdir, rm } from 'node:fs/promises';
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve the python3 binary to use.
+ * Prefer the project's .venv if it exists, else fall back to system python3.
+ */
+function resolvePython(): string {
+  // Walk up from this file to find the workspace root (.venv lives there)
+  const wsRoot = resolve(import.meta.dirname, '../../../../../..');
+  const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
+  if (existsSync(venvPython)) return venvPython;
+  return 'python3'; // fallback
+}
 
 /** Strip emotive tags like [warm], [confident] from text. */
 function stripEmotiveTags(text: string): string {
@@ -160,7 +172,8 @@ export function createFishTtsProvider(): TtsProvider {
         const cfgScale = process.env.FISH_AUDIO_CFG_SCALE;
         if (cfgScale) args.push('--cfg_scale', cfgScale);
 
-        await execFileAsync('python3', args, {
+        const pythonBin = resolvePython();
+        await execFileAsync(pythonBin, args, {
           cwd: tmpDir,
           timeout: 120_000,  // 2 minute timeout
           maxBuffer: 50 * 1024 * 1024,  // 50 MB

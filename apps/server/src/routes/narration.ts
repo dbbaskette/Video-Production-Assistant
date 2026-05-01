@@ -95,6 +95,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       hasAudio: boolean;
       audio: string | null;
       durationSec: number | null;
+      speaker?: string;
     }> = [];
 
     if (narration?.script) {
@@ -107,6 +108,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
           hasAudio: !!stored?.audio,
           audio: stored?.audio ?? null,
           durationSec: stored?.durationSec ?? null,
+          speaker: stored?.speaker ?? undefined,
         };
       });
     }
@@ -120,6 +122,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       tts: narration?.tts ?? null,
       timingCount: narration?.timings?.length ?? 0,
       chunks,
+      mode: narration?.mode ?? 'monologue',
+      speakers: narration?.speakers ?? {},
     };
   });
 
@@ -226,6 +230,88 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     await saveStoryboard(projectPath, updated);
 
     return { saved: true, script };
+  });
+
+  // PUT /api/projects/:id/scenes/:sceneId/narration/mode — save narration mode + speaker configs
+  app.put('/api/projects/:id/scenes/:sceneId/narration/mode', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const { mode, speakers } = req.body as {
+      mode: 'monologue' | 'dialog';
+      speakers?: Record<string, { engine: string; voice: string; speed: number; label?: string }>;
+    };
+
+    if (!mode || !['monologue', 'dialog'].includes(mode)) {
+      return reply.status(400).send({ error: 'mode must be "monologue" or "dialog"', code: 'invalid_request' });
+    }
+
+    const projectPath = await resolveProjectPath(store, id);
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene)
+      return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+
+    const narration = {
+      ...(scene.narration ?? { script: '' }),
+      mode,
+      speakers: speakers ?? scene.narration?.speakers ?? {},
+    };
+
+    const updated = updateScene(sb, sceneId, { narration: narration as any });
+    await saveStoryboard(projectPath, updated);
+
+    return { saved: true };
+  });
+
+  // PUT /api/projects/:id/scenes/:sceneId/narration/speakers — save per-chunk speaker assignments
+  app.put('/api/projects/:id/scenes/:sceneId/narration/speakers', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const { assignments } = req.body as {
+      assignments: Array<{ index: number; speaker: string }>;
+    };
+
+    if (!assignments || !Array.isArray(assignments)) {
+      return reply.status(400).send({ error: 'assignments array is required', code: 'invalid_request' });
+    }
+
+    const projectPath = await resolveProjectPath(store, id);
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene)
+      return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+
+    // Update speaker assignments on existing chunks (or create stub chunks)
+    const existingChunks = scene.narration?.chunks ?? [];
+    const updatedChunks = [...existingChunks];
+
+    for (const { index, speaker } of assignments) {
+      const ci = updatedChunks.findIndex((c) => c.index === index);
+      if (ci >= 0) {
+        updatedChunks[ci] = { ...updatedChunks[ci]!, speaker };
+      } else {
+        // Create a stub chunk with speaker assignment (text filled from paragraphs)
+        const paragraphs = scene.narration?.script ? splitIntoParagraphs(scene.narration.script) : [];
+        updatedChunks.push({
+          index,
+          text: paragraphs[index] ?? '',
+          speaker,
+        });
+      }
+    }
+    updatedChunks.sort((a, b) => a.index - b.index);
+
+    const narration = {
+      ...(scene.narration ?? { script: '' }),
+      chunks: updatedChunks,
+    };
+
+    const updated = updateScene(sb, sceneId, { narration: narration as any });
+    await saveStoryboard(projectPath, updated);
+
+    return { saved: true };
   });
 
   // GET /api/projects/:id/scenes/:sceneId/narration/audio — stream full MP3

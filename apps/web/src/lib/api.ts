@@ -325,6 +325,14 @@ export interface NarrationChunkInfo {
   hasAudio: boolean;
   audio: string | null;
   durationSec: number | null;
+  speaker?: string;   // "A" | "B" — dialog mode
+}
+
+export interface SpeakerConfig {
+  engine: string;
+  voice: string;
+  speed: number;
+  label?: string;
 }
 
 export interface NarrationState {
@@ -336,6 +344,8 @@ export interface NarrationState {
   tts: { engine?: string; voice?: string; speed?: number } | null;
   timingCount: number;
   chunks: NarrationChunkInfo[];
+  mode: 'monologue' | 'dialog';
+  speakers: Record<string, SpeakerConfig>;
 }
 
 export interface NarrationResult {
@@ -405,6 +415,21 @@ export const narrationApi = {
     script: string,
   ): Promise<{ saved: boolean; script: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/script`, { script });
+  },
+  async saveMode(
+    projectId: string,
+    sceneId: string,
+    mode: 'monologue' | 'dialog',
+    speakers: Record<string, SpeakerConfig>,
+  ): Promise<{ saved: boolean }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/mode`, { mode, speakers });
+  },
+  async saveSpeakerAssignments(
+    projectId: string,
+    sceneId: string,
+    assignments: Array<{ index: number; speaker: string }>,
+  ): Promise<{ saved: boolean }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/speakers`, { assignments });
   },
   audioUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/audio`;
