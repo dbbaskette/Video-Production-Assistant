@@ -70,15 +70,149 @@ Music is uplifting and forward-leaning, never frantic.
 Maintain the safe zone. Use the mono variant on busy backgrounds.
 `;
 
+const IDEATION_RESPONSE = `Great idea! I've broken this down into a logical sequence of scenes that will walk the viewer through the full workflow.
+
+Here's my proposed storyboard:
+
+\`\`\`json
+{"scenes": [
+  {"id": "scene-01", "name": "Introduction and Context", "description": "Open with a brief overview of what we're building and why. Show the end result first to hook the viewer, then explain we'll walk through the setup step by step.", "type": "desktop"},
+  {"id": "scene-02", "name": "Prerequisites and Setup", "description": "Show the tools and dependencies needed. Walk through installing or verifying each prerequisite is in place before we begin the main configuration.", "type": "terminal"},
+  {"id": "scene-03", "name": "Core Configuration", "description": "The main event — walk through the primary configuration step by step. Show each file edit, each setting change, explaining what each option does and why we chose these values.", "type": "desktop"},
+  {"id": "scene-04", "name": "First Run and Verification", "description": "Run the configured system for the first time. Show the expected output, verify everything is working correctly, and troubleshoot any common issues.", "type": "terminal"},
+  {"id": "scene-05", "name": "Practical Usage Demo", "description": "Now that everything is set up, demonstrate a real-world use case. Show the system solving an actual problem the viewer would encounter in their daily work.", "type": "browser"},
+  {"id": "scene-06", "name": "Recap and Next Steps", "description": "Summarize what we accomplished, highlight key takeaways, and point the viewer to additional resources or advanced topics they can explore on their own.", "type": "desktop"}
+]}
+\`\`\`
+
+Each scene is designed to be 30-60 seconds, keeping the total demo under 5 minutes. Want me to adjust any scenes or add more detail to specific sections?`;
+
+const IDEATION_REFINE_RESPONSE = `Good call — I've updated the scenes based on your feedback.
+
+\`\`\`json
+{"scenes": [
+  {"id": "scene-01", "name": "Introduction and Context", "description": "Open with a brief overview of what we're building and why. Show the end result first to hook the viewer, then explain we'll walk through the setup step by step.", "type": "desktop"},
+  {"id": "scene-02", "name": "Prerequisites and Setup", "description": "Show the tools and dependencies needed. Walk through installing or verifying each prerequisite is in place before we begin the main configuration.", "type": "terminal"},
+  {"id": "scene-03", "name": "Core Configuration", "description": "The main event — walk through the primary configuration step by step. Show each file edit, each setting change, explaining what each option does and why we chose these values.", "type": "desktop"},
+  {"id": "scene-04", "name": "First Run and Verification", "description": "Run the configured system for the first time. Show the expected output, verify everything is working correctly, and troubleshoot any common issues.", "type": "terminal"},
+  {"id": "scene-05", "name": "Practical Usage Demo", "description": "Now that everything is set up, demonstrate a real-world use case. Show the system solving an actual problem the viewer would encounter in their daily work.", "type": "browser"},
+  {"id": "scene-06", "name": "Recap and Next Steps", "description": "Summarize what we accomplished, highlight key takeaways, and point the viewer to additional resources or advanced topics they can explore on their own.", "type": "desktop"}
+]}
+\`\`\`
+
+I've refined the storyboard. Let me know if you want to adjust anything else, or accept this storyboard to move forward!`;
+
+function isIdeationPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('ideation') ||
+    opts.systemPrompt.toLowerCase().includes('storyboard') ||
+    opts.systemPrompt.toLowerCase().includes('demo video planner');
+}
+
+function isSceneDescriptionPrompt(opts: LlmCompleteOptions): boolean {
+  const lower = opts.systemPrompt.toLowerCase();
+  return lower.includes('scene name and description') &&
+    !lower.includes('demo video planner');
+}
+
+function isNarrationWriterPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('narration script writer');
+}
+
+function isLowerThirdPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('lower-third recommender');
+}
+
+function isQualityReviewPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('quality review');
+}
+
+function isSceneSplitterPrompt(opts: LlmCompleteOptions): boolean {
+  const lower = opts.systemPrompt.toLowerCase();
+  return lower.includes('scene splitter') && !lower.includes('scene name and description');
+}
+
 export function createFakeLlm(): LlmClient {
+  let ideationCallCount = 0;
   return {
     async complete(opts: LlmCompleteOptions): Promise<LlmCompletion> {
+      // Scene splitter — propose boundaries from a single recording
+      if (isSceneSplitterPrompt(opts)) {
+        const durationMatch = opts.userPrompt.match(/Duration:\s*([\d.]+)/);
+        const totalDuration = durationMatch?.[1] ? parseFloat(durationMatch[1]) : 180;
+        const sceneCount = 3;
+        const sceneDuration = totalDuration / sceneCount;
+        const boundaries = Array.from({ length: sceneCount }, (_, i) => ({
+          start_sec: Math.round(sceneDuration * i * 100) / 100,
+          end_sec: Math.round(sceneDuration * (i + 1) * 100) / 100,
+          suggested_name: ['Introduction and Setup', 'Core Feature Demo', 'Summary and Wrap-up'][i],
+        }));
+        return { text: JSON.stringify(boundaries) };
+      }
+
+      // Quality review
+      if (isQualityReviewPrompt(opts)) {
+        return {
+          text: JSON.stringify([
+            { sceneId: 'scene-01', severity: 'info', category: 'description', message: 'Scene description is clear and actionable.' },
+            { sceneId: 'scene-02', severity: 'warn', category: 'recording', message: 'No recording uploaded yet.' },
+            { sceneId: 'scene-03', severity: 'warn', category: 'script', message: 'No narration script generated.' },
+            { sceneId: 'scene-04', severity: 'info', category: 'lower_thirds', message: 'Lower thirds look good.' },
+          ]),
+        };
+      }
+
+      // Lower-third recommender
+      if (isLowerThirdPrompt(opts)) {
+        const nameMatch = opts.userPrompt.match(/Scene:\s*(.+)/);
+        const sceneName = nameMatch?.[1]?.trim() ?? 'Demo Scene';
+        return {
+          text: JSON.stringify([
+            { title: sceneName, subtitle: 'Getting Started', style: 'frosted', in_sec: 1.5, out_sec: 5.5 },
+            { title: 'Key Concept', style: 'minimal', in_sec: 12.0, out_sec: 16.0 },
+          ]),
+        };
+      }
+
+      // Narration script generation
+      if (isNarrationWriterPrompt(opts)) {
+        const nameMatch = opts.userPrompt.match(/Scene:\s*(.+)/);
+        const sceneName = nameMatch?.[1]?.trim() ?? 'this scene';
+        return {
+          text: `[warm] Let's take a look at ${sceneName}. This is where things really come together.\n\n[confident] Notice how we walk through each step carefully. Every action here builds on what we set up earlier.\n\n[thoughtful] The key thing to understand is why this matters — it's not just about the configuration, it's about establishing a pattern you can reuse.\n\n[calm] And that's it for this section. Let's move on to what comes next.`,
+        };
+      }
+
+      // Video analysis / scene description (must come before ideation — both prompts contain "storyboard")
+      if (isSceneDescriptionPrompt(opts)) {
+        const sceneMatch = opts.userPrompt.match(/Scene (\d+) of (\d+)/);
+        const sceneNum = sceneMatch?.[1] ? parseInt(sceneMatch[1], 10) : 1;
+        return {
+          text: JSON.stringify({
+            name: `Scene ${sceneNum} Demo`,
+            description: `This scene demonstrates step ${sceneNum} of the workflow. The recording shows the key actions and configuration needed for this part of the demo.`,
+            type: sceneNum % 2 === 0 ? 'terminal' : 'desktop',
+          }),
+        };
+      }
+
+      // Ideation requests
+      if (isIdeationPrompt(opts)) {
+        ideationCallCount++;
+        if (ideationCallCount === 1) {
+          return { text: IDEATION_RESPONSE };
+        }
+        return { text: IDEATION_REFINE_RESPONSE };
+      }
+
+      // Brand token extraction (JSON)
       if (opts.responseFormat === 'json') {
         const nameMatch = opts.userPrompt.match(/<<NAME=([^>]+)>>/);
         const name = nameMatch ? nameMatch[1]!.trim() : DEFAULT_TOKENS.name;
         const tokens = { ...DEFAULT_TOKENS, name };
         return { text: JSON.stringify(tokens, null, 2) };
       }
+
+      // Brand rationale (default)
       return { text: SAMPLE_BODY };
     },
   };

@@ -10,6 +10,8 @@ import {
   type BrandWithDoc,
   type DesignMdFrontMatter,
   type Job,
+  type Storyboard,
+  type Scene,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -85,6 +87,314 @@ export const brandsApi = {
   },
   downloadUrl(slug: string): string {
     return `${BASE}/api/brands/${slug}/download`;
+  },
+};
+
+export interface IdeationMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  scenes?: Scene[];
+  timestamp: string;
+}
+
+export interface IdeationState {
+  projectId: string;
+  messages: IdeationMessage[];
+  proposedScenes: Scene[];
+}
+
+export const storyboardApi = {
+  async get(projectId: string): Promise<Storyboard | null> {
+    try {
+      return await request<Storyboard>('GET', `/api/projects/${projectId}/storyboard`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+  async save(projectId: string, storyboard: Storyboard): Promise<Storyboard> {
+    return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard`, storyboard);
+  },
+  async addScene(projectId: string, scene: Partial<Scene> & { name: string; description: string }): Promise<Storyboard> {
+    return request<Storyboard>('POST', `/api/projects/${projectId}/storyboard/scenes`, scene);
+  },
+  async updateScene(projectId: string, sceneId: string, patch: Partial<Scene>): Promise<Storyboard> {
+    return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/scenes/${sceneId}`, patch);
+  },
+  async removeScene(projectId: string, sceneId: string): Promise<Storyboard> {
+    return request<Storyboard>('DELETE', `/api/projects/${projectId}/storyboard/scenes/${sceneId}`);
+  },
+  async reorderScenes(projectId: string, orderedIds: string[]): Promise<Storyboard> {
+    return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/reorder`, { orderedIds });
+  },
+};
+
+export const ideationApi = {
+  async getSession(projectId: string): Promise<IdeationState> {
+    return request<IdeationState>('GET', `/api/projects/${projectId}/ideation`);
+  },
+  async sendMessage(projectId: string, content: string): Promise<IdeationMessage> {
+    return request<IdeationMessage>('POST', `/api/projects/${projectId}/ideation/message`, { content });
+  },
+  async accept(projectId: string): Promise<Storyboard> {
+    return request<Storyboard>('POST', `/api/projects/${projectId}/ideation/accept`);
+  },
+};
+
+export interface VideoMetadata {
+  duration_sec: number;
+  width: number;
+  height: number;
+  codec: string;
+  fps: number;
+  size_bytes: number;
+}
+
+export interface IngestResult {
+  sceneId: string;
+  relativePath: string;
+  metadata: VideoMetadata;
+}
+
+export const recordingsApi = {
+  async uploadForScene(projectId: string, sceneId: string, file: File): Promise<IngestResult> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
+    }
+    return res.json();
+  },
+
+  async uploadBulk(projectId: string, files: File[]): Promise<{ results: IngestResult[]; assignedCount: number; totalScenes: number }> {
+    const form = new FormData();
+    files.forEach((f, i) => form.append(`file${i}`, f));
+    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/bulk`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
+    }
+    return res.json();
+  },
+
+  async getMetadata(projectId: string, sceneId: string): Promise<VideoMetadata> {
+    return request<VideoMetadata>('GET', `/api/projects/${projectId}/scenes/${sceneId}/recording/metadata`);
+  },
+
+  async generateStoryboard(projectId: string, files: File[]): Promise<Storyboard> {
+    const form = new FormData();
+    files.forEach((f, i) => form.append(`file${i}`, f));
+    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/generate-storyboard`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
+    }
+    return res.json();
+  },
+
+  async proposeSplit(projectId: string, file: File): Promise<{ boundaries: SceneBoundary[]; sourceFile: string; metadata: VideoMetadata }> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/propose-split`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      throw new ApiError(json?.error ?? `Propose split failed: ${res.status}`, res.status, json);
+    }
+    return res.json();
+  },
+
+  async executeSplit(projectId: string, boundaries: SceneBoundary[]): Promise<Storyboard> {
+    return request<Storyboard>('POST', `/api/projects/${projectId}/recordings/execute-split`, { boundaries });
+  },
+};
+
+export interface ScriptState {
+  sceneId: string;
+  script: string | null;
+  hasRecording: boolean;
+}
+
+export const scriptApi = {
+  async get(projectId: string, sceneId: string): Promise<ScriptState> {
+    return request<ScriptState>('GET', `/api/projects/${projectId}/scenes/${sceneId}/script`);
+  },
+  async generate(projectId: string, sceneId: string): Promise<{ sceneId: string; script: string }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`);
+  },
+  async save(projectId: string, sceneId: string, script: string): Promise<{ sceneId: string; script: string }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/script`, { script });
+  },
+};
+
+export interface ReviewItem {
+  sceneId: string;
+  severity: 'info' | 'warn' | 'issue';
+  category: string;
+  message: string;
+}
+
+export interface ReviewResult {
+  items: ReviewItem[];
+  summary: { total: number; info: number; warn: number; issue: number };
+  status: 'ok' | 'warnings' | 'issues' | null;
+  reviewedAt: string | null;
+}
+
+export const qualityReviewApi = {
+  async run(projectId: string): Promise<ReviewResult> {
+    return request<ReviewResult>('POST', `/api/projects/${projectId}/review`);
+  },
+  async get(projectId: string): Promise<ReviewResult> {
+    return request<ReviewResult>('GET', `/api/projects/${projectId}/review`);
+  },
+};
+
+export interface LowerThirdItem {
+  title: string;
+  subtitle?: string;
+  style: 'frosted' | 'solid' | 'minimal';
+  in_sec: number;
+  out_sec: number;
+}
+
+export const lowerThirdsApi = {
+  async get(projectId: string, sceneId: string): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
+    return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`);
+  },
+  async recommend(projectId: string, sceneId: string): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds/recommend`);
+  },
+  async save(projectId: string, sceneId: string, lowerThirds: LowerThirdItem[]): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`, { lowerThirds });
+  },
+};
+
+export interface TtsVoiceInfo {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface TtsEngineInfo {
+  id: string;
+  displayName: string;
+  voices: TtsVoiceInfo[];
+  supportedEmotives: string[];
+}
+
+export interface VoiceProfileInfo {
+  id: string;
+  name: string;
+  engine: string;
+  voice: string;
+  speed: number;
+  description?: string;
+}
+
+export interface NarrationState {
+  sceneId: string;
+  hasScript: boolean;
+  hasAudio: boolean;
+  audio: string | null;
+  subtitles: { srt?: string; vtt?: string } | null;
+  tts: { engine?: string; voice?: string; speed?: number } | null;
+  timingCount: number;
+}
+
+export interface NarrationResult {
+  audioPath: string;
+  srtPath: string;
+  vttPath: string;
+  durationSec: number;
+  timingCount: number;
+  unsupportedEmotives: string[];
+}
+
+export const ttsApi = {
+  async listEngines(): Promise<TtsEngineInfo[]> {
+    return request<TtsEngineInfo[]>('GET', '/api/tts/engines');
+  },
+};
+
+export const voiceApi = {
+  async list(): Promise<VoiceProfileInfo[]> {
+    return request<VoiceProfileInfo[]>('GET', '/api/voices');
+  },
+  async create(profile: { name: string; engine: string; voice: string; speed?: number; description?: string }): Promise<VoiceProfileInfo> {
+    return request<VoiceProfileInfo>('POST', '/api/voices', profile);
+  },
+  async remove(profileId: string): Promise<void> {
+    await request('DELETE', `/api/voices/${profileId}`);
+  },
+};
+
+export const narrationApi = {
+  async get(projectId: string, sceneId: string): Promise<NarrationState> {
+    return request<NarrationState>('GET', `/api/projects/${projectId}/scenes/${sceneId}/narration`);
+  },
+  async generate(
+    projectId: string,
+    sceneId: string,
+    opts: { engine: string; voice: string; speed?: number },
+  ): Promise<NarrationResult> {
+    return request<NarrationResult>(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/narration/generate`,
+      opts,
+    );
+  },
+  audioUrl(projectId: string, sceneId: string): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/audio`;
+  },
+};
+
+export const overlayApi = {
+  async render(projectId: string, sceneId: string): Promise<{ outputPath: string; durationSec: number }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/overlay/render`);
+  },
+  videoUrl(projectId: string, sceneId: string): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/overlay/video`;
+  },
+};
+
+export interface SceneBoundary {
+  start_sec: number;
+  end_sec: number;
+  suggested_name: string;
+}
+
+export interface ExportManifest {
+  projectName: string;
+  exportedAt: string;
+  scenes: Array<{
+    sceneId: string;
+    sceneName: string;
+    files: string[];
+  }>;
+  totalFiles: number;
+}
+
+export const exportApi = {
+  async run(projectId: string): Promise<{ exportDir: string; manifest: ExportManifest }> {
+    return request('POST', `/api/projects/${projectId}/export`);
+  },
+  async manifest(projectId: string): Promise<ExportManifest> {
+    return request('GET', `/api/projects/${projectId}/export/manifest`);
   },
 };
 

@@ -7,7 +7,7 @@ import { jobQueue } from '../lib/job-queue.js';
 import { listBrands, readBrand, deleteBrand, updateBrandDoc } from '../services/brand/store.js';
 import { runBrandExtractJob, runBrandGenerateJob } from '../services/brand-generation/index.js';
 import type { ExtractInput } from '../services/document-extract/index.js';
-import { createFakeLlm } from '../services/llm/fake.js';
+import type { LlmClient } from '../services/llm/index.js';
 import { DesignMdFrontMatter, ProjectTrackerSchema, ProjectSchema } from '@vpa/shared';
 import { forkBrand } from '../services/brand/fork.js';
 import { setDefault } from '../services/brand/registry.js';
@@ -19,6 +19,7 @@ export interface BrandRouteOptions {
   registryFile: string;
   workspaceRoot: string;
   trackerPath?: string;
+  llm: LlmClient;
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.md', '.markdown', '.txt']);
@@ -69,8 +70,7 @@ export async function registerBrandRoutes(
   app: FastifyInstance,
   opts: BrandRouteOptions,
 ): Promise<void> {
-  const { paths, registryFile, workspaceRoot } = opts;
-  const llm = createFakeLlm();
+  const { paths, registryFile, workspaceRoot, llm } = opts;
 
   // Track slugs that have an active extract job (to prevent duplicates before brand is persisted)
   const pendingSlugs = new Set<string>();

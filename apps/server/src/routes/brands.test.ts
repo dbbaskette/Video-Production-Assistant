@@ -65,11 +65,13 @@ beforeEach(async () => {
   app = Fastify();
   await app.register(multipart, { limits: { fileSize: 50_000_000, files: 10 } });
   paths = brandPaths(tmp, vpaDir);
+  const { createFakeLlm } = await import('../services/llm/fake.js');
   await registerBrandRoutes(app, {
     paths,
     registryFile: paths.registryFile,
     workspaceRoot: tmp,
     trackerPath: join(vpaDir, 'projects.json'),
+    llm: createFakeLlm(),
   });
   await registerJobRoutes(app);
 });

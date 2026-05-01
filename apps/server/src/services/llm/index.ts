@@ -16,4 +16,5 @@ export interface LlmClient {
 }
 
 export { createFakeLlm } from './fake.js';
+export { createLlm } from './factory.js';
 export { loadPrompt } from './prompts.js';

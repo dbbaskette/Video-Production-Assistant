@@ -17,6 +17,7 @@ async function buildTestServer() {
     vpaHome: home,
     projectsDefault: projects,
     webOrigin: 'http://localhost:5173',
+    llm: { provider: 'fake' as const },
   };
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
   const app = Fastify();

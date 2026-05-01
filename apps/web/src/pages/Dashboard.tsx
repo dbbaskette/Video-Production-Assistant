@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ProjectList } from '../components/ProjectList.js';
 import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
@@ -40,15 +40,18 @@ function BrandsSection() {
   );
 }
 
-type Modal = 'none' | 'new' | 'open';
+type Modal = 'none' | 'new' | 'open' | 'new-ideation';
 
 export function Dashboard() {
   const [modal, setModal] = useState<Modal>('none');
+  const navigate = useNavigate();
 
-  // For Plan 01, opening a project just logs to the console — the project workspace
-  // page is built in Plan 02. The dialogs invalidate the list on success.
   const handleOpen = (id: string) => {
-    console.info('open project', id);
+    navigate(`/project/${id}`);
+  };
+
+  const handleIdeationCreated = (id: string) => {
+    navigate(`/project/${id}/ideation`);
   };
 
   return (
@@ -75,7 +78,7 @@ export function Dashboard() {
       >
         <button
           aria-label="Ideate a new demo"
-          onClick={() => setModal('new')}
+          onClick={() => setModal('new-ideation')}
           style={{
             background: 'var(--accent-bg)',
             border: '1px solid var(--accent)',
@@ -134,6 +137,11 @@ export function Dashboard() {
         open={modal === 'new'}
         onClose={() => setModal('none')}
         onCreated={handleOpen}
+      />
+      <NewProjectDialog
+        open={modal === 'new-ideation'}
+        onClose={() => setModal('none')}
+        onCreated={handleIdeationCreated}
       />
       <OpenFolderDialog
         open={modal === 'open'}

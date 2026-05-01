@@ -1,0 +1,225 @@
+import { useParams, useOutletContext, Link } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { qualityReviewApi, storyboardApi } from '../lib/api.js';
+import type { ReviewItem } from '../lib/api.js';
+import type { ProjectTrackerEntry } from '@vpa/shared';
+
+interface WorkspaceContext {
+  project: ProjectTrackerEntry;
+}
+
+const severityColors: Record<string, string> = {
+  info: '#7aa2f7',
+  warn: '#f4a83a',
+  issue: '#c25d5d',
+};
+
+const severityLabels: Record<string, string> = {
+  info: 'Info',
+  warn: 'Warning',
+  issue: 'Issue',
+};
+
+export function ReviewPage() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const { project } = useOutletContext<WorkspaceContext>();
+  const queryClient = useQueryClient();
+
+  const { data: review } = useQuery({
+    queryKey: ['review', projectId],
+    queryFn: () => qualityReviewApi.get(projectId!),
+    enabled: !!projectId,
+  });
+
+  const { data: storyboard } = useQuery({
+    queryKey: ['storyboard', projectId],
+    queryFn: () => storyboardApi.get(projectId!),
+    enabled: !!projectId,
+  });
+
+  const runMutation = useMutation({
+    mutationFn: () => qualityReviewApi.run(projectId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['review', projectId] });
+    },
+  });
+
+  // Group items by scene
+  const itemsByScene = new Map<string, ReviewItem[]>();
+  if (review?.items) {
+    for (const item of review.items) {
+      const list = itemsByScene.get(item.sceneId) ?? [];
+      list.push(item);
+      itemsByScene.set(item.sceneId, list);
+    }
+  }
+
+  return (
+    <div style={{ padding: '32px 48px', maxWidth: 900 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ margin: 0, fontSize: 22 }}>Quality Review</h1>
+        <button
+          onClick={() => runMutation.mutate()}
+          disabled={runMutation.isPending}
+          style={{
+            padding: '10px 20px',
+            background: 'var(--accent)',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            cursor: runMutation.isPending ? 'wait' : 'pointer',
+            fontSize: 13,
+            fontWeight: 600,
+            opacity: runMutation.isPending ? 0.7 : 1,
+          }}
+        >
+          {runMutation.isPending ? 'Reviewing...' : 'Run Quality Review'}
+        </button>
+      </div>
+
+      {runMutation.isError && (
+        <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 16 }}>
+          Review failed:{' '}
+          {runMutation.error instanceof Error ? runMutation.error.message : 'Unknown error'}
+        </p>
+      )}
+
+      {/* Summary bar */}
+      {review?.status && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 24,
+            padding: 16,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            marginBottom: 24,
+            alignItems: 'center',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color:
+                review.status === 'ok'
+                  ? '#5e8a3a'
+                  : review.status === 'warnings'
+                    ? '#f4a83a'
+                    : '#c25d5d',
+            }}
+          >
+            {review.status === 'ok'
+              ? 'All Good'
+              : review.status === 'warnings'
+                ? 'Warnings Found'
+                : 'Issues Found'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            {review.summary.total} items: {review.summary.info} info, {review.summary.warn} warnings, {review.summary.issue} issues
+          </div>
+          {review.reviewedAt && (
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginLeft: 'auto' }}>
+              Last reviewed: {new Date(review.reviewedAt).toLocaleString()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* No review yet */}
+      {(!review?.status) && (
+        <div
+          style={{
+            padding: 48,
+            textAlign: 'center',
+            color: 'var(--fg-muted)',
+            border: '1px dashed var(--border)',
+            borderRadius: 8,
+          }}
+        >
+          <p style={{ fontSize: 14, marginBottom: 4 }}>No review has been run yet.</p>
+          <p style={{ fontSize: 12 }}>
+            Click <strong>Run Quality Review</strong> to inspect your storyboard for issues.
+          </p>
+        </div>
+      )}
+
+      {/* Items grouped by scene */}
+      {review?.status && Array.from(itemsByScene.entries()).map(([sceneId, items]) => {
+        const scene = storyboard?.scenes.find((s) => s.id === sceneId);
+        return (
+          <div
+            key={sceneId}
+            style={{
+              marginBottom: 16,
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '12px 16px',
+                borderBottom: '1px solid var(--border)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 14 }}>
+                {scene?.name ?? sceneId}
+              </span>
+              <Link
+                to={`/project/${projectId}/scene/${sceneId}`}
+                style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}
+              >
+                Go to scene
+              </Link>
+            </div>
+            {items.map((item, idx) => (
+              <div
+                key={idx}
+                style={{
+                  padding: '10px 16px',
+                  borderBottom: idx < items.length - 1 ? '1px solid var(--border)' : 'none',
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'flex-start',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 6px',
+                    borderRadius: 3,
+                    background: severityColors[item.severity] ?? '#666',
+                    color: '#fff',
+                    fontWeight: 600,
+                    textTransform: 'uppercase',
+                    whiteSpace: 'nowrap',
+                    marginTop: 2,
+                  }}
+                >
+                  {severityLabels[item.severity] ?? item.severity}
+                </span>
+                <span style={{ fontSize: 13, color: 'var(--fg)' }}>{item.message}</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--fg-muted)',
+                    marginLeft: 'auto',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {item.category}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
