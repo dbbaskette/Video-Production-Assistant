@@ -61,7 +61,7 @@ export async function buildServer() {
   await registerBrandRoutes(app, {
     paths: bPaths,
     registryFile: bPaths.registryFile,
-    workspaceRoot: config.vpaHome,
+    workspaceRoot: wsRoot,
     llm,
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));

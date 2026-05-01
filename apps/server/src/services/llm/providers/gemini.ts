@@ -1,6 +1,6 @@
 import type { LlmClient, LlmCompletion, LlmCompleteOptions } from '../index.js';
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
+const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 
 export function createGeminiLlm(apiKey: string, model?: string): LlmClient {
   const resolvedModel = model ?? DEFAULT_MODEL;

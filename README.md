@@ -61,7 +61,7 @@ Copy `.env.example` to `.env` and adjust:
 | `VPA_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app API base URL |
 | `VPA_LLM_PROVIDER` | `fake` | LLM backend: `fake`, `claude-code`, `gemini`, or `anthropic` |
-| `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.0-flash`) |
+| `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.5-flash-lite`) |
 | `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` |
 | `ANTHROPIC_API_KEY` | — | Required when `VPA_LLM_PROVIDER=anthropic` (direct REST API) |
 

@@ -45,7 +45,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     llmApiKey = env.ANTHROPIC_API_KEY;
   }
   // 'claude-code' uses `claude -p` subprocess — no API key needed
-  const llmModel = env.VPA_LLM_MODEL || undefined;
+
+  // Per-provider model env vars take precedence over the generic VPA_LLM_MODEL
+  let llmModel: string | undefined;
+  if (llmProvider === 'gemini') {
+    llmModel = env.GEMINI_MODEL || env.VPA_LLM_MODEL || undefined;
+  } else if (llmProvider === 'claude-code') {
+    llmModel = env.CLAUDE_MODEL || env.VPA_LLM_MODEL || undefined;
+  } else if (llmProvider === 'anthropic') {
+    llmModel = env.ANTHROPIC_MODEL || env.VPA_LLM_MODEL || undefined;
+  } else {
+    llmModel = env.VPA_LLM_MODEL || undefined;
+  }
 
   const llm: LlmConfig = { provider: llmProvider, apiKey: llmApiKey, model: llmModel };
 
