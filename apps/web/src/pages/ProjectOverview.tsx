@@ -152,20 +152,35 @@ export function ProjectOverview() {
       {/* Action buttons */}
       <div style={{ marginTop: 32, display: 'flex', gap: 12 }}>
         {!hasStoryboard ? (
-          <Link
-            to={`/project/${project.id}/ideation`}
-            style={{
-              padding: '12px 24px',
-              background: 'var(--accent-bg)',
-              border: '1px solid var(--accent)',
-              borderRadius: 8,
-              color: 'var(--fg)',
-              textDecoration: 'none',
-              fontWeight: 600,
-            }}
-          >
-            Start Ideation
-          </Link>
+          <>
+            <Link
+              to={`/project/${project.id}/ideation`}
+              style={{
+                padding: '12px 24px',
+                background: 'var(--accent-bg)',
+                border: '1px solid var(--accent)',
+                borderRadius: 8,
+                color: 'var(--fg)',
+                textDecoration: 'none',
+                fontWeight: 600,
+              }}
+            >
+              Start Ideation
+            </Link>
+            <Link
+              to={`/project/${project.id}/recordings`}
+              style={{
+                padding: '12px 24px',
+                background: 'var(--bg-elev)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'var(--fg)',
+                textDecoration: 'none',
+              }}
+            >
+              Upload Recordings
+            </Link>
+          </>
         ) : (
           <>
             <Link

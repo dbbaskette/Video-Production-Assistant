@@ -23,12 +23,15 @@ export function BrandPicker({ value, onChange }: Props) {
 
   return (
     <div className="brand-picker">
-      <label className="label">Brand</label>
       {selectedEntry ? (
         <div className="brand-picker__current">
           <span>{selectedEntry.name}</span>
-          {selectedEntry.id === data?.default_brand_id && <span title="Default">Default</span>}
-          <button type="button" onClick={() => onChange(null)} style={{ marginLeft: 'auto' }}>Change</button>
+          {selectedEntry.id === data?.default_brand_id && (
+            <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--accent)', background: 'var(--accent-bg)', padding: '2px 7px', borderRadius: 999 }}>
+              Default
+            </span>
+          )}
+          <button type="button" onClick={() => onChange(null)}>Change</button>
         </div>
       ) : (
         <>
@@ -41,7 +44,8 @@ export function BrandPicker({ value, onChange }: Props) {
           <ul className="brand-picker__list">
             <li>
               <button type="button" className="brand-picker__option" onClick={() => onChange(null)}>
-                None — unbranded project
+                <span style={{ color: 'var(--fg-dim)' }}>None</span>
+                <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}> — unbranded project</span>
               </button>
             </li>
             {filtered.map((b) => (
@@ -52,7 +56,11 @@ export function BrandPicker({ value, onChange }: Props) {
                   onClick={() => onChange({ id: b.id, applied_version: b.version })}
                 >
                   {b.name}
-                  {b.id === data?.default_brand_id && <span style={{ fontSize: 11, color: 'var(--accent)' }}> (default)</span>}
+                  {b.id === data?.default_brand_id && (
+                    <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--accent)', background: 'var(--accent-bg)', padding: '2px 7px', borderRadius: 999, marginLeft: 6 }}>
+                      Default
+                    </span>
+                  )}
                 </button>
               </li>
             ))}

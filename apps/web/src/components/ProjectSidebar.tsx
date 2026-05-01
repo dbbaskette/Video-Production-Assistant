@@ -45,7 +45,7 @@ export function ProjectSidebar({ projectName }: Props) {
         minWidth: 240,
         background: 'var(--bg-elev)',
         borderRight: '1px solid var(--border)',
-        height: '100vh',
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -73,6 +73,9 @@ export function ProjectSidebar({ projectName }: Props) {
         </NavLink>
         <NavLink to={`/project/${projectId}/storyboard`} style={({ isActive }) => linkStyle(isActive)}>
           Storyboard
+        </NavLink>
+        <NavLink to={`/project/${projectId}/recordings`} style={({ isActive }) => linkStyle(isActive)}>
+          Recordings
         </NavLink>
         <NavLink to={`/project/${projectId}/review`} style={({ isActive }) => linkStyle(isActive)}>
           Quality Review

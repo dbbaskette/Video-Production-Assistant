@@ -29,43 +29,40 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
 
   return (
     <div
+      className="dialog-overlay"
       role="dialog"
       aria-modal="true"
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
-      }}
       onClick={onClose}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-          padding: 24, width: 520, maxWidth: '90vw',
-        }}
-      >
-        <h2 style={{ marginTop: 0 }}>Open existing project folder</h2>
-        <p style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 0 }}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <h2>Open existing project</h2>
+        <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 16px' }}>
           Paste an absolute path to a folder containing <code>project.yaml</code>.
         </p>
-        <input
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder="/Users/me/Movies/VPA/my-demo"
-          autoFocus
-          style={{ width: '100%', marginBottom: 12 }}
-        />
+
+        <div className="dialog__field">
+          <label className="dialog__label">Project folder path</label>
+          <input
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="/Users/me/Movies/VPA/my-demo"
+            autoFocus
+            style={{ width: '100%' }}
+          />
+        </div>
+
         {errorMsg && (
-          <div style={{ color: 'var(--danger)', marginBottom: 12, fontSize: 13 }}>{errorMsg}</div>
+          <div style={{ color: 'var(--danger)', fontSize: 13 }}>{errorMsg}</div>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+
+        <div className="dialog__actions">
           <button onClick={onClose} disabled={importMutation.isPending}>Cancel</button>
           <button
             className="primary"
             disabled={!path.trim() || importMutation.isPending}
             onClick={() => importMutation.mutate()}
           >
-            {importMutation.isPending ? 'Importing…' : 'Open'}
+            {importMutation.isPending ? 'Importing...' : 'Open'}
           </button>
         </div>
       </div>

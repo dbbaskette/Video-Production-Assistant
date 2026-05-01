@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { brandsApi, ApiError } from '../lib/api';
 import type { DesignMdFrontMatter, BrandWithDoc } from '@vpa/shared';
@@ -53,18 +53,18 @@ function TokensTable({ frontMatter }: { frontMatter: DesignMdFrontMatter }) {
             </td>
             <td>
               {val.startsWith('#') ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span
                     style={{
                       display: 'inline-block',
-                      width: 14,
-                      height: 14,
-                      borderRadius: 3,
+                      width: 16,
+                      height: 16,
+                      borderRadius: 4,
                       background: val,
-                      border: '1px solid var(--border)',
+                      border: '1px solid rgba(255,255,255,0.06)',
                     }}
                   />
-                  {val}
+                  <code style={{ color: 'var(--fg-muted)' }}>{val}</code>
                 </span>
               ) : (
                 val
@@ -113,17 +113,8 @@ function LogoUploadCard({
   const imgUrl = currentPath ? brandsApi.assetUrl(slug, currentPath) : null;
 
   return (
-    <div
-      style={{
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        padding: 16,
-        background: 'var(--surface)',
-        minWidth: 220,
-        textAlign: 'center',
-      }}
-    >
-      <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 12px' }}>{label}</p>
+    <div className="card" style={{ minWidth: 220, textAlign: 'center', flex: 1 }}>
+      <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 14px', color: 'var(--fg-muted)' }}>{label}</p>
       {imgUrl ? (
         <img
           src={imgUrl}
@@ -143,19 +134,19 @@ function LogoUploadCard({
             width: 180,
             height: 100,
             margin: '0 auto',
-            borderRadius: 6,
+            borderRadius: 8,
             border: '2px dashed var(--border)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: 'var(--fg-muted)',
+            color: 'var(--fg-dim)',
             fontSize: 13,
           }}
         >
           No logo
         </div>
       )}
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 14 }}>
         <input
           ref={inputRef}
           type="file"
@@ -164,22 +155,15 @@ function LogoUploadCard({
           onChange={handleFile}
         />
         <button
+          className="btn--outline-accent"
           onClick={() => inputRef.current?.click()}
           disabled={uploading}
-          style={{
-            padding: '6px 14px',
-            borderRadius: 6,
-            border: '1px solid var(--accent)',
-            background: 'transparent',
-            color: 'var(--accent)',
-            cursor: uploading ? 'wait' : 'pointer',
-            fontSize: 13,
-          }}
+          style={{ fontSize: 12 }}
         >
           {uploading ? 'Uploading...' : imgUrl ? 'Replace' : 'Upload'}
         </button>
       </div>
-      {error && <p style={{ color: 'var(--danger, #c44)', fontSize: 12, marginTop: 6 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{error}</p>}
     </div>
   );
 }
@@ -188,7 +172,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
   const vpa = data.doc.frontMatter.vpa;
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>Logos</h3>
+      <h3>Logos</h3>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         <LogoUploadCard
           label="Primary Logo"
@@ -205,7 +189,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
           onUploaded={onRefresh}
         />
       </div>
-      <p style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 12 }}>
+      <p className="hint" style={{ marginTop: 14 }}>
         Supported formats: PNG, JPG, SVG, WebP
       </p>
     </div>
@@ -214,11 +198,9 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
 
 function UsagePane({ slug }: { slug: string }) {
   return (
-    <div>
-      <p style={{ color: 'var(--fg-muted)', fontSize: 13 }}>
-        Projects using brand <strong>{slug}</strong> will be listed here once project-brand
-        linking is implemented.
-      </p>
+    <div className="empty-state">
+      Projects using brand <strong>{slug}</strong> will be listed here once project-brand
+      linking is implemented.
     </div>
   );
 }
@@ -277,7 +259,6 @@ export default function BrandDetail() {
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        // Brand is used by projects, offer force delete
         if (confirm('This brand is used by projects. Force delete?')) {
           deleteMut.mutate(true);
         }
@@ -333,13 +314,21 @@ export default function BrandDetail() {
 
   return (
     <main className="brand-detail">
+      {/* Breadcrumb */}
+      <Link to="/" className="brand-detail__breadcrumb">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        All Brands
+      </Link>
+
       {/* Header */}
       <div className="brand-detail__header">
         <h1 style={{ margin: 0 }}>{entry.name}</h1>
         <span className="brand-detail__meta">v{entry.version}</span>
         {entry.forked_from && (
           <span className="brand-detail__meta">
-            forked from <a href={`/brands/${entry.forked_from}`}>{entry.forked_from}</a>
+            forked from <Link to={`/brands/${entry.forked_from}`}>{entry.forked_from}</Link>
           </span>
         )}
         <label className="brand-detail__default">
@@ -354,8 +343,15 @@ export default function BrandDetail() {
 
       {/* Actions */}
       <div className="brand-detail__actions">
-        <a href={brandsApi.downloadUrl(slug!)} download>
-          <button type="button">Download design.md</button>
+        <a href={brandsApi.downloadUrl(slug!)} download style={{ textDecoration: 'none' }}>
+          <button type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 6, verticalAlign: -2 }}>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download
+          </button>
         </a>
         <button
           type="button"
@@ -367,9 +363,12 @@ export default function BrandDetail() {
         <button type="button" onClick={handleFork} disabled={forkMut.isPending}>
           {forkMut.isPending ? 'Forking...' : 'Fork'}
         </button>
+
+        <div style={{ flex: 1 }} />
+
         <button
           type="button"
-          className="button--danger"
+          className="btn--danger"
           onClick={handleDelete}
           disabled={deleteMut.isPending}
         >
@@ -380,7 +379,7 @@ export default function BrandDetail() {
               : 'Delete'}
         </button>
         {deleteConfirm && (
-          <button type="button" onClick={() => setDeleteConfirm(false)}>
+          <button type="button" className="btn--ghost" onClick={() => setDeleteConfirm(false)}>
             Cancel
           </button>
         )}
@@ -402,22 +401,15 @@ export default function BrandDetail() {
       {/* Tab content */}
       {tab === 'overview' && (
         <div>
-          {fm.description && <p>{fm.description}</p>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+          {fm.description && <p className="brand-detail__overview-desc">{fm.description}</p>}
+
+          <div className="brand-detail__color-grid">
             {Object.entries(fm.colors).map(([key, hex]) => (
               <div
                 key={key}
+                className="brand-detail__color-swatch"
                 style={{
-                  width: 60,
-                  height: 40,
-                  borderRadius: 5,
                   background: hex,
-                  border: '1px solid var(--border)',
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  padding: 3,
-                  fontSize: 9,
-                  fontFamily: 'monospace',
                   color: contrastColor(hex),
                 }}
               >
@@ -425,13 +417,15 @@ export default function BrandDetail() {
               </div>
             ))}
           </div>
-          <p style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
+
+          <p className="hint">
             Typography: {Object.values(fm.typography).map(l => l.fontFamily).filter((v, i, a) => a.indexOf(v) === i).join(' / ')}
           </p>
+
           {fm.vpa?.taglines && fm.vpa.taglines.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <strong style={{ fontSize: 13 }}>Taglines</strong>
-              <ul style={{ margin: '4px 0', paddingLeft: 16, fontSize: 13 }}>
+            <div style={{ marginTop: 16 }}>
+              <h3 style={{ fontSize: 13, color: 'var(--fg-muted)' }}>Taglines</h3>
+              <ul style={{ margin: '6px 0', paddingLeft: 18, fontSize: 14, lineHeight: 1.6 }}>
                 {fm.vpa.taglines.map((t, i) => (
                   <li key={i}>{t}</li>
                 ))}
@@ -447,12 +441,14 @@ export default function BrandDetail() {
         <pre
           style={{
             background: 'var(--bg-elev)',
-            padding: 14,
-            borderRadius: 6,
+            padding: 18,
+            borderRadius: 'var(--radius-md)',
             fontSize: 12,
             overflow: 'auto',
             whiteSpace: 'pre-wrap',
             color: 'var(--fg-muted)',
+            lineHeight: 1.6,
+            border: '1px solid var(--border)',
           }}
         >
           {doc.body}

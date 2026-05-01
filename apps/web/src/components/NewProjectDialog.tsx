@@ -59,26 +59,16 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
 
   return (
     <div
+      className="dialog-overlay"
       role="dialog"
       aria-modal="true"
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
-      }}
       onClick={onClose}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-          padding: 24, width: 480, maxWidth: '90vw',
-        }}
-      >
-        <h2 style={{ marginTop: 0 }}>New project</h2>
-        <label style={{ display: 'block', marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 4 }}>
-            Name (alphanumeric, dash, underscore)
-          </div>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <h2>New project</h2>
+
+        <div className="dialog__field">
+          <label className="dialog__label">Name (alphanumeric, dash, underscore)</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -86,22 +76,20 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             autoFocus
             style={{ width: '100%' }}
           />
-        </label>
-        <label style={{ display: 'block', marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 4 }}>
-            Parent directory (optional)
-          </div>
+        </div>
+
+        <div className="dialog__field">
+          <label className="dialog__label">Parent directory (optional)</label>
           <input
             value={parentDir}
             onChange={(e) => setParentDir(e.target.value)}
             placeholder={placeholderRoot}
             style={{ width: '100%' }}
           />
-        </label>
-        <label style={{ display: 'block', marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 4 }}>
-            Objective (optional)
-          </div>
+        </div>
+
+        <div className="dialog__field">
+          <label className="dialog__label">Objective (optional)</label>
           <textarea
             value={objective}
             onChange={(e) => setObjective(e.target.value)}
@@ -109,19 +97,25 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             placeholder="What is this demo showing?"
             style={{ width: '100%', resize: 'vertical' }}
           />
-        </label>
-        <BrandPicker value={brand} onChange={setBrand} />
+        </div>
+
+        <div className="dialog__field">
+          <label className="dialog__label">Brand</label>
+          <BrandPicker value={brand} onChange={setBrand} />
+        </div>
+
         {errorMsg && (
-          <div style={{ color: 'var(--danger)', marginBottom: 12, fontSize: 13 }}>{errorMsg}</div>
+          <div style={{ color: 'var(--danger)', fontSize: 13 }}>{errorMsg}</div>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+
+        <div className="dialog__actions">
           <button onClick={onClose} disabled={create.isPending}>Cancel</button>
           <button
             className="primary"
             disabled={!nameValid || create.isPending}
             onClick={() => create.mutate()}
           >
-            {create.isPending ? 'Creating…' : 'Create'}
+            {create.isPending ? 'Creating...' : 'Create'}
           </button>
         </div>
       </div>

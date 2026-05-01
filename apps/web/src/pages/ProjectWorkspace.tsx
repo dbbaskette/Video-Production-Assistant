@@ -35,9 +35,9 @@ export function ProjectWorkspace() {
   }
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', height: 'calc(100vh - 52px)' }}>
       <ProjectSidebar projectName={project.name} />
-      <main style={{ flex: 1, overflow: 'auto' }}>
+      <main style={{ flex: 1, overflowY: 'auto' }}>
         <Outlet context={{ project }} />
       </main>
     </div>

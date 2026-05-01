@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { settingsApi, type ModelEntry } from '../lib/api.js';
 
 type Provider = ModelEntry['provider'];
@@ -20,12 +19,13 @@ function providerMeta(p: Provider): (typeof PROVIDERS)[number] {
 const card: React.CSSProperties = {
   background: 'var(--surface)',
   border: '1px solid var(--border)',
-  borderRadius: 10,
+  borderRadius: 'var(--radius-md)',
   padding: '16px 20px',
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
   marginBottom: 10,
+  transition: 'border-color 150ms ease',
 };
 
 const activeCard: React.CSSProperties = {
@@ -35,8 +35,8 @@ const activeCard: React.CSSProperties = {
 };
 
 const badge: React.CSSProperties = {
-  fontSize: 11,
-  padding: '2px 8px',
+  fontSize: 10,
+  padding: '3px 8px',
   borderRadius: 999,
   fontWeight: 600,
   textTransform: 'uppercase',
@@ -334,50 +334,28 @@ export function Settings() {
   });
 
   return (
-    <main style={{ maxWidth: 720, margin: '0 auto', padding: '40px 24px' }}>
-      <header style={{ marginBottom: 32, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Link
-          to="/"
-          style={{
-            textDecoration: 'none',
-            fontSize: 20,
-            color: 'var(--fg-muted)',
-            lineHeight: 1,
-          }}
-          title="Back to dashboard"
-        >
-          &larr;
-        </Link>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22 }}>Settings</h1>
-          <p style={{ color: 'var(--fg-muted)', marginTop: 2, fontSize: 13 }}>
-            Manage LLM model configurations
-          </p>
-        </div>
+    <main className="page page--narrow">
+      <header style={{ marginBottom: 32 }}>
+        <h1>Settings</h1>
+        <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: 0 }}>
+          Manage LLM model configurations
+        </p>
       </header>
 
       <section>
-        <h2
-          style={{
-            margin: '0 0 16px',
-            fontSize: 14,
-            textTransform: 'uppercase',
-            color: 'var(--fg-muted)',
-            letterSpacing: 1,
-          }}
-        >
-          Models
-        </h2>
+        <div className="section-header" style={{ marginBottom: 18 }}>
+          <span className="section-label">Models</span>
+        </div>
 
-        {isLoading && <p>Loading models...</p>}
-        {error && <p style={{ color: 'var(--danger, #c44)' }}>Failed to load models.</p>}
+        {isLoading && <p className="hint">Loading models...</p>}
+        {error && <p style={{ color: 'var(--danger)' }}>Failed to load models.</p>}
 
         {models && (
           <>
             {models.length === 0 && (
-              <p style={{ color: 'var(--fg-muted)' }}>
+              <div className="empty-state">
                 No models configured. Add one below to get started.
-              </p>
+              </div>
             )}
             {models.map((m) => (
               <ModelCard
