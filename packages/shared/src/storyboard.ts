@@ -48,6 +48,17 @@ export const NarrationSchema = z.object({
   chunks: z.array(NarrationChunkSchema).optional(),
   mode: z.enum(['monologue', 'dialog']).optional(),   // default: 'monologue'
   speakers: z.record(z.string(), SpeakerConfigSchema).optional(), // keyed by "A", "B"
+  monologueScript: z.string().optional(),  // monologue version (preserved across mode switches)
+  dialogScript: z.string().optional(),     // dialog version (preserved across mode switches)
+  dialogDirty: z.boolean().optional(),     // true = monologue changed since last dialog conversion
+  // Per-mode chunk persistence — each mode keeps its own audio chunks because
+  // the underlying text differs. `chunks` is the active set for the current mode;
+  // these snapshots let us restore audio when toggling modes back and forth.
+  monologueChunks: z.array(NarrationChunkSchema).optional(),
+  dialogChunks: z.array(NarrationChunkSchema).optional(),
+  // Restore-previous backup for the current monologue/dialog scripts.
+  previousMonologueScript: z.string().nullable().optional(),
+  previousDialogScript: z.string().nullable().optional(),
 });
 export type Narration = z.infer<typeof NarrationSchema>;
 

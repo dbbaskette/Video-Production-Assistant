@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import { storyboardApi, qualityReviewApi, exportApi } from '../lib/api.js';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi } from '../lib/api.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -149,6 +149,9 @@ export function ProjectOverview() {
         </div>
       </div>
 
+      {/* Brand applied to this project */}
+      <ProjectBrandSection projectId={project.id} />
+
       {/* Action buttons */}
       <div style={{ marginTop: 32, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         {!hasStoryboard ? (
@@ -273,6 +276,116 @@ export function ProjectOverview() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ProjectBrandSection({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+
+  const { data: project } = useQuery({
+    queryKey: ['project', projectId],
+    queryFn: () => api.getProject(projectId),
+  });
+
+  const { data: registry } = useQuery({
+    queryKey: ['brands'],
+    queryFn: () => brandsApi.list(),
+  });
+
+  const setBrand = useMutation({
+    mutationFn: (brand: { id: string; applied_version: number } | null) =>
+      api.setProjectBrand(projectId, brand),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+    },
+  });
+
+  const appliedBrandId = project?.brand?.id ?? null;
+  const appliedBrand = registry?.brands.find((b) => b.id === appliedBrandId) ?? null;
+
+  return (
+    <div
+      style={{
+        marginTop: 32,
+        background: 'var(--bg-elev)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 20,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            Brand
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
+            {appliedBrand
+              ? `${appliedBrand.name} (v${project?.brand?.applied_version ?? appliedBrand.version})`
+              : 'No brand applied'}
+          </div>
+        </div>
+        <Link
+          to="/brands"
+          style={{
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            textDecoration: 'none',
+            border: '1px solid var(--border)',
+            padding: '4px 10px',
+            borderRadius: 6,
+          }}
+        >
+          Manage brands →
+        </Link>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <select
+          value={appliedBrandId ?? ''}
+          onChange={(e) => {
+            const id = e.target.value;
+            if (!id) {
+              setBrand.mutate(null);
+              return;
+            }
+            const entry = registry?.brands.find((b) => b.id === id);
+            if (entry) setBrand.mutate({ id: entry.id, applied_version: entry.version });
+          }}
+          disabled={setBrand.isPending || !registry}
+          style={{
+            padding: '6px 10px',
+            borderRadius: 6,
+            background: 'var(--bg)',
+            color: 'var(--fg)',
+            border: '1px solid var(--border)',
+            fontSize: 13,
+            minWidth: 200,
+          }}
+        >
+          <option value="">— None —</option>
+          {registry?.brands.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+              {b.id === registry.default_brand_id ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
+        {setBrand.isPending && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Saving...</span>}
+        {setBrand.isError && (
+          <span style={{ fontSize: 12, color: 'var(--danger)' }}>
+            {setBrand.error instanceof Error ? setBrand.error.message : 'Save failed'}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

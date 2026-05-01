@@ -27,6 +27,8 @@ export function ScenePage() {
   const [activeTab, setActiveTab] = useState<Tab>('Recording');
   const [editingScript, setEditingScript] = useState<string | null>(null);
   const [scriptDirty, setScriptDirty] = useState(false);
+  const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
+  const [dialogEditDirty, setDialogEditDirty] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: storyboard } = useQuery({
@@ -53,11 +55,45 @@ export function ScenePage() {
     },
   });
 
-  const saveScriptMutation = useMutation({
-    mutationFn: (script: string) => scriptApi.save(projectId!, sceneId!, script),
+  const saveMonologueMutation = useMutation({
+    mutationFn: (script: string) => narrationApi.saveScript(projectId!, sceneId!, script, 'monologue'),
     onSuccess: () => {
       setScriptDirty(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+      queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+    },
+  });
+
+  const saveDialogMutation = useMutation({
+    mutationFn: (script: string) => narrationApi.saveScript(projectId!, sceneId!, script, 'dialog'),
+    onSuccess: () => {
+      setDialogEditDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+      queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+    },
+  });
+
+  const restoreMonologueMutation = useMutation({
+    mutationFn: () => narrationApi.restoreScript(projectId!, sceneId!, 'monologue'),
+    onSuccess: (data) => {
+      setEditingScript(data.script);
+      setScriptDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+      queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+    },
+  });
+
+  const restoreDialogMutation = useMutation({
+    mutationFn: () => narrationApi.restoreScript(projectId!, sceneId!, 'dialog'),
+    onSuccess: (data) => {
+      setEditingDialogScript(data.script);
+      setDialogEditDirty(false);
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+      queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
     },
   });
 
@@ -67,12 +103,7 @@ export function ScenePage() {
     enabled: !!projectId && !!sceneId && activeTab === 'Script',
   });
 
-  // Sync local editing state when script data loads (only if not already editing)
-  useEffect(() => {
-    if (scriptState && editingScript === null && scriptState.script !== null) {
-      setEditingScript(scriptState.script);
-    }
-  }, [scriptState, editingScript]);
+  // NOTE: monologue script sync moved after narrationState declaration
 
   // --- Narration state ---
   const [selectedEngine, setSelectedEngine] = useState('fake');
@@ -88,7 +119,8 @@ export function ScenePage() {
   const [narrationMode, setNarrationMode] = useState<'monologue' | 'dialog'>('monologue');
   const [speakerConfigs, setSpeakerConfigs] = useState<Record<string, SpeakerConfig>>({});
   const [chunkSpeakers, setChunkSpeakers] = useState<Map<number, string>>(new Map());
-  const [modeDirty, setModeDirty] = useState(false);
+  const [convertingDialog, setConvertingDialog] = useState(false);
+  const [convertError, setConvertError] = useState<string | null>(null);
 
   const { data: engines } = useQuery({
     queryKey: ['tts-engines'],
@@ -105,7 +137,7 @@ export function ScenePage() {
   const { data: narrationState } = useQuery({
     queryKey: ['narration', projectId, sceneId],
     queryFn: () => narrationApi.get(projectId!, sceneId!),
-    enabled: !!projectId && !!sceneId && activeTab === 'Narration',
+    enabled: !!projectId && !!sceneId && (activeTab === 'Narration' || activeTab === 'Script'),
   });
 
   // Sync engine/voice from narration state when it loads
@@ -130,6 +162,22 @@ export function ScenePage() {
       setChunkSpeakers(assignments);
     }
   }, [narrationState]);
+
+  // Sync monologue script — ONLY use monologueScript, never scriptState.script (which could be dialog text)
+  useEffect(() => {
+    if (editingScript !== null) return;
+    if (narrationState?.monologueScript) {
+      setEditingScript(narrationState.monologueScript);
+    }
+  }, [narrationState?.monologueScript, editingScript]);
+
+  // Sync dialog script when narration data loads
+  useEffect(() => {
+    if (editingDialogScript !== null) return;
+    if (narrationState?.dialogScript) {
+      setEditingDialogScript(narrationState.dialogScript);
+    }
+  }, [narrationState?.dialogScript, editingDialogScript]);
 
   // Initialize speaker configs with sane defaults when entering dialog mode
   useEffect(() => {
@@ -184,6 +232,11 @@ export function ScenePage() {
     const voiceSettings = resolveChunkVoice(chunk);
     setGeneratingChunks((prev) => new Set(prev).add(chunk.index));
     try {
+      // In dialog mode, save speaker assignment for this chunk first
+      if (narrationMode === 'dialog') {
+        const speaker = chunkSpeakers.get(chunk.index) ?? 'A';
+        await narrationApi.saveSpeakerAssignments(projectId, sceneId, [{ index: chunk.index, speaker }]);
+      }
       await narrationApi.generateChunk(projectId, sceneId, {
         chunkIndex: chunk.index,
         text,
@@ -198,19 +251,16 @@ export function ScenePage() {
         return next;
       });
     }
-  }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient]);
+  }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient, narrationMode, chunkSpeakers]);
 
   // Generate all chunks sequentially with progress
   const generateAllChunks = useCallback(async () => {
-    if (!narrationState?.chunks?.length) return;
-    // Save mode + speakers before generating if dirty
-    if (modeDirty && projectId && sceneId) {
-      await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
-      if (narrationMode === 'dialog') {
-        const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
-        await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
-      }
-      setModeDirty(false);
+    if (!narrationState?.chunks?.length || !projectId || !sceneId) return;
+    // Always persist speaker configs + assignments before generating
+    await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
+    if (narrationMode === 'dialog') {
+      const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
+      await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
     }
     const chunks = narrationState.chunks;
     setGenerateAllProgress({ done: 0, total: chunks.length });
@@ -220,19 +270,68 @@ export function ScenePage() {
     }
     setGenerateAllProgress(null);
     queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-  }, [narrationState?.chunks, generateChunk, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, modeDirty, queryClient]);
+  }, [narrationState?.chunks, generateChunk, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, queryClient]);
 
-  // Save mode + speaker configs
-  const saveNarrationMode = useCallback(async () => {
+  // Switch mode handler — swaps scripts, only converts when needed
+  // Generate (or regenerate) dialog from monologue — used by Script tab
+  const generateDialog = useCallback(async () => {
     if (!projectId || !sceneId) return;
-    await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
-    if (narrationMode === 'dialog') {
-      const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
-      await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
+    setConvertingDialog(true);
+    setConvertError(null);
+    try {
+      const result = await narrationApi.convertToDialog(projectId, sceneId);
+      setEditingDialogScript(null); // Reset to sync fresh dialog from server
+      const assignments = new Map<number, string>();
+      result.chunks.forEach((c) => assignments.set(c.index, c.speaker));
+      setChunkSpeakers(assignments);
+    } catch (err) {
+      setConvertError(err instanceof Error ? err.message : 'Conversion failed');
+    } finally {
+      setConvertingDialog(false);
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
     }
-    setModeDirty(false);
+  }, [projectId, sceneId, queryClient]);
+
+  // Switch narration mode — used by Narration tab mode toggle
+  const switchMode = useCallback(async (newMode: 'monologue' | 'dialog') => {
+    if (newMode === narrationMode) return;
+    if (!projectId || !sceneId) return;
+
+    setNarrationMode(newMode);
+    setConvertError(null);
+
+    // Tell the server to swap scripts + save mode
+    const modeResult = await narrationApi.saveMode(projectId, sceneId, newMode, speakerConfigs);
+
+    if (newMode === 'dialog' && modeResult.needsConversion) {
+      // No dialog version — need LLM conversion
+      setConvertingDialog(true);
+      try {
+        const result = await narrationApi.convertToDialog(projectId, sceneId);
+        setEditingDialogScript(null); // Reset to sync fresh dialog from server
+        const assignments = new Map<number, string>();
+        result.chunks.forEach((c) => assignments.set(c.index, c.speaker));
+        setChunkSpeakers(assignments);
+      } catch (err) {
+        setConvertError(err instanceof Error ? err.message : 'Conversion failed');
+        // Revert to monologue on failure
+        setNarrationMode('monologue');
+        await narrationApi.saveMode(projectId, sceneId, 'monologue', {});
+      } finally {
+        setConvertingDialog(false);
+      }
+    } else if (newMode === 'dialog') {
+      // Dialog exists — reset to sync from server
+      setEditingDialogScript(null);
+    }
+
+    // Refresh everything
     queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
-  }, [projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, queryClient]);
+    queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+  }, [narrationMode, projectId, sceneId, speakerConfigs, queryClient]);
 
   // Save edited chunk texts back to the full script
   const saveChunkEdits = useCallback(async () => {
@@ -240,13 +339,15 @@ export function ScenePage() {
     const fullScript = narrationState.chunks
       .map((c) => editedChunks.get(c.index) ?? c.text)
       .join('\n\n');
-    await narrationApi.saveScript(projectId, sceneId, fullScript);
+    // Save to the correct slot based on current narration mode
+    const slot = narrationMode === 'dialog' ? 'dialog' : 'monologue';
+    await narrationApi.saveScript(projectId, sceneId, fullScript, slot);
     setEditedChunks(new Map());
     setChunkScriptDirty(false);
     queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
     queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
     queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-  }, [projectId, sceneId, narrationState?.chunks, editedChunks, queryClient]);
+  }, [projectId, sceneId, narrationState?.chunks, editedChunks, narrationMode, queryClient]);
 
   // Speaker color palette
   const speakerColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
@@ -382,132 +483,280 @@ export function ScenePage() {
 
       {activeTab === 'Script' && (
         <div>
-          {/* Action buttons */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            {!editingScript && !scriptState?.script ? (
+          {/* ── Top bar: Generate/Regenerate ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            {!editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
               <button
                 onClick={() => generateScriptMutation.mutate()}
                 disabled={generateScriptMutation.isPending}
                 style={{
-                  padding: '8px 16px',
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 6,
+                  padding: '8px 16px', background: 'var(--accent)', color: '#fff',
+                  border: 'none', borderRadius: 6,
                   cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
-                  fontSize: 13,
-                  fontWeight: 600,
+                  fontSize: 13, fontWeight: 600,
                   opacity: generateScriptMutation.isPending ? 0.7 : 1,
                 }}
               >
                 {generateScriptMutation.isPending ? 'Generating…' : '✨ Generate Script'}
               </button>
             ) : (
-              <>
-                <button
-                  onClick={() => generateScriptMutation.mutate()}
-                  disabled={generateScriptMutation.isPending}
-                  style={{
-                    padding: '8px 16px',
-                    background: 'var(--surface)',
-                    color: 'var(--fg)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 6,
-                    cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
-                    fontSize: 13,
-                    opacity: generateScriptMutation.isPending ? 0.7 : 1,
-                  }}
-                >
-                  {generateScriptMutation.isPending ? 'Regenerating…' : '🔄 Regenerate'}
-                </button>
-                <button
-                  onClick={() => {
-                    if (editingScript) saveScriptMutation.mutate(editingScript);
-                  }}
-                  disabled={!scriptDirty || saveScriptMutation.isPending}
-                  style={{
-                    padding: '8px 16px',
-                    background: scriptDirty ? 'var(--accent)' : 'var(--surface)',
-                    color: scriptDirty ? '#fff' : 'var(--fg-muted)',
-                    border: scriptDirty ? 'none' : '1px solid var(--border)',
-                    borderRadius: 6,
-                    cursor: !scriptDirty || saveScriptMutation.isPending ? 'default' : 'pointer',
-                    fontSize: 13,
-                    fontWeight: scriptDirty ? 600 : 400,
-                    opacity: !scriptDirty ? 0.5 : 1,
-                  }}
-                >
-                  {saveScriptMutation.isPending ? 'Saving…' : '💾 Save'}
-                </button>
-              </>
+              <button
+                onClick={() => generateScriptMutation.mutate()}
+                disabled={generateScriptMutation.isPending}
+                style={{
+                  padding: '8px 16px', background: 'var(--surface)', color: 'var(--fg)',
+                  border: '1px solid var(--border)', borderRadius: 6,
+                  cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
+                  fontSize: 13, opacity: generateScriptMutation.isPending ? 0.7 : 1,
+                }}
+              >
+                {generateScriptMutation.isPending ? 'Regenerating…' : '🔄 Regenerate'}
+              </button>
             )}
           </div>
 
-          {/* Error display */}
+          {/* Error displays */}
           {generateScriptMutation.isError && (
             <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
-              Generation failed:{' '}
-              {generateScriptMutation.error instanceof Error
-                ? generateScriptMutation.error.message
-                : 'Unknown error'}
+              Generation failed: {generateScriptMutation.error instanceof Error ? generateScriptMutation.error.message : 'Unknown error'}
             </p>
           )}
-          {saveScriptMutation.isError && (
+          {(saveMonologueMutation.isError || saveDialogMutation.isError) && (
             <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
-              Save failed:{' '}
-              {saveScriptMutation.error instanceof Error
-                ? saveScriptMutation.error.message
+              Save failed: {(saveMonologueMutation.error ?? saveDialogMutation.error) instanceof Error
+                ? ((saveMonologueMutation.error ?? saveDialogMutation.error) as Error).message
                 : 'Unknown error'}
             </p>
           )}
 
-          {/* Script editor or empty state */}
-          {editingScript !== null || scriptState?.script ? (
-            <div>
-              <textarea
-                value={editingScript ?? scriptState?.script ?? ''}
-                onChange={(e) => {
-                  setEditingScript(e.target.value);
-                  setScriptDirty(true);
-                }}
+          {/* ── Converting to Dialog modal ── */}
+          {convertingDialog && (
+            <div style={{
+              position: 'fixed', inset: 0, zIndex: 9999,
+              background: 'rgba(0,0,0,0.65)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              backdropFilter: 'blur(4px)',
+            }}>
+              <div style={{
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                borderRadius: 16, padding: '40px 48px', maxWidth: 420,
+                textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              }}>
+                <div style={{
+                  width: 48, height: 48, margin: '0 auto 20px',
+                  border: '3px solid var(--border)', borderTopColor: 'var(--accent)',
+                  borderRadius: '50%', animation: 'spin 0.8s linear infinite',
+                }} />
+                <h3 style={{ margin: '0 0 8px', fontSize: 18 }}>Converting to Dialog</h3>
+                <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 13, lineHeight: 1.6 }}>
+                  AI is rewriting your narration as a natural two-person conversation.
+                  This usually takes 10–20 seconds.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Convert error banner */}
+          {convertError && (
+            <div style={{
+              background: '#2a1a1a', border: '1px solid #c25d5d', borderRadius: 8,
+              padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#f5a0a0',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <span>Dialog conversion failed: {convertError}</span>
+              <button
+                onClick={() => { setConvertError(null); }}
                 style={{
-                  width: '100%',
-                  minHeight: 300,
-                  padding: 16,
-                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                  fontSize: 13,
-                  lineHeight: 1.7,
-                  background: 'var(--surface)',
-                  color: 'var(--fg)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  resize: 'vertical',
-                  outline: 'none',
+                  marginLeft: 'auto', background: 'transparent', border: '1px solid #c25d5d',
+                  borderRadius: 5, padding: '3px 10px', color: '#f5a0a0', cursor: 'pointer', fontSize: 11,
                 }}
-                placeholder="Script content..."
-              />
-              <p style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 8 }}>
-                Use emotive tags like <code>[warm]</code>, <code>[confident]</code>,{' '}
-                <code>[thoughtful]</code> to guide narration tone.
-                {scriptDirty && (
-                  <span style={{ color: 'var(--accent)', marginLeft: 8 }}>• Unsaved changes</span>
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* ── Vertically stacked script editor ── */}
+          {(editingScript !== null || scriptState?.script || narrationState?.monologueScript) ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {/* ─── Monologue section ─── */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>Monologue Script</h3>
+                  {scriptDirty && (
+                    <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 'auto' }}>Unsaved</span>
+                  )}
+                </div>
+                <textarea
+                  value={editingScript ?? narrationState?.monologueScript ?? ''}
+                  onChange={(e) => { setEditingScript(e.target.value); setScriptDirty(true); }}
+                  style={{
+                    width: '100%', minHeight: 280, padding: 14, boxSizing: 'border-box',
+                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                    fontSize: 12, lineHeight: 1.7,
+                    background: 'var(--surface)', color: 'var(--fg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8, resize: 'vertical', outline: 'none',
+                  }}
+                  placeholder="Script content..."
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  {scriptDirty && (
+                    <>
+                      <button
+                        onClick={() => { if (editingScript) saveMonologueMutation.mutate(editingScript); }}
+                        disabled={saveMonologueMutation.isPending}
+                        style={{
+                          padding: '6px 14px', background: 'var(--accent)', color: '#fff',
+                          border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        }}
+                      >
+                        {saveMonologueMutation.isPending ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={() => { setEditingScript(null); setScriptDirty(false); }}
+                        style={{
+                          padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
+                          border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                        }}
+                      >
+                        Discard
+                      </button>
+                    </>
+                  )}
+                  {!scriptDirty && narrationState?.hasPreviousMonologue && (
+                    <button
+                      onClick={() => restoreMonologueMutation.mutate()}
+                      disabled={restoreMonologueMutation.isPending}
+                      style={{
+                        padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
+                        border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      {restoreMonologueMutation.isPending ? 'Restoring…' : 'Restore Previous'}
+                    </button>
+                  )}
+                  <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
+                    Use emotive tags like <code>[warm]</code>, <code>[confident]</code>,{' '}
+                    <code>[thoughtful]</code> to guide narration tone.
+                  </p>
+                </div>
+              </div>
+
+              {/* ─── Dialog section ─── */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 14 }}>Dialog Script</h3>
+                  {dialogEditDirty && (
+                    <span style={{ fontSize: 10, color: 'var(--accent)' }}>Unsaved</span>
+                  )}
+                </div>
+
+                {(editingDialogScript || narrationState?.dialogScript) ? (
+                  <>
+                    <textarea
+                      value={editingDialogScript ?? narrationState?.dialogScript ?? ''}
+                      onChange={(e) => { setEditingDialogScript(e.target.value); setDialogEditDirty(true); }}
+                      style={{
+                        width: '100%', minHeight: 280, padding: 14, boxSizing: 'border-box',
+                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                        fontSize: 12, lineHeight: 1.7,
+                        background: 'var(--surface)', color: 'var(--fg)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 8, resize: 'vertical', outline: 'none',
+                      }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                      {dialogEditDirty && (
+                        <>
+                          <button
+                            onClick={() => { if (editingDialogScript) saveDialogMutation.mutate(editingDialogScript); }}
+                            disabled={saveDialogMutation.isPending}
+                            style={{
+                              padding: '6px 14px', background: 'var(--accent)', color: '#fff',
+                              border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            }}
+                          >
+                            {saveDialogMutation.isPending ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => { setEditingDialogScript(null); setDialogEditDirty(false); }}
+                            style={{
+                              padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
+                              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                            }}
+                          >
+                            Discard
+                          </button>
+                        </>
+                      )}
+                      {!dialogEditDirty && narrationState?.hasPreviousDialog && (
+                        <button
+                          onClick={() => restoreDialogMutation.mutate()}
+                          disabled={restoreDialogMutation.isPending}
+                          style={{
+                            padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
+                            border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                          }}
+                        >
+                          {restoreDialogMutation.isPending ? 'Restoring…' : 'Restore Previous'}
+                        </button>
+                      )}
+                      <button
+                        onClick={generateDialog}
+                        disabled={convertingDialog || scriptDirty}
+                        title={scriptDirty ? 'Save monologue changes first' : 'Regenerate dialog from current monologue'}
+                        style={{
+                          padding: '6px 14px', background: 'var(--surface)', color: 'var(--fg-muted)',
+                          border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+                          cursor: (convertingDialog || scriptDirty) ? 'not-allowed' : 'pointer',
+                          opacity: (convertingDialog || scriptDirty) ? 0.5 : 1,
+                        }}
+                      >
+                        {convertingDialog ? 'Regenerating…' : 'Regenerate from Monologue'}
+                      </button>
+                      <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
+                        Use emotive tags like <code>[curious]</code>, <code>[excited]</code>,{' '}
+                        <code>[thoughtful]</code> for natural speaker tone.
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '20px 24px',
+                    border: '1px dashed var(--border)', borderRadius: 8,
+                    color: 'var(--fg-muted)',
+                  }}>
+                    <p style={{ margin: 0, fontSize: 13 }}>
+                      No dialog version yet. Generate a two-speaker conversation from your monologue.
+                    </p>
+                    <button
+                      onClick={generateDialog}
+                      disabled={convertingDialog || scriptDirty}
+                      title={scriptDirty ? 'Save monologue changes first' : undefined}
+                      style={{
+                        padding: '8px 18px', background: 'var(--accent)', color: '#fff',
+                        border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600,
+                        cursor: (convertingDialog || scriptDirty) ? 'not-allowed' : 'pointer',
+                        opacity: (convertingDialog || scriptDirty) ? 0.5 : 1,
+                        whiteSpace: 'nowrap', flexShrink: 0,
+                      }}
+                    >
+                      Generate Dialog
+                    </button>
+                  </div>
                 )}
-              </p>
+              </div>
             </div>
           ) : (
-            <div
-              style={{
-                padding: 48,
-                textAlign: 'center',
-                color: 'var(--fg-muted)',
-                border: '1px dashed var(--border)',
-                borderRadius: 8,
-              }}
-            >
+            <div style={{
+              padding: 48, textAlign: 'center', color: 'var(--fg-muted)',
+              border: '1px dashed var(--border)', borderRadius: 8,
+            }}>
               <p style={{ fontSize: 14, marginBottom: 4 }}>No script yet for this scene.</p>
               <p style={{ fontSize: 12 }}>
-                Click <strong>Generate Script</strong> to create a narration script from the scene
-                description.
+                Click <strong>Generate Script</strong> to create a narration script from the scene description.
               </p>
             </div>
           )}
@@ -549,45 +798,44 @@ export function ScenePage() {
                   display: 'inline-flex', borderRadius: 8, overflow: 'hidden',
                   border: '1px solid var(--border)', background: 'var(--surface)',
                 }}>
-                  {(['monologue', 'dialog'] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => {
-                        setNarrationMode(m);
-                        setModeDirty(true);
-                      }}
-                      style={{
-                        padding: '7px 18px',
-                        border: 'none',
-                        background: narrationMode === m ? 'var(--accent)' : 'transparent',
-                        color: narrationMode === m ? '#fff' : 'var(--fg-muted)',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                        fontWeight: narrationMode === m ? 700 : 400,
-                        textTransform: 'capitalize',
-                        transition: 'all 0.15s ease',
-                      }}
-                    >
-                      {m === 'monologue' ? 'Single Voice' : 'Dialog'}
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => switchMode('monologue')}
+                    style={{
+                      padding: '7px 18px', border: 'none',
+                      background: narrationMode === 'monologue' ? 'var(--accent)' : 'transparent',
+                      color: narrationMode === 'monologue' ? '#fff' : 'var(--fg-muted)',
+                      cursor: 'pointer', fontSize: 12,
+                      fontWeight: narrationMode === 'monologue' ? 700 : 400,
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    Single Voice
+                  </button>
+                  <button
+                    onClick={() => switchMode('dialog')}
+                    disabled={!narrationState?.dialogScript}
+                    title={!narrationState?.dialogScript ? 'Generate a dialog script first in the Script tab' : undefined}
+                    style={{
+                      padding: '7px 18px', border: 'none',
+                      background: narrationMode === 'dialog' ? 'var(--accent)' : 'transparent',
+                      color: !narrationState?.dialogScript
+                        ? 'var(--fg-muted)'
+                        : narrationMode === 'dialog' ? '#fff' : 'var(--fg-muted)',
+                      cursor: !narrationState?.dialogScript ? 'not-allowed' : 'pointer',
+                      fontSize: 12,
+                      fontWeight: narrationMode === 'dialog' ? 700 : 400,
+                      opacity: !narrationState?.dialogScript ? 0.4 : 1,
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    Dialog
+                  </button>
                 </div>
                 <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
                   {narrationMode === 'monologue'
                     ? 'One voice narrates the entire script'
-                    : 'Assign different voices to each paragraph'}
+                    : 'Two speakers discuss the topic naturally'}
                 </span>
-                {modeDirty && (
-                  <button
-                    onClick={saveNarrationMode}
-                    style={{
-                      marginLeft: 'auto', padding: '4px 12px', background: 'var(--accent)', color: '#fff',
-                      border: 'none', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                    }}
-                  >
-                    Save
-                  </button>
-                )}
               </div>
 
               {/* ── Voice selection bar (Monologue) ──────────── */}
@@ -752,7 +1000,7 @@ export function ScenePage() {
                                 ...prev,
                                 [key]: { ...(prev[key] ?? { engine: 'fake', voice: 'alice', speed: 1.0 }), label: e.target.value },
                               }));
-                              setModeDirty(true);
+                              // speaker config auto-saved on generate
                             }}
                             style={{
                               flex: 1, padding: '4px 8px', border: '1px solid var(--border)',
@@ -780,7 +1028,7 @@ export function ScenePage() {
                                   voice: eng?.voices[0]?.id ?? '',
                                 },
                               }));
-                              setModeDirty(true);
+                              // speaker config auto-saved on generate
                             }}
                             style={{ width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
                           >
@@ -802,7 +1050,7 @@ export function ScenePage() {
                                 ...prev,
                                 [key]: { ...(prev[key] ?? { engine: 'fake', speed: 1.0 }), voice: e.target.value },
                               }));
-                              setModeDirty(true);
+                              // speaker config auto-saved on generate
                             }}
                             style={{ width: '100%', padding: '5px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12 }}
                           >
@@ -825,7 +1073,7 @@ export function ScenePage() {
                                 ...prev,
                                 [key]: { ...(prev[key] ?? { engine: 'fake', voice: 'alice' }), speed: parseFloat(e.target.value) },
                               }));
-                              setModeDirty(true);
+                              // speaker config auto-saved on generate
                             }}
                             style={{ width: '100%' }}
                           />
@@ -881,42 +1129,11 @@ export function ScenePage() {
                 </div>
               )}
 
-              {/* ── Script edit save bar ─────────────────────── */}
-              {chunkScriptDirty && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
-                  padding: '8px 12px', background: 'var(--accent)10', border: '1px solid var(--accent)30',
-                  borderRadius: 8, fontSize: 12,
-                }}>
-                  <span style={{ color: 'var(--accent)', flex: 1 }}>Script has unsaved edits</span>
-                  <button
-                    onClick={saveChunkEdits}
-                    style={{
-                      padding: '4px 12px', background: 'var(--accent)', color: '#fff',
-                      border: 'none', borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    }}
-                  >
-                    Save Script
-                  </button>
-                  <button
-                    onClick={() => { setEditedChunks(new Map()); setChunkScriptDirty(false); }}
-                    style={{
-                      padding: '4px 12px', background: 'transparent', color: 'var(--fg-muted)',
-                      border: '1px solid var(--border)', borderRadius: 5, fontSize: 12, cursor: 'pointer',
-                    }}
-                  >
-                    Discard
-                  </button>
-                </div>
-              )}
-
-              {/* ── Paragraph chunks ─────────────────────────── */}
+              {/* ── Paragraph chunks (read-only text + audio) ── */}
               {narrationState.chunks.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {narrationState.chunks.map((chunk) => {
                     const isGenerating = generatingChunks.has(chunk.index);
-                    const chunkText = getChunkText(chunk);
-                    const isEdited = editedChunks.has(chunk.index);
                     const chunkSpeaker = chunkSpeakers.get(chunk.index) ?? 'A';
                     const colors = speakerColors[chunkSpeaker] ?? speakerColors.A!;
                     const isDialog = narrationMode === 'dialog';
@@ -954,7 +1171,10 @@ export function ScenePage() {
                                       next.set(chunk.index, s);
                                       return next;
                                     });
-                                    setModeDirty(true);
+                                    // Auto-save speaker assignment
+                                    if (projectId && sceneId) {
+                                      narrationApi.saveSpeakerAssignments(projectId, sceneId, [{ index: chunk.index, speaker: s }]);
+                                    }
                                   }}
                                   style={{
                                     padding: '2px 10px',
@@ -991,9 +1211,6 @@ export function ScenePage() {
                               {chunk.durationSec != null ? `${chunk.durationSec.toFixed(1)}s` : 'Done'}
                             </span>
                           )}
-                          {isEdited && (
-                            <span style={{ fontSize: 10, color: 'var(--accent)' }}>edited</span>
-                          )}
                           <div style={{ flex: 1 }} />
                           <button
                             onClick={() => generateChunk(chunk)}
@@ -1013,32 +1230,17 @@ export function ScenePage() {
                           </button>
                         </div>
 
-                        {/* Editable script text */}
-                        <textarea
-                          value={chunkText}
-                          onChange={(e) => {
-                            const next = new Map(editedChunks);
-                            next.set(chunk.index, e.target.value);
-                            setEditedChunks(next);
-                            setChunkScriptDirty(true);
-                          }}
-                          style={{
-                            width: '100%',
-                            padding: 10,
-                            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                            fontSize: 12,
-                            lineHeight: 1.6,
-                            background: 'var(--bg)',
-                            color: 'var(--fg)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 6,
-                            resize: 'vertical',
-                            outline: 'none',
-                            minHeight: 60,
-                            boxSizing: 'border-box',
-                          }}
-                          rows={Math.max(2, chunkText.split('\n').length)}
-                        />
+                        {/* Script text (read-only — edit in Script tab) */}
+                        <p style={{
+                          margin: 0, padding: 10,
+                          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                          fontSize: 12, lineHeight: 1.6,
+                          color: 'var(--fg-muted)', whiteSpace: 'pre-wrap',
+                          background: 'var(--bg)', borderRadius: 6,
+                          border: '1px solid var(--border)',
+                        }}>
+                          {chunk.text}
+                        </p>
 
                         {/* Audio player */}
                         {chunk.hasAudio && (

@@ -3,6 +3,7 @@ import { NavBar } from './components/NavBar.js';
 import { Dashboard } from './pages/Dashboard.js';
 import BrandNew from './pages/BrandNew.js';
 import BrandDetail from './pages/BrandDetail.js';
+import { BrandsList } from './pages/BrandsList.js';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.js';
 import { ProjectOverview } from './pages/ProjectOverview.js';
 import { StoryboardView } from './pages/StoryboardView.js';
@@ -19,6 +20,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/brands" element={<BrandsList />} />
         <Route path="/brands/new" element={<BrandNew />} />
         <Route path="/brands/:slug" element={<BrandDetail />} />
         <Route path="/project/:projectId" element={<ProjectWorkspace />}>

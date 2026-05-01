@@ -130,7 +130,7 @@ export async function buildServer() {
     registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
   );
   await app.register(async (instance) =>
-    registerNarrationRoutes(instance, { store, tts, vpaHome: config.vpaHome }),
+    registerNarrationRoutes(instance, { store, tts, llm, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
     registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot }),

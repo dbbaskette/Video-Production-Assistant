@@ -48,6 +48,21 @@ export function splitIntoParagraphs(script: string): string[] {
 }
 
 /**
+ * Split a dialog script into chunks — one per speaker turn.
+ * Each line starting with [Speaker X] becomes its own chunk.
+ * Falls back to paragraph splitting if no speaker tags found.
+ */
+export function splitDialogIntoChunks(script: string): string[] {
+  // Split on newline before [Speaker X] tags
+  const chunks = script
+    .split(/\n(?=\[Speaker [A-Z]\])/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  // Fall back to paragraph splitting if no speaker tags
+  return chunks.length > 1 ? chunks : splitIntoParagraphs(script);
+}
+
+/**
  * Generate narration for the full script (legacy single-file mode).
  */
 export async function generateNarration(
@@ -148,18 +163,21 @@ export async function generateChunkNarration(
   const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}.mp3`;
   await writeFile(join(projectPath, audioRelPath), ttsResult.audio);
 
-  // Update chunk in storyboard
+  // Update chunk in storyboard — preserve speaker assignment if it exists
   const existingChunks = scene.narration?.chunks ?? [];
+  const chunkIdx = existingChunks.findIndex((c) => c.index === chunkIndex);
+  const existingSpeaker = chunkIdx >= 0 ? existingChunks[chunkIdx]!.speaker : undefined;
+
   const newChunk = {
     index: chunkIndex,
     text,
     audio: audioRelPath,
     durationSec: ttsResult.durationSec,
     timings: ttsResult.timings ?? [],
+    ...(existingSpeaker ? { speaker: existingSpeaker } : {}),
   };
 
   // Replace existing chunk or append
-  const chunkIdx = existingChunks.findIndex((c) => c.index === chunkIndex);
   const updatedChunks = [...existingChunks];
   if (chunkIdx >= 0) {
     updatedChunks[chunkIdx] = newChunk;
@@ -168,10 +186,16 @@ export async function generateChunkNarration(
     updatedChunks.sort((a, b) => a.index - b.index);
   }
 
+  // Mirror the active chunks into the per-mode snapshot so they survive
+  // a mode toggle. Default to monologue when mode hasn't been set yet.
+  const activeMode = (scene.narration as any)?.mode ?? 'monologue';
+  const modeChunksKey = activeMode === 'dialog' ? 'dialogChunks' : 'monologueChunks';
+
   const narration = {
     ...(scene.narration ?? { script: text }),
     tts: { engine, voice, speed: speed ?? 1.0 },
     chunks: updatedChunks,
+    [modeChunksKey]: updatedChunks,
   };
 
   const updated = updateScene(sb, sceneId, { narration: narration as any });

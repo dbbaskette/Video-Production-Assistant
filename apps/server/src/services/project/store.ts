@@ -134,4 +134,30 @@ export class ProjectStore {
     );
     await this.writeTracker({ version: 1, projects: next });
   }
+
+  /** Read full project metadata (project.yaml) by id. */
+  async readProject(id: string): Promise<Project> {
+    const tracker = await this.readTracker();
+    const entry = tracker.projects.find((p) => p.id === id);
+    if (!entry) throw new Error(`Project not found: ${id}`);
+    const files = projectFiles(entry.path);
+    const text = await readFile(files.metadata, 'utf8');
+    return loadYaml(text, ProjectSchema);
+  }
+
+  /** Update the brand applied to a project. Pass null to clear. */
+  async setProjectBrand(
+    id: string,
+    brand: { id: string; applied_version: number } | null,
+  ): Promise<Project> {
+    const tracker = await this.readTracker();
+    const entry = tracker.projects.find((p) => p.id === id);
+    if (!entry) throw new Error(`Project not found: ${id}`);
+    const files = projectFiles(entry.path);
+    const text = await readFile(files.metadata, 'utf8');
+    const current = loadYaml(text, ProjectSchema);
+    const updated: Project = ProjectSchema.parse({ ...current, brand });
+    await atomicWriteFile(files.metadata, dumpYaml(updated));
+    return updated;
+  }
 }

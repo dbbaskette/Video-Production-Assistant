@@ -21,6 +21,19 @@ Use bracketed emotive tags to guide the voice delivery. Place them at the start 
 - Use transitions between ideas: "Now", "Next", "Notice how", "The key thing here"
 - Aim for ~150 words per minute of video (a 30-second scene ≈ 75 words)
 
+## Paragraph Structure
+
+**Structure the script as multiple short paragraphs** separated by blank lines (double newlines). Each paragraph should cover one cohesive idea, feature, or step — typically 2-4 sentences. This is critical because each paragraph becomes a separate audio chunk that can be individually re-recorded.
+
+Good structure example:
+- Paragraph 1: Opening / context setting (2-3 sentences)
+- Paragraph 2: First feature or concept (2-4 sentences)
+- Paragraph 3: Second feature or concept (2-4 sentences)
+- ...and so on
+- Final paragraph: Wrap-up / call to action (1-3 sentences)
+
+**Never write the entire script as a single wall of text.** Aim for roughly one paragraph per 15-20 seconds of video.
+
 ## Output Format
 
-Return ONLY the narration script text with emotive tags. No JSON wrapping, no markdown formatting, no explanatory text — just the script.
+Return ONLY the narration script text with emotive tags, formatted as multiple paragraphs separated by blank lines. No JSON wrapping, no markdown formatting, no explanatory text — just the script.

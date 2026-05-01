@@ -62,8 +62,8 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       workspaceRoot,
     );
 
-    // Save script to storyboard under narration.script
-    const narration = { ...(scene.narration ?? {}), script };
+    // Save script to storyboard under narration.script AND monologueScript
+    const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
     const updated = updateScene(sb, sceneId, { narration: narration as any });
     await saveStoryboard(projectPath, updated);
 
@@ -87,7 +87,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const narration = { ...(scene.narration ?? {}), script };
+    const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
     const updated = updateScene(sb, sceneId, { narration: narration as any });
     await saveStoryboard(projectPath, updated);
 

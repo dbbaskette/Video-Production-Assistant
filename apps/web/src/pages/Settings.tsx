@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
+import { settingsApi, ttsApi, voiceApi, voiceCloneApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo, type VoiceCloneRef } from '../lib/api.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -587,6 +587,227 @@ function AddVoiceProfileForm({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+/* ── Voice Cloning ────────────────────────────────────── */
+
+function VoiceCloneSection() {
+  const qc = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [showScript, setShowScript] = useState(false);
+
+  const { data: clones, isLoading: clonesLoading } = useQuery({
+    queryKey: ['voice-clones'],
+    queryFn: () => voiceCloneApi.list(),
+  });
+
+  const { data: scriptData } = useQuery({
+    queryKey: ['voice-clone-script'],
+    queryFn: () => voiceCloneApi.getScript(),
+    enabled: showScript,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (filename: string) => voiceCloneApi.remove(filename),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['voice-clones'] }),
+  });
+
+  const handleUpload = useCallback(async (file: File) => {
+    setUploading(true);
+    try {
+      await voiceCloneApi.upload(file);
+      qc.invalidateQueries({ queryKey: ['voice-clones'] });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [qc]);
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  return (
+    <div>
+      <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 16px' }}>
+        Record yourself reading a script and upload the WAV file. Fish Audio will use your voice as a reference for TTS narration.
+      </p>
+
+      {/* Show/hide recording script */}
+      <button
+        onClick={() => setShowScript(!showScript)}
+        style={{
+          padding: '8px 16px',
+          background: showScript ? 'var(--accent-bg)' : 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          cursor: 'pointer',
+          fontSize: 13,
+          fontWeight: 600,
+          color: showScript ? 'var(--accent)' : 'var(--fg)',
+          marginBottom: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          transition: 'all 0.15s ease',
+        }}
+      >
+        📝 {showScript ? 'Hide Recording Script' : 'Show Recording Script'}
+      </button>
+
+      {showScript && scriptData && (
+        <div style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: 20,
+          marginBottom: 16,
+        }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Script to Read Aloud</h4>
+          <div style={{
+            background: 'var(--bg)',
+            borderRadius: 8,
+            padding: 16,
+            fontSize: 14,
+            lineHeight: 1.8,
+            whiteSpace: 'pre-wrap',
+            fontFamily: 'Georgia, serif',
+            color: 'var(--fg)',
+            marginBottom: 16,
+            border: '1px solid var(--border)',
+          }}>
+            {scriptData.script}
+          </div>
+
+          <details style={{ marginTop: 8 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: 'var(--fg-muted)' }}>
+              Recording Tips
+            </summary>
+            <div style={{
+              fontSize: 13,
+              lineHeight: 1.7,
+              color: 'var(--fg-muted)',
+              marginTop: 8,
+              whiteSpace: 'pre-wrap',
+            }}>
+              {scriptData.instructions}
+            </div>
+          </details>
+        </div>
+      )}
+
+      {/* Upload area */}
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '2px dashed var(--border)',
+          borderRadius: 10,
+          padding: '24px 20px',
+          textAlign: 'center',
+          marginBottom: 16,
+          cursor: uploading ? 'wait' : 'pointer',
+          transition: 'border-color 0.15s ease',
+        }}
+        onClick={() => !uploading && fileInputRef.current?.click()}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const file = e.dataTransfer.files[0];
+          if (file && file.name.endsWith('.wav')) handleUpload(file);
+        }}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".wav,audio/wav"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleUpload(file);
+          }}
+        />
+        {uploading ? (
+          <span style={{ color: 'var(--fg-muted)', fontSize: 14 }}>Uploading…</span>
+        ) : (
+          <>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>🎙️</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              Drop a WAV file here or click to upload
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Record yourself reading the script above, then upload the WAV
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Saved clones list */}
+      {clonesLoading && <p className="hint">Loading voice clones…</p>}
+      {clones && clones.length > 0 && (
+        <div>
+          <h4 style={{ fontSize: 13, fontWeight: 600, margin: '0 0 8px', color: 'var(--fg-muted)' }}>
+            Saved Reference Files
+          </h4>
+          {clones.map((clone) => (
+            <div
+              key={clone.filename}
+              style={{
+                ...card,
+                padding: '12px 16px',
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  🎙️ {clone.filename}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
+                  {formatSize(clone.size)} · {new Date(clone.createdAt).toLocaleDateString()}
+                  {clone.transcript && (
+                    <span style={{ marginLeft: 8 }}>✓ Transcript saved</span>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{
+                  fontSize: 10,
+                  padding: '3px 8px',
+                  borderRadius: 999,
+                  background: '#1a2a1a',
+                  color: '#5e8a3a',
+                  fontWeight: 600,
+                }}>
+                  Ready
+                </span>
+                <button
+                  onClick={() => deleteMutation.mutate(clone.filename)}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid var(--border)',
+                    borderRadius: 5,
+                    padding: '4px 8px',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    color: 'var(--danger)',
+                  }}
+                  title="Remove this voice clone reference"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+          <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+            Use the "Voice Clone" voice in Fish Audio engine to narrate with your cloned voice.
+            Set <code>FISH_AUDIO_REF_AUDIO</code> in <code>.env</code> to the file path above, or select "clone" as the voice.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Settings Page ──────────────────────────────────── */
 
 export function Settings() {
@@ -695,6 +916,26 @@ export function Settings() {
             <AddVoiceProfileForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'voices'] })} />
           </>
         )}
+      </section>
+
+      {/* Voice Cloning section */}
+      <section style={{ marginTop: 48 }}>
+        <div className="section-header" style={{ marginBottom: 18 }}>
+          <span className="section-label">Voice Cloning</span>
+          <span style={{
+            marginLeft: 10,
+            fontSize: 10,
+            padding: '2px 8px',
+            borderRadius: 999,
+            background: '#1a2a3a',
+            color: '#7aa2f7',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+          }}>
+            Fish Audio
+          </span>
+        </div>
+        <VoiceCloneSection />
       </section>
     </main>
   );

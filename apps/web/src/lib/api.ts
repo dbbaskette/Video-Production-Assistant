@@ -56,6 +56,17 @@ export const api = {
   async getDefaults(): Promise<{ projectsDefault: string }> {
     return request('GET', '/api/config/defaults');
   },
+  async getProject(id: string): Promise<Project> {
+    const data = await request<unknown>('GET', `/api/projects/${id}`);
+    return ProjectSchema.parse(data);
+  },
+  async setProjectBrand(
+    id: string,
+    brand: { id: string; applied_version: number } | null,
+  ): Promise<Project> {
+    const data = await request<unknown>('PUT', `/api/projects/${id}/brand`, { brand });
+    return ProjectSchema.parse(data);
+  },
 };
 
 export const brandsApi = {
@@ -346,6 +357,11 @@ export interface NarrationState {
   chunks: NarrationChunkInfo[];
   mode: 'monologue' | 'dialog';
   speakers: Record<string, SpeakerConfig>;
+  monologueScript: string | null;
+  dialogScript: string | null;
+  dialogDirty: boolean;
+  hasPreviousMonologue: boolean;
+  hasPreviousDialog: boolean;
 }
 
 export interface NarrationResult {
@@ -413,15 +429,23 @@ export const narrationApi = {
     projectId: string,
     sceneId: string,
     script: string,
+    slot?: 'monologue' | 'dialog',
   ): Promise<{ saved: boolean; script: string }> {
-    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/script`, { script });
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/script`, { script, slot });
+  },
+  async restoreScript(
+    projectId: string,
+    sceneId: string,
+    slot: 'monologue' | 'dialog',
+  ): Promise<{ restored: boolean; script: string; slot: string }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/narration/restore`, { slot });
   },
   async saveMode(
     projectId: string,
     sceneId: string,
     mode: 'monologue' | 'dialog',
     speakers: Record<string, SpeakerConfig>,
-  ): Promise<{ saved: boolean }> {
+  ): Promise<{ saved: boolean; needsConversion?: boolean; script?: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/mode`, { mode, speakers });
   },
   async saveSpeakerAssignments(
@@ -431,11 +455,47 @@ export const narrationApi = {
   ): Promise<{ saved: boolean }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/speakers`, { assignments });
   },
+  async convertToDialog(
+    projectId: string,
+    sceneId: string,
+  ): Promise<{ script: string; chunks: Array<{ index: number; text: string; speaker: string }> }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/narration/convert-dialog`);
+  },
   audioUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/audio`;
   },
   chunkAudioUrl(projectId: string, sceneId: string, chunkIndex: number): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/chunk/${chunkIndex}/audio`;
+  },
+};
+
+export interface VoiceCloneRef {
+  filename: string;
+  path: string;
+  size: number;
+  createdAt: string;
+  transcript?: string;
+}
+
+export const voiceCloneApi = {
+  async list(): Promise<VoiceCloneRef[]> {
+    return request<VoiceCloneRef[]>('GET', '/api/voice-clone/list');
+  },
+  async upload(file: File): Promise<{ path: string; filename: string; size: number }> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/api/voice-clone/upload`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+    return res.json();
+  },
+  async saveTranscript(filename: string, transcript: string): Promise<{ saved: boolean }> {
+    return request('PUT', `/api/voice-clone/${encodeURIComponent(filename)}/transcript`, { transcript });
+  },
+  async remove(filename: string): Promise<void> {
+    await request('DELETE', `/api/voice-clone/${encodeURIComponent(filename)}`);
+  },
+  async getScript(): Promise<{ script: string; instructions: string }> {
+    return request('GET', '/api/voice-clone/script');
   },
 };
 

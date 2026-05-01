@@ -1,6 +1,6 @@
-import { NavLink, useParams } from 'react-router-dom';
+import { Link, NavLink, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { storyboardApi } from '../lib/api.js';
+import { storyboardApi, api, brandsApi } from '../lib/api.js';
 
 const linkStyle = (isActive: boolean): React.CSSProperties => ({
   display: 'block',
@@ -36,7 +36,20 @@ export function ProjectSidebar({ projectName }: Props) {
     enabled: !!projectId,
   });
 
+  const { data: project } = useQuery({
+    queryKey: ['project', projectId],
+    queryFn: () => api.getProject(projectId!),
+    enabled: !!projectId,
+  });
+
+  const { data: brandRegistry } = useQuery({
+    queryKey: ['brands'],
+    queryFn: () => brandsApi.list(),
+  });
+
   const scenes = storyboard?.scenes ?? [];
+  const appliedBrandId = project?.brand?.id ?? null;
+  const appliedBrand = brandRegistry?.brands.find((b) => b.id === appliedBrandId) ?? null;
 
   return (
     <nav
@@ -51,7 +64,7 @@ export function ProjectSidebar({ projectName }: Props) {
         overflow: 'hidden',
       }}
     >
-      {/* Project name */}
+      {/* Project name + applied brand */}
       <div
         style={{
           padding: '20px 16px 12px',
@@ -60,6 +73,29 @@ export function ProjectSidebar({ projectName }: Props) {
       >
         <div style={{ fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {projectName}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ textTransform: 'uppercase', letterSpacing: 1 }}>Brand:</span>
+          {appliedBrand ? (
+            <Link
+              to={`/brands/${appliedBrand.id}`}
+              style={{
+                color: 'var(--fg)',
+                textDecoration: 'none',
+                fontWeight: 600,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={`${appliedBrand.name} (v${project?.brand?.applied_version ?? appliedBrand.version})`}
+            >
+              {appliedBrand.name}
+            </Link>
+          ) : (
+            <Link to={`/project/${projectId}`} style={{ color: 'var(--fg-muted)', textDecoration: 'underline' }}>
+              none — set
+            </Link>
+          )}
         </div>
       </div>
 
@@ -117,7 +153,7 @@ export function ProjectSidebar({ projectName }: Props) {
         {/* Library section */}
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}>
           <p style={sectionLabel}>Library</p>
-          <NavLink to="/brands/new" style={({ isActive }) => linkStyle(isActive)}>
+          <NavLink to="/brands" style={({ isActive }) => linkStyle(isActive)}>
             Brands
           </NavLink>
         </div>

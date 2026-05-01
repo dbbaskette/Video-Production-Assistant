@@ -16,11 +16,17 @@ async function buildTestServer() {
   const tts = new TtsService();
   tts.register(createFakeTtsProvider());
 
+  const llm = {
+    async complete() {
+      return { text: 'fake llm response' };
+    },
+  };
+
   const app = Fastify();
   await app.register(async (i) =>
-    registerNarrationRoutes(i, { store, tts, vpaHome: home }),
+    registerNarrationRoutes(i, { store, tts, llm, vpaHome: home }),
   );
-  return { app, store, tts, home, projects };
+  return { app, store, tts, llm, home, projects };
 }
 
 function makeSampleStoryboard(projectId: string): Storyboard {
