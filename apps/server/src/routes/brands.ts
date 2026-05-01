@@ -166,8 +166,7 @@ export async function registerBrandRoutes(
       sources,
     }).catch((err) => {
       jobQueue.fail(job.id, String(err));
-    }).finally(() => {
-      // Keep slug tracked — it will be in the registry after generate completes
+      pendingSlugs.delete(slug);
     });
 
     return reply.code(202).send({ job_id: job.id, slug });
@@ -205,8 +204,12 @@ export async function registerBrandRoutes(
         slug,
         brandName: parsed.data.name,
         frontMatter: parsed.data,
+      }).then(() => {
+        // Brand is in the registry now — safe to remove from pending
+        pendingSlugs.delete(slug);
       }).catch((err) => {
         jobQueue.fail(job.id, String(err));
+        pendingSlugs.delete(slug);
       });
 
       return reply.code(202).send({ job_id: job.id });
@@ -381,6 +384,31 @@ export async function registerBrandRoutes(
       })();
 
       return reply.code(202).send({ job_id: job.id });
+    },
+  );
+
+  // ──────────────────── GET /api/brands/:slug/assets/:filename ───────────
+  app.get<{ Params: { slug: string; filename: string } }>(
+    '/api/brands/:slug/assets/:filename',
+    async (req, reply) => {
+      const { slug, filename: fname } = req.params;
+      const filePath = join(paths.assetsDir(slug), fname);
+      try {
+        await stat(filePath);
+      } catch {
+        return reply.code(404).send({ error: 'Asset not found' });
+      }
+      const ext = extname(fname).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+      };
+      reply.header('Content-Type', mimeMap[ext] ?? 'application/octet-stream');
+      return reply.send(createReadStream(filePath));
     },
   );
 

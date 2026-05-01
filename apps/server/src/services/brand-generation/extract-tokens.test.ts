@@ -21,7 +21,7 @@ const VALID_TOKENS = {
 };
 
 describe('extractTokens', () => {
-  it('parses valid JSON returned by the LLM into DesignMdFrontMatter', async () => {
+  it('parses valid JSON returned by the LLM into DesignMdFrontMatter (pass 1 only)', async () => {
     const llm = mkLlm([JSON.stringify(VALID_TOKENS)]);
     const result = await extractTokens(llm, {
       systemPrompt: 'sys',
@@ -31,6 +31,8 @@ describe('extractTokens', () => {
     expect(result.frontMatter.name).toBe('Tanzu');
     expect(result.frontMatter.colors.primary).toBe('#007B8C');
     expect(result.frontMatter.version).toBe('alpha');
+    // Only 1 call — pass 2 was skipped
+    expect((llm.complete as any).mock.calls.length).toBe(1);
   });
 
   it('strips code fences if the LLM wraps JSON in them', async () => {
@@ -39,22 +41,32 @@ describe('extractTokens', () => {
     expect(result.frontMatter.name).toBe('Tanzu');
   });
 
-  it('retries once on invalid JSON, then succeeds', async () => {
+  it('uses pass 2 conformance when pass 1 returns invalid JSON', async () => {
+    // Pass 1 returns garbage, pass 2 returns valid tokens
     const llm = mkLlm(['not-json', JSON.stringify(VALID_TOKENS)]);
     const result = await extractTokens(llm, { systemPrompt: 's', sourceMarkdown: 'x', brandName: 'Tanzu' });
     expect(result.frontMatter.name).toBe('Tanzu');
     expect((llm.complete as any).mock.calls.length).toBe(2);
   });
 
-  it('throws after a second invalid JSON, exposing raw text', async () => {
-    const llm = mkLlm(['nope', 'still nope']);
-    await expect(extractTokens(llm, { systemPrompt: 's', sourceMarkdown: 'x', brandName: 'Z' }))
-      .rejects.toThrow(/raw response/);
+  it('uses pass 2 conformance when pass 1 JSON fails schema', async () => {
+    // Pass 1 returns JSON missing required fields, pass 2 fixes it
+    const llm = mkLlm([JSON.stringify({ name: 'X' }), JSON.stringify(VALID_TOKENS)]);
+    const result = await extractTokens(llm, { systemPrompt: 's', sourceMarkdown: 'x', brandName: 'Tanzu' });
+    expect(result.frontMatter.name).toBe('Tanzu');
+    expect((llm.complete as any).mock.calls.length).toBe(2);
   });
 
-  it('throws when valid JSON fails the schema', async () => {
-    const llm = mkLlm([JSON.stringify({ name: 'X' })]);
+  it('throws when both passes return invalid JSON', async () => {
+    const llm = mkLlm(['nope', 'still nope']);
+    await expect(extractTokens(llm, { systemPrompt: 's', sourceMarkdown: 'x', brandName: 'Z' }))
+      .rejects.toThrow(/invalid JSON/);
+  });
+
+  it('throws when pass 2 JSON still fails schema', async () => {
+    // Both passes return JSON but neither has required fields
+    const llm = mkLlm([JSON.stringify({ name: 'X' }), JSON.stringify({ bad: true })]);
     await expect(extractTokens(llm, { systemPrompt: 's', sourceMarkdown: 'x', brandName: 'X' }))
-      .rejects.toThrow();
+      .rejects.toThrow(/schema validation/);
   });
 });

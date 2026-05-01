@@ -70,6 +70,24 @@ if ! command -v ffmpeg &>/dev/null; then
   echo "         Install ffmpeg to enable video processing features."
 fi
 
+# Kill any previous VPA processes on our ports
+kill_prev() {
+  local port=$1
+  local pids
+  pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "Killing previous process on port $port (PIDs: $pids)..."
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+    sleep 0.5
+  fi
+}
+
+SERVER_PORT="${VPA_SERVER_PORT:-3000}"
+WEB_PORT=5173
+
+kill_prev "$SERVER_PORT"
+kill_prev "$WEB_PORT"
+
 # Build if requested or if node_modules missing
 if [ "$BUILD" = true ] || [ ! -d node_modules ]; then
   echo "Installing dependencies..."

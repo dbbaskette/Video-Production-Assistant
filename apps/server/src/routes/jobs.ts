@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { jobQueue } from '../lib/job-queue.js';
+import { loadConfig } from '../config.js';
 
 export async function registerJobRoutes(app: FastifyInstance): Promise<void> {
+  const allowedOrigin = loadConfig().webOrigin;
   app.get<{ Params: { id: string } }>('/api/jobs/:id', async (req, reply) => {
     const job = jobQueue.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Job not found' });
@@ -12,6 +14,9 @@ export async function registerJobRoutes(app: FastifyInstance): Promise<void> {
     const job = jobQueue.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Job not found' });
 
+    // CORS headers must be set manually since we bypass Fastify's
+    // response pipeline by writing directly to reply.raw for SSE.
+    reply.raw.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     reply.raw.setHeader('Content-Type', 'text/event-stream');
     reply.raw.setHeader('Cache-Control', 'no-cache');
     reply.raw.setHeader('Connection', 'keep-alive');

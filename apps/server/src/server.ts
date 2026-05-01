@@ -18,9 +18,14 @@ import { registerExportRoutes } from './routes/export.js';
 import { ProjectStore } from './services/project/store.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
-import { createLlm } from './services/llm/factory.js';
+import { seedBrands } from './services/brand/seed.js';
+import { createLlm, createLlmFromEntry } from './services/llm/factory.js';
+import { SwappableLlm } from './services/llm/swappable.js';
+import { ModelRegistry } from './services/llm/model-registry.js';
+import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
+import { join } from 'node:path';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -45,8 +50,25 @@ export async function buildServer() {
 
   const bPaths = brandPaths(config.vpaHome, config.vpaHome);
 
-  const llm = createLlm(config.llm);
-  app.log.info(`LLM provider: ${config.llm.provider}${config.llm.model ? ` (model: ${config.llm.model})` : ''}`);
+  // ── Seed built-in brands on first launch ────────────────────
+  await seedBrands(bPaths, bPaths.registryFile);
+
+  // ── Model registry (persisted in ~/.vpa/models.json) ──────────────
+  const modelRegistry = new ModelRegistry(join(config.vpaHome, 'models.json'));
+  await modelRegistry.load();
+
+  const activeModel = modelRegistry.getActive();
+  let innerLlm;
+  let llmLabel: string;
+  if (activeModel) {
+    innerLlm = createLlmFromEntry(activeModel);
+    llmLabel = `${activeModel.name} (${activeModel.provider}/${activeModel.model})`;
+  } else {
+    innerLlm = createLlm(config.llm);
+    llmLabel = `${config.llm.provider}${config.llm.model ? ` / ${config.llm.model}` : ''}`;
+  }
+  const llm = new SwappableLlm(innerLlm, llmLabel);
+  app.log.info(`LLM: ${llm.getLabel()}`);
 
   const ideationManager = new IdeationManager();
 
@@ -87,6 +109,7 @@ export async function buildServer() {
   await app.register(async (instance) =>
     registerExportRoutes(instance, { store }),
   );
+  await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
   return { app, config, store };
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { brandsApi, ApiError } from '../lib/api';
@@ -77,29 +77,137 @@ function TokensTable({ frontMatter }: { frontMatter: DesignMdFrontMatter }) {
   );
 }
 
-function AssetsPane({ data }: { data: BrandWithDoc }) {
+function LogoUploadCard({
+  label,
+  currentPath,
+  slug,
+  field,
+  onUploaded,
+}: {
+  label: string;
+  currentPath: string | null | undefined;
+  slug: string;
+  field: 'primary' | 'mono';
+  onUploaded: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    try {
+      await brandsApi.uploadAsset(slug, field, file);
+      onUploaded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const imgUrl = currentPath ? brandsApi.assetUrl(slug, currentPath) : null;
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: 16,
+        background: 'var(--surface)',
+        minWidth: 220,
+        textAlign: 'center',
+      }}
+    >
+      <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 12px' }}>{label}</p>
+      {imgUrl ? (
+        <img
+          src={imgUrl}
+          alt={`${label} logo`}
+          style={{
+            maxWidth: 180,
+            maxHeight: 120,
+            objectFit: 'contain',
+            borderRadius: 6,
+            background: 'var(--bg-elev)',
+            padding: 8,
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            width: 180,
+            height: 100,
+            margin: '0 auto',
+            borderRadius: 6,
+            border: '2px dashed var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--fg-muted)',
+            fontSize: 13,
+          }}
+        >
+          No logo
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".png,.jpg,.jpeg,.svg,.webp"
+          style={{ display: 'none' }}
+          onChange={handleFile}
+        />
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={uploading}
+          style={{
+            padding: '6px 14px',
+            borderRadius: 6,
+            border: '1px solid var(--accent)',
+            background: 'transparent',
+            color: 'var(--accent)',
+            cursor: uploading ? 'wait' : 'pointer',
+            fontSize: 13,
+          }}
+        >
+          {uploading ? 'Uploading...' : imgUrl ? 'Replace' : 'Upload'}
+        </button>
+      </div>
+      {error && <p style={{ color: 'var(--danger, #c44)', fontSize: 12, marginTop: 6 }}>{error}</p>}
+    </div>
+  );
+}
+
+function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: string; onRefresh: () => void }) {
   const vpa = data.doc.frontMatter.vpa;
   return (
     <div>
       <h3 style={{ marginTop: 0 }}>Logos</h3>
-      <div style={{ display: 'flex', gap: 16 }}>
-        <div>
-          <p className="hint">Primary</p>
-          {vpa?.logo.primary ? (
-            <img src={vpa.logo.primary} alt="Primary logo" style={{ maxWidth: 200 }} />
-          ) : (
-            <p style={{ color: 'var(--fg-muted)', fontSize: 13 }}>No primary logo uploaded</p>
-          )}
-        </div>
-        <div>
-          <p className="hint">Mono</p>
-          {vpa?.logo.mono ? (
-            <img src={vpa.logo.mono} alt="Mono logo" style={{ maxWidth: 200 }} />
-          ) : (
-            <p style={{ color: 'var(--fg-muted)', fontSize: 13 }}>No mono logo uploaded</p>
-          )}
-        </div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <LogoUploadCard
+          label="Primary Logo"
+          currentPath={vpa?.logo.primary}
+          slug={slug}
+          field="primary"
+          onUploaded={onRefresh}
+        />
+        <LogoUploadCard
+          label="Mono Logo"
+          currentPath={vpa?.logo.mono}
+          slug={slug}
+          field="mono"
+          onUploaded={onRefresh}
+        />
       </div>
+      <p style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 12 }}>
+        Supported formats: PNG, JPG, SVG, WebP
+      </p>
     </div>
   );
 }
@@ -351,7 +459,7 @@ export default function BrandDetail() {
         </pre>
       )}
 
-      {tab === 'assets' && <AssetsPane data={data} />}
+      {tab === 'assets' && <AssetsPane data={data} slug={slug!} onRefresh={() => queryClient.invalidateQueries({ queryKey: ['brand', slug] })} />}
 
       {tab === 'usage' && <UsagePane slug={slug!} />}
     </main>

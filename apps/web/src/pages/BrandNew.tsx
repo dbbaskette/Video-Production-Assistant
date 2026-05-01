@@ -9,6 +9,95 @@ import type { DesignMdFrontMatter } from '@vpa/shared';
 
 type Step = 'identify' | 'sources' | 'extracting' | 'review' | 'generating' | 'done';
 
+/* ── Pipeline progress component ────────────────────────────── */
+
+interface PipelineStep {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+type StepStatus = 'done' | 'active' | 'pending';
+
+function PipelineProgress({
+  steps,
+  activeStepId,
+  startTime,
+}: {
+  steps: PipelineStep[];
+  activeStepId: string | null;
+  startTime: number;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - startTime) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [startTime]);
+
+  const activeIdx = activeStepId ? steps.findIndex((s) => s.id === activeStepId) : -1;
+
+  const getStatus = (idx: number): StepStatus => {
+    if (activeIdx < 0) return idx === 0 ? 'active' : 'pending';
+    if (idx < activeIdx) return 'done';
+    if (idx === activeIdx) return 'active';
+    return 'pending';
+  };
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const timeStr = mins > 0 ? `${mins}m ${secs.toString().padStart(2, '0')}s` : `${secs}s`;
+
+  return (
+    <div className="pipeline">
+      {steps.map((step, i) => {
+        const status = getStatus(i);
+        return (
+          <div key={step.id} className="pipeline__step">
+            <div
+              className={`pipeline__icon pipeline__icon--${status}`}
+              aria-label={status}
+            >
+              {status === 'done' ? '✓' : ''}
+            </div>
+            <div className="pipeline__body">
+              <div
+                className={`pipeline__label${status === 'pending' ? ' pipeline__label--pending' : ''}`}
+              >
+                {step.label}
+              </div>
+              {step.detail && status !== 'pending' && (
+                <div
+                  className={`pipeline__detail${status === 'active' ? ' pipeline__detail--active' : ''}`}
+                >
+                  {step.detail}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div className="pipeline__elapsed">
+        Elapsed: <span>{timeStr}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ── Human-readable step mapping ────────────────────────────── */
+
+const EXTRACT_STEPS: PipelineStep[] = [
+  { id: 'persisted', label: 'Sources uploaded' },
+  { id: 'extracting', label: 'Reading documents' },
+  { id: 'extracting-tokens', label: 'Analyzing with AI', detail: 'This can take a minute with local models...' },
+  { id: 'tokens-ready', label: 'Tokens extracted' },
+];
+
+const GENERATE_STEPS: PipelineStep[] = [
+  { id: 'writing-rationale', label: 'Writing design rationale', detail: 'AI is composing your design.md...' },
+  { id: 'done', label: 'Brand saved' },
+];
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -25,7 +114,8 @@ export default function BrandNew() {
   const [files, setFiles] = useState<{ file: File }[]>([]);
   const [urls, setUrls] = useState('');
   const [freeText, setFreeText] = useState('');
-  const [progress, setProgress] = useState<string[]>([]);
+  const [pipelineStepId, setPipelineStepId] = useState<string | null>(null);
+  const [pipelineStartTime, setPipelineStartTime] = useState(Date.now());
   const [frontMatter, setFrontMatter] = useState<DesignMdFrontMatter | null>(null);
   const [body, setBody] = useState('');
   const [slug, setSlug] = useState('');
@@ -45,7 +135,18 @@ export default function BrandNew() {
       closeRef.current?.();
       const close = jobsApi.stream(jobId, (event) => {
         const type = event.type;
-        setProgress((prev) => [...prev, `[${type}] ${event.data ? JSON.stringify(event.data) : ''}`]);
+
+        // Update pipeline position for any recognized step
+        setPipelineStepId(type);
+
+        // Enrich extracting step with the source filename
+        if (type === 'extracting' && event.data) {
+          const d = event.data as { source?: string };
+          if (d.source) {
+            const shortName = d.source.replace(/^\d+-/, '');
+            EXTRACT_STEPS[1] = { id: 'extracting', label: 'Reading documents', detail: shortName };
+          }
+        }
 
         if (type === 'tokens-ready' && event.data) {
           const d = event.data as { frontMatter?: DesignMdFrontMatter; body?: string };
@@ -78,7 +179,8 @@ export default function BrandNew() {
     onSuccess: (result) => {
       setSlug(result.slug);
       setStep('extracting');
-      setProgress([]);
+      setPipelineStepId(null);
+      setPipelineStartTime(Date.now());
       subscribeToJob(
         result.job_id,
         (fm, b) => {
@@ -98,7 +200,8 @@ export default function BrandNew() {
     },
     onSuccess: (result) => {
       setStep('generating');
-      setProgress([]);
+      setPipelineStepId(null);
+      setPipelineStartTime(Date.now());
       subscribeToJob(
         result.job_id,
         () => {},
@@ -210,12 +313,14 @@ export default function BrandNew() {
       {/* Step: extracting */}
       {step === 'extracting' && (
         <>
-          <p>Extracting brand tokens from your sources...</p>
-          <ul className="progress">
-            {progress.map((msg, i) => (
-              <li key={i}>{msg}</li>
-            ))}
-          </ul>
+          <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>
+            Analyzing your sources and extracting brand tokens...
+          </p>
+          <PipelineProgress
+            steps={EXTRACT_STEPS}
+            activeStepId={pipelineStepId}
+            startTime={pipelineStartTime}
+          />
         </>
       )}
 
@@ -246,12 +351,14 @@ export default function BrandNew() {
       {/* Step: generating */}
       {step === 'generating' && (
         <>
-          <p>Generating design.md...</p>
-          <ul className="progress">
-            {progress.map((msg, i) => (
-              <li key={i}>{msg}</li>
-            ))}
-          </ul>
+          <p style={{ color: 'var(--fg-muted)', fontSize: 14 }}>
+            Generating your design.md file...
+          </p>
+          <PipelineProgress
+            steps={GENERATE_STEPS}
+            activeStepId={pipelineStepId}
+            startTime={pipelineStartTime}
+          />
         </>
       )}
     </main>

@@ -7,9 +7,10 @@ function expandHome(p: string): string {
 }
 
 export interface LlmConfig {
-  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code';
+  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'openai-compat';
   apiKey?: string;
   model?: string;
+  endpoint?: string;
 }
 
 export interface ServerConfig {
@@ -31,7 +32,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid VPA_SERVER_PORT: ${env.VPA_SERVER_PORT}`);
   }
-  const validProviders = ['fake', 'claude-code', 'gemini', 'anthropic'] as const;
+  const validProviders = ['fake', 'claude-code', 'gemini', 'anthropic', 'openai-compat'] as const;
   const rawProvider = env.VPA_LLM_PROVIDER ?? 'fake';
   if (!validProviders.includes(rawProvider as typeof validProviders[number])) {
     throw new Error(`Invalid VPA_LLM_PROVIDER="${rawProvider}". Valid: ${validProviders.join(', ')}`);

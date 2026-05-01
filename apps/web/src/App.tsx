@@ -8,11 +8,13 @@ import { StoryboardView } from './pages/StoryboardView.js';
 import { Ideation } from './pages/Ideation.js';
 import { ScenePage } from './pages/ScenePage.js';
 import { ReviewPage } from './pages/ReviewPage.js';
+import { Settings } from './pages/Settings.js';
 
 export function App() {
   return (
     <Routes>
       <Route path="/" element={<Dashboard />} />
+      <Route path="/settings" element={<Settings />} />
       <Route path="/brands/new" element={<BrandNew />} />
       <Route path="/brands/:slug" element={<BrandDetail />} />
       <Route path="/project/:projectId" element={<ProjectWorkspace />}>

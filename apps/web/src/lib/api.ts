@@ -88,6 +88,19 @@ export const brandsApi = {
   downloadUrl(slug: string): string {
     return `${BASE}/api/brands/${slug}/download`;
   },
+  async uploadAsset(slug: string, field: 'primary' | 'mono' | 'other', file: File): Promise<{ path: string }> {
+    const form = new FormData();
+    form.append('field', field);
+    form.append('file', file);
+    const res = await fetch(`${BASE}/api/brands/${slug}/assets`, { method: 'POST', body: form });
+    if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`, res.status, await res.json().catch(() => null));
+    return res.json();
+  },
+  assetUrl(slug: string, relativePath: string): string {
+    // relativePath is "assets/filename.png" — extract just the filename
+    const filename = relativePath.replace(/^assets\//, '');
+    return `${BASE}/api/brands/${slug}/assets/${encodeURIComponent(filename)}`;
+  },
 };
 
 export interface IdeationMessage {
@@ -395,6 +408,59 @@ export const exportApi = {
   },
   async manifest(projectId: string): Promise<ExportManifest> {
     return request('GET', `/api/projects/${projectId}/export/manifest`);
+  },
+};
+
+// ── Settings / Model Management ──────────────────────────────────
+export interface ModelEntry {
+  id: string;
+  name: string;
+  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'openai-compat';
+  model: string;
+  endpoint?: string;
+  hasApiKey: boolean;
+  active: boolean;
+}
+
+export interface ActiveModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  endpoint?: string;
+  label: string;
+}
+
+export const settingsApi = {
+  async listModels(): Promise<ModelEntry[]> {
+    return request<ModelEntry[]>('GET', '/api/settings/models');
+  },
+  async addModel(entry: {
+    id: string;
+    name: string;
+    provider: ModelEntry['provider'];
+    model: string;
+    endpoint?: string;
+    apiKey?: string;
+  }): Promise<ModelEntry> {
+    return request<ModelEntry>('POST', '/api/settings/models', entry);
+  },
+  async updateModel(id: string, patch: {
+    name?: string;
+    model?: string;
+    endpoint?: string;
+    apiKey?: string;
+  }): Promise<ModelEntry> {
+    return request<ModelEntry>('PUT', `/api/settings/models/${id}`, patch);
+  },
+  async activateModel(id: string): Promise<ModelEntry> {
+    return request<ModelEntry>('POST', `/api/settings/models/${id}/activate`);
+  },
+  async deleteModel(id: string): Promise<void> {
+    await request('DELETE', `/api/settings/models/${id}`);
+  },
+  async getActiveModel(): Promise<ActiveModelInfo> {
+    return request<ActiveModelInfo>('GET', '/api/settings/models/active');
   },
 };
 
