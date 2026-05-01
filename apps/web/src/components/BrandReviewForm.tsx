@@ -1,4 +1,4 @@
-import type { DesignMdFrontMatter } from '@vpa/shared';
+import type { DesignMdFrontMatter, TypographyLevel } from '@vpa/shared';
 
 function defaultVpa() {
   return {
@@ -8,7 +8,7 @@ function defaultVpa() {
     lower_thirds: {
       template: 'bar-left-accent' as const,
       bg: '{colors.primary}',
-      fg: '{colors.surface}',
+      fg: '{colors.neutral}',
     },
     taglines: [] as string[],
   };
@@ -31,11 +31,19 @@ export function BrandReviewForm({ value, onChange }: Props) {
     setField('colors', { ...value.colors, [key]: hex });
   };
 
+  const setTypographyLevel = (levelName: string, patch: Partial<TypographyLevel>) => {
+    const current = (value.typography as Record<string, TypographyLevel>)[levelName] ?? { fontFamily: '' };
+    setField('typography', { ...value.typography, [levelName]: { ...current, ...patch } } as Record<string, TypographyLevel>);
+  };
+
   const setVpa = (patch: Partial<typeof vpa>) => {
     onChange({ ...value, vpa: { ...vpa, ...patch } });
   };
 
   const colorEntries = Object.entries(value.colors);
+  const typographyEntries = Object.entries(value.typography) as [string, TypographyLevel][];
+  const roundedEntries = Object.entries(value.rounded ?? {});
+  const spacingEntries = Object.entries(value.spacing ?? {});
 
   return (
     <div className="review-form">
@@ -63,7 +71,7 @@ export function BrandReviewForm({ value, onChange }: Props) {
 
       {/* Colors */}
       <fieldset>
-        <legend>Colors</legend>
+        <legend>Colors ({colorEntries.length})</legend>
         <div className="color-grid">
           {colorEntries.map(([key, hex]) => (
             <div className="color-row" key={key}>
@@ -84,32 +92,96 @@ export function BrandReviewForm({ value, onChange }: Props) {
 
       {/* Typography */}
       <fieldset>
-        <legend>Typography</legend>
-        <label>
-          Heading family
-          <input
-            value={value.typography.heading.family}
-            onChange={(e) =>
-              setField('typography', {
-                ...value.typography,
-                heading: { ...value.typography.heading, family: e.target.value },
-              })
-            }
-          />
-        </label>
-        <label>
-          Body family
-          <input
-            value={value.typography.body.family}
-            onChange={(e) =>
-              setField('typography', {
-                ...value.typography,
-                body: { ...value.typography.body, family: e.target.value },
-              })
-            }
-          />
-        </label>
+        <legend>Typography ({typographyEntries.length} levels)</legend>
+        {typographyEntries.map(([levelName, level]) => (
+          <div key={levelName} className="typography-level">
+            <strong>{levelName}</strong>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <label>
+                fontFamily
+                <input
+                  value={level.fontFamily}
+                  onChange={(e) => setTypographyLevel(levelName, { fontFamily: e.target.value })}
+                />
+              </label>
+              <label>
+                fontSize
+                <input
+                  value={level.fontSize ?? ''}
+                  onChange={(e) => setTypographyLevel(levelName, { fontSize: e.target.value || undefined })}
+                />
+              </label>
+              <label>
+                fontWeight
+                <input
+                  type="number"
+                  step={100}
+                  min={100}
+                  max={900}
+                  value={level.fontWeight ?? ''}
+                  onChange={(e) => setTypographyLevel(levelName, { fontWeight: e.target.value ? Number(e.target.value) : undefined })}
+                />
+              </label>
+              <label>
+                lineHeight
+                <input
+                  value={level.lineHeight ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const num = parseFloat(v);
+                    setTypographyLevel(levelName, {
+                      lineHeight: v ? (Number.isFinite(num) && !v.match(/[a-z%]/i) ? num : v) : undefined,
+                    });
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+        ))}
       </fieldset>
+
+      {/* Rounded */}
+      {roundedEntries.length > 0 && (
+        <fieldset>
+          <legend>Rounded</legend>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+            {roundedEntries.map(([key, val]) => (
+              <label key={key}>
+                {key}
+                <input
+                  value={val as string}
+                  onChange={(e) => setField('rounded', { ...value.rounded, [key]: e.target.value })}
+                />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      )}
+
+      {/* Spacing */}
+      {spacingEntries.length > 0 && (
+        <fieldset>
+          <legend>Spacing</legend>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+            {spacingEntries.map(([key, val]) => (
+              <label key={key}>
+                {key}
+                <input
+                  value={String(val)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const num = parseFloat(v);
+                    setField('spacing', {
+                      ...value.spacing,
+                      [key]: Number.isFinite(num) && !v.match(/[a-z%]/i) ? num : v,
+                    });
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      )}
 
       {/* Voice & Tone */}
       <fieldset>

@@ -318,7 +318,7 @@ export default function BrandDetail() {
             ))}
           </div>
           <p style={{ fontSize: 13, color: 'var(--fg-muted)' }}>
-            Typography: {fm.typography.heading.family} / {fm.typography.body.family}
+            Typography: {Object.values(fm.typography).map(l => l.fontFamily).filter((v, i, a) => a.indexOf(v) === i).join(' / ')}
           </p>
           {fm.vpa?.taglines && fm.vpa.taglines.length > 0 && (
             <div style={{ marginTop: 12 }}>

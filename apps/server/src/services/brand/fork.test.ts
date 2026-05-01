@@ -11,14 +11,15 @@ let paths: ReturnType<typeof brandPaths>;
 let registryFile: string;
 
 const SAMPLE_FRONTMATTER = {
-  name: 'Tanzu', version: 1,
-  colors: { primary: '#0091DA', surface: '#FFFFFF', on_surface: '#1A1C1E' },
+  version: 'alpha',
+  name: 'Tanzu',
+  colors: { primary: '#0091DA', neutral: '#FFFFFF', 'on-surface': '#1A1C1E' },
   typography: {
-    heading: { family: 'Inter', weights: [600] },
-    body: { family: 'Inter', weights: [400] },
+    'headline-lg': { fontFamily: 'Inter', fontSize: '36px', fontWeight: 600, lineHeight: 1.2 },
+    'body-md': { fontFamily: 'Inter', fontSize: '16px', fontWeight: 400, lineHeight: 1.5 },
   },
-  rounded: { sm: 4, md: 8, lg: 16 },
-  spacing: { unit: 8, scale: [4, 8] },
+  rounded: { sm: '4px', md: '8px', lg: '16px' },
+  spacing: { xs: '4px', sm: '8px' },
   components: {},
 };
 

@@ -23,7 +23,6 @@ export async function forkBrand(
   const forkedFrontMatter: DesignMdFrontMatter = {
     ...parent.doc.frontMatter,
     name: input.name,
-    version: 1,
   };
 
   return createBrand(paths, registryFile, {

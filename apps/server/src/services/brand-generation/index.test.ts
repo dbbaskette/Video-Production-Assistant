@@ -93,7 +93,7 @@ describe('runBrandGenerateJob', () => {
     });
     expect(queue.get(job2.id)!.status).toBe('completed');
     const written = await readFile(paths.designMd('acme'), 'utf8');
-    expect(written).toMatch(/---\nname: Acme/);
+    expect(written).toMatch(/---\nversion: alpha\nname: Acme/);
     expect(written).toMatch(/## Overview/);
   });
 });

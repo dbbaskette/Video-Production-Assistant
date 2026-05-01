@@ -3,11 +3,15 @@ import { assembleDesignMd } from './assemble.js';
 
 describe('assembleDesignMd', () => {
   const fm = {
-    name: 'Tanzu', version: 1,
-    colors: { primary: '#0091DA', surface: '#FFFFFF', on_surface: '#1A1C1E' },
-    typography: { heading: { family: 'Inter', weights: [600] }, body: { family: 'Inter', weights: [400] } },
-    rounded: { sm: 4, md: 8, lg: 16 },
-    spacing: { unit: 8, scale: [4, 8] },
+    version: 'alpha',
+    name: 'Tanzu',
+    colors: { primary: '#007B8C', neutral: '#FFFFFF', 'on-surface': '#000000' },
+    typography: {
+      'headline-lg': { fontFamily: 'Arial', fontSize: '36px', fontWeight: 700, lineHeight: 1.2 },
+      'body-md': { fontFamily: 'Arial', fontSize: '16px', fontWeight: 400, lineHeight: 1.5 },
+    },
+    rounded: { sm: '0px', md: '0px', lg: '0px' },
+    spacing: { xs: '4px', sm: '8px', md: '16px' },
     components: {},
   };
 
@@ -17,6 +21,7 @@ describe('assembleDesignMd', () => {
     expect(text.startsWith('---\n')).toBe(true);
     const parsed = matter(text);
     expect(parsed.data.name).toBe('Tanzu');
+    expect(parsed.data.version).toBe('alpha');
     expect(parsed.content.trim()).toMatch(/^## Overview/);
   });
 

@@ -10,15 +10,15 @@ let paths: ReturnType<typeof brandPaths>;
 let registryFile: string;
 
 const SAMPLE_FRONTMATTER = {
+  version: 'alpha',
   name: 'Tanzu',
-  version: 1,
-  colors: { primary: '#0091DA', surface: '#FFFFFF', on_surface: '#1A1C1E' },
+  colors: { primary: '#007B8C', neutral: '#FFFFFF', 'on-surface': '#1A1C1E' },
   typography: {
-    heading: { family: 'Inter', weights: [600, 700] },
-    body: { family: 'Inter', weights: [400, 500] },
+    'headline-lg': { fontFamily: 'Arial', fontSize: '36px', fontWeight: 700, lineHeight: 1.2 },
+    'body-md': { fontFamily: 'Arial', fontSize: '16px', fontWeight: 400, lineHeight: 1.5 },
   },
-  rounded: { sm: 4, md: 8, lg: 16 },
-  spacing: { unit: 8, scale: [4, 8, 16, 24, 32] },
+  rounded: { sm: '0px', md: '0px', lg: '0px' },
+  spacing: { xs: '4px', sm: '8px', md: '16px' },
   components: {},
 };
 
@@ -49,6 +49,7 @@ describe('brand store', () => {
     const list = await listBrands(registryFile);
     expect(list.brands).toHaveLength(1);
     expect(list.brands[0]?.id).toBe('tanzu');
+    expect(list.brands[0]?.version).toBe(1);
   });
 
   it('readBrand parses design.md and returns BrandWithDoc', async () => {
@@ -58,6 +59,7 @@ describe('brand store', () => {
     const brand = await readBrand(paths, registryFile, 'tanzu');
     expect(brand.registry.id).toBe('tanzu');
     expect(brand.doc.frontMatter.name).toBe('Tanzu');
+    expect(brand.doc.frontMatter.version).toBe('alpha');
     expect(brand.doc.body).toContain('## Overview');
   });
 
@@ -65,27 +67,17 @@ describe('brand store', () => {
     await expect(readBrand(paths, registryFile, 'missing')).rejects.toThrow(/not found/);
   });
 
-  it('updateBrandDoc bumps version and writes new content', async () => {
+  it('updateBrandDoc auto-increments registry version', async () => {
     await createBrand(paths, registryFile, {
       slug: 'tanzu', name: 'Tanzu', frontMatter: SAMPLE_FRONTMATTER, body: '## Old',
     });
     await updateBrandDoc(paths, registryFile, 'tanzu', {
-      frontMatter: { ...SAMPLE_FRONTMATTER, version: 2 },
+      frontMatter: SAMPLE_FRONTMATTER,
       body: '## New',
     });
     const updated = await readBrand(paths, registryFile, 'tanzu');
     expect(updated.registry.version).toBe(2);
     expect(updated.doc.body).toContain('## New');
-  });
-
-  it('updateBrandDoc rejects version that does not increment', async () => {
-    await createBrand(paths, registryFile, {
-      slug: 'tanzu', name: 'Tanzu', frontMatter: SAMPLE_FRONTMATTER, body: '## Old',
-    });
-    await expect(updateBrandDoc(paths, registryFile, 'tanzu', {
-      frontMatter: { ...SAMPLE_FRONTMATTER, version: 1 },
-      body: '## Same',
-    })).rejects.toThrow(/version must increment/);
   });
 
   it('deleteBrand removes directory and registry entry', async () => {

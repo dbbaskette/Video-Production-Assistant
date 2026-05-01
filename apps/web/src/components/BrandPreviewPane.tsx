@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { DesignMdFrontMatter } from '@vpa/shared';
+import type { DesignMdFrontMatter, TypographyLevel } from '@vpa/shared';
 
 interface Props {
   value: DesignMdFrontMatter;
@@ -11,7 +11,7 @@ function resolve(
   value: string,
   colors: Record<string, string>,
 ): string {
-  return value.replace(/\{colors\.(\w+)\}/g, (_, key) => {
+  return value.replace(/\{colors\.([a-zA-Z0-9_-]+)\}/g, (_, key) => {
     return (colors as Record<string, string>)[key] ?? value;
   });
 }
@@ -52,18 +52,42 @@ function quickYaml(obj: unknown, indent = 0): string {
   return `${pad}${String(obj)}`;
 }
 
+/** Find the first typography level matching a pattern, or fall back */
+function findLevel(
+  typography: Record<string, TypographyLevel>,
+  ...patterns: string[]
+): TypographyLevel | undefined {
+  for (const pattern of patterns) {
+    const found = Object.entries(typography).find(([k]) =>
+      k.toLowerCase().includes(pattern),
+    );
+    if (found) return found[1];
+  }
+  // Fall back to the first level
+  const entries = Object.values(typography);
+  return entries[0];
+}
+
 export function BrandPreviewPane({ value, body }: Props) {
   const [tab, setTab] = useState<'visual' | 'markdown'>('visual');
 
   const colorEntries = Object.entries(value.colors);
+  const typography = value.typography as Record<string, TypographyLevel>;
   const vpa = value.vpa;
 
+  const headlineLevel = findLevel(typography, 'headline', 'h1', 'display');
+  const bodyLevel = findLevel(typography, 'body', 'paragraph', 'text');
+
+  const colors = value.colors as Record<string, string>;
+  const neutralColor = colors['neutral'] ?? colors['surface'] ?? '#FFFFFF';
+  const onSurfaceColor = colors['on-surface'] ?? colors['on_surface'] ?? '#000000';
+
   const lowerBg = vpa
-    ? resolve(vpa.lower_thirds.bg, value.colors as unknown as Record<string, string>)
-    : value.colors.primary;
+    ? resolve(vpa.lower_thirds.bg, colors)
+    : colors.primary;
   const lowerFg = vpa
-    ? resolve(vpa.lower_thirds.fg, value.colors as unknown as Record<string, string>)
-    : value.colors.surface;
+    ? resolve(vpa.lower_thirds.fg, colors)
+    : neutralColor;
 
   const fullSource = `---\n${quickYaml(value)}\n---\n\n${body ?? ''}`;
 
@@ -107,13 +131,15 @@ export function BrandPreviewPane({ value, body }: Props) {
             <div
               className="type-sample"
               style={{
-                background: value.colors.surface,
-                color: value.colors.on_surface,
+                background: neutralColor,
+                color: onSurfaceColor,
               }}
             >
               <h3
                 style={{
-                  fontFamily: value.typography.heading.family,
+                  fontFamily: headlineLevel?.fontFamily ?? 'inherit',
+                  fontSize: headlineLevel?.fontSize ?? '28px',
+                  fontWeight: headlineLevel?.fontWeight ?? 700,
                   margin: '0 0 6px',
                 }}
               >
@@ -121,13 +147,14 @@ export function BrandPreviewPane({ value, body }: Props) {
               </h3>
               <p
                 style={{
-                  fontFamily: value.typography.body.family,
+                  fontFamily: bodyLevel?.fontFamily ?? 'inherit',
+                  fontSize: bodyLevel?.fontSize ?? '16px',
+                  fontWeight: bodyLevel?.fontWeight ?? 400,
                   margin: 0,
-                  fontSize: 14,
                 }}
               >
                 The quick brown fox jumps over the lazy dog. Brand typography
-                preview using {value.typography.body.family} for body text.
+                preview using {bodyLevel?.fontFamily ?? 'default'} for body text.
               </p>
             </div>
 
@@ -138,7 +165,7 @@ export function BrandPreviewPane({ value, body }: Props) {
                 style={{
                   background: lowerBg,
                   color: lowerFg,
-                  borderColor: value.colors.accent ?? value.colors.primary,
+                  borderColor: colors.secondary ?? colors.primary,
                 }}
               >
                 <strong style={{ fontSize: 14 }}>{value.name}</strong>

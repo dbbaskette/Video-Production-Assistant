@@ -361,7 +361,6 @@ export async function registerBrandRoutes(
           });
           const nextFm = {
             ...tokens.frontMatter,
-            version: current.registry.version + 1,
             name: current.registry.name,
           };
           await runBrandGenerateJob({
@@ -454,7 +453,6 @@ export async function registerBrandRoutes(
         };
         const nextFm = {
           ...fm,
-          version: current.registry.version + 1,
           vpa: updatedVpa,
         };
         await updateBrandDoc(paths, registryFile, slug, {

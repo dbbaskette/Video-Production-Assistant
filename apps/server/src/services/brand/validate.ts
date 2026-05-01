@@ -32,19 +32,33 @@ export function validateBrand(doc: DesignMd): BrandValidationResult {
   }
   const fm = parsed.data;
 
-  const baseRatio = contrastRatio(fm.colors.on_surface, fm.colors.surface);
-  if (baseRatio < AA_NORMAL) {
-    warnings.push({
-      code: 'low-contrast',
-      message: `on_surface on surface fails WCAG AA (${baseRatio.toFixed(2)}:1, target ${AA_NORMAL}:1)`,
-      field: 'colors.on_surface',
-      ratio: baseRatio,
-    });
+  // Check contrast for each component that defines textColor + backgroundColor
+  const colors = fm.colors as Record<string, string>;
+  for (const [compName, tokens] of Object.entries(fm.components)) {
+    const comp = tokens as Record<string, string | number>;
+    const bgRef = comp['backgroundColor'];
+    const fgRef = comp['textColor'];
+    if (typeof bgRef === 'string' && typeof fgRef === 'string') {
+      const bg = resolveColor(String(bgRef), colors);
+      const fg = resolveColor(String(fgRef), colors);
+      if (bg && fg) {
+        const ratio = contrastRatio(fg, bg);
+        if (ratio < AA_NORMAL) {
+          warnings.push({
+            code: 'low-contrast',
+            message: `${compName}: textColor on backgroundColor fails WCAG AA (${ratio.toFixed(2)}:1, target ${AA_NORMAL}:1)`,
+            field: `components.${compName}`,
+            ratio,
+          });
+        }
+      }
+    }
   }
 
+  // Also check VPA lower_thirds if present
   if (fm.vpa) {
-    const fg = resolveColor(fm.vpa.lower_thirds.fg, fm.colors as Record<string, string>);
-    const bg = resolveColor(fm.vpa.lower_thirds.bg, fm.colors as Record<string, string>);
+    const fg = resolveColor(fm.vpa.lower_thirds.fg, colors);
+    const bg = resolveColor(fm.vpa.lower_thirds.bg, colors);
     if (fg && bg) {
       const ratio = contrastRatio(fg, bg);
       if (ratio < AA_NORMAL) {
@@ -62,8 +76,8 @@ export function validateBrand(doc: DesignMd): BrandValidationResult {
 }
 
 function resolveColor(value: string, colors: Record<string, string>): string | null {
-  const ref = value.match(/^\{colors\.([a-z_]+)\}$/);
+  const ref = value.match(/^\{colors\.([a-zA-Z0-9_-]+)\}$/);
   if (ref && ref[1]) return colors[ref[1]] ?? null;
-  if (/^#[0-9A-Fa-f]{6,8}$/.test(value)) return value;
+  if (/^#[0-9A-Fa-f]{3,6}$/.test(value)) return value;
   return null;
 }

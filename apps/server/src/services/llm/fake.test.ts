@@ -11,7 +11,10 @@ describe('createFakeLlm', () => {
     });
     const parsed = JSON.parse(out.text);
     expect(parsed.name).toBeDefined();
+    expect(parsed.version).toBe('alpha');
     expect(parsed.colors.primary).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    expect(parsed.typography['headline-lg']).toBeDefined();
+    expect(parsed.typography['headline-lg'].fontFamily).toBeDefined();
     expect(parsed.vpa).toBeDefined();
   });
 
@@ -24,7 +27,7 @@ describe('createFakeLlm', () => {
     });
     expect(out.text).toMatch(/##\s+Overview/);
     expect(out.text).toMatch(/##\s+Colors/);
-    expect(out.text).toMatch(/##\s+Voice & Tone/);
+    expect(out.text).toMatch(/##\s+Typography/);
   });
 
   it('honors a seeded brand name from the user prompt for stability', async () => {

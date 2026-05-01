@@ -39,7 +39,7 @@ export async function createBrand(
   await addEntry(registryFile, {
     id: input.slug,
     name: input.name,
-    version: input.frontMatter.version,
+    version: 1,
     created: now,
     updated: now,
     forked_from: input.forkedFrom ?? null,
@@ -82,14 +82,10 @@ export async function updateBrandDoc(
   input: UpdateBrandDocInput,
 ): Promise<BrandWithDoc> {
   const current = await readBrand(paths, registryFile, slug);
-  if (input.frontMatter.version <= current.registry.version) {
-    throw new Error(
-      `Brand version must increment (current=${current.registry.version}, attempted=${input.frontMatter.version})`,
-    );
-  }
   DesignMdFrontMatter.parse(input.frontMatter);
   await atomicWriteFile(paths.designMd(slug), serializeDesignMd(input.frontMatter, input.body));
-  await updateEntry(registryFile, slug, { version: input.frontMatter.version, name: input.frontMatter.name });
+  const nextVersion = current.registry.version + 1;
+  await updateEntry(registryFile, slug, { version: nextVersion, name: input.frontMatter.name });
   return readBrand(paths, registryFile, slug);
 }
 

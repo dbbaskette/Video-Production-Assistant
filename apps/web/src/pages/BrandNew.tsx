@@ -48,16 +48,17 @@ export default function BrandNew() {
         setProgress((prev) => [...prev, `[${type}] ${event.data ? JSON.stringify(event.data) : ''}`]);
 
         if (type === 'tokens-ready' && event.data) {
-          const d = event.data as { front_matter?: DesignMdFrontMatter; body?: string };
-          if (d.front_matter) {
-            onTokensReady(d.front_matter, d.body ?? '');
+          const d = event.data as { frontMatter?: DesignMdFrontMatter; body?: string };
+          if (d.frontMatter) {
+            onTokensReady(d.frontMatter, d.body ?? '');
           }
         }
         if (type === 'done') {
           onDone?.();
         }
         if (type === 'error') {
-          setError(event.data ? String((event.data as { message?: string }).message ?? event.data) : 'Job failed');
+          const errData = event.data as { error?: string } | undefined;
+          setError(errData?.error ?? 'Job failed');
         }
       });
       closeRef.current = close;
