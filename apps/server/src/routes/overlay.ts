@@ -5,11 +5,13 @@ import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { renderLowerThirdsOverlay, OverlayRenderError } from '../services/overlay/render.js';
+import { resolveLtColors } from '../services/overlay/colors.js';
 import { projectFiles } from '../services/project/paths.js';
 
 interface OverlayRouteDeps {
   store: ProjectStore;
   workspaceRoot: string;
+  vpaHome: string;
 }
 
 async function resolveProject(store: ProjectStore, projectId: string) {
@@ -65,7 +67,12 @@ export async function registerOverlayRoutes(
       const files = projectFiles(entry.path);
       const recordingAbsolute = join(entry.path, scene.recording.source);
 
-      // 6. Call render service
+      // 6. Resolve LT colors (brand-aware) before rendering
+      const colors = await resolveLtColors(entry.path, {
+        vpaHome: deps.vpaHome,
+        workspaceRoot: deps.workspaceRoot,
+      });
+
       let result;
       try {
         result = await renderLowerThirdsOverlay({
@@ -73,6 +80,7 @@ export async function registerOverlayRoutes(
           sceneId,
           recordingPath: recordingAbsolute,
           lowerThirds: scene.lower_thirds,
+          colors,
         });
       } catch (err) {
         if (err instanceof OverlayRenderError) {
@@ -131,6 +139,28 @@ export async function registerOverlayRoutes(
 
       reply.header('Content-Type', 'video/mp4');
       return reply.send(createReadStream(videoPath));
+    },
+  );
+
+  // GET /api/projects/:id/overlay/colors — resolved lower-thirds palette
+  // (brand-aware) so the in-app Preview tab can render with the same colors
+  // ffmpeg will use. Project-scoped because it depends on the applied brand.
+  app.get<{ Params: { id: string } }>(
+    '/api/projects/:id/overlay/colors',
+    async (req, reply) => {
+      const { id } = req.params;
+      let entry;
+      try {
+        entry = await resolveProject(store, id);
+      } catch (err) {
+        const e = err as { statusCode?: number; message?: string };
+        return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
+      }
+      const colors = await resolveLtColors(entry.path, {
+        vpaHome: deps.vpaHome,
+        workspaceRoot: deps.workspaceRoot,
+      });
+      return colors;
     },
   );
 }

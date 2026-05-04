@@ -160,7 +160,7 @@ export async function buildServer() {
     registerQualityReviewRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
   );
   await app.register(async (instance) =>
-    registerOverlayRoutes(instance, { store, workspaceRoot: wsRoot }),
+    registerOverlayRoutes(instance, { store, workspaceRoot: wsRoot, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
     registerExportRoutes(instance, { store }),

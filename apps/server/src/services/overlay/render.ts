@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { LowerThird } from '@vpa/shared';
 import { projectFiles } from '../project/paths.js';
 import { probeVideo } from '../recording/metadata.js';
+import type { LtColors } from './colors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +14,8 @@ export interface OverlayRenderInput {
   sceneId: string;
   recordingPath: string;   // absolute path to the MP4
   lowerThirds: LowerThird[];
+  /** Resolved palette (brand-aware or default). Falls back to defaults if omitted. */
+  colors?: LtColors;
 }
 
 export interface OverlayRenderResult {
@@ -33,21 +36,32 @@ function escapeDrawtext(text: string): string {
     .replace(/%/g, '%%');
 }
 
-/**
- * Default accent color for the left-edge stripe — a warm amber that pops
- * against most demo recordings without clashing. Hex (no leading #) for
- * ffmpeg drawbox color syntax.
- */
-const ACCENT_HEX = 'F4A83A';
+/** Strip leading "#" from a hex color (ffmpeg drawbox/drawtext expect 6-digit hex). */
+function ffhex(color: string): string {
+  return color.replace(/^#/, '');
+}
+
+const FALLBACK_PALETTE = {
+  accent: '0EA5E9',     // deep teal — the "no brand" default
+  textColor: 'FFFFFF',
+  bgColor: '000000',
+};
 
 /**
  * Build a drawbox + drawtext filter chain for a single lower-third entry,
  * scaled to the video's resolution. One container box, one accent stripe,
  * title + subtitle drawn on top — visually matches the in-app Preview tab.
+ *
+ * Style → background opacity (always non-zero so light recordings don't
+ * hide white text):
+ *   minimal — bg @ 0.40 (subtle backing, retains the "barely there" feel)
+ *   frosted — bg @ 0.62 (default; can't blur in ffmpeg so we deepen instead)
+ *   solid   — bg @ 0.88
  */
 function buildLowerThirdFilters(
   lt: LowerThird,
   dims: { width: number; height: number },
+  palette: { accent: string; textColor: string; bgColor: string },
 ): string[] {
   const { width: w, height: h } = dims;
   const enable = `enable='between(t,${lt.in_sec},${lt.out_sec})'`;
@@ -77,53 +91,54 @@ function buildLowerThirdFilters(
   const titleY = boxY + padY;
   const subtitleY = boxY + padY + titleSize + lineGap;
 
-  const bgColor = lt.style === 'solid'
-    ? 'black@0.85'
-    : lt.style === 'minimal'
-      ? null               // no container in minimal style
-      : 'black@0.55';      // frosted
+  // All styles get a container fill — the difference is opacity. This
+  // guarantees white-on-light-background text stays readable, fixing the
+  // "minimal LT washes out on a cream-coloured table" issue.
+  const bgOpacity =
+    lt.style === 'solid' ? 0.88 :
+    lt.style === 'minimal' ? 0.40 :
+    /* frosted */ 0.62;
+  const bgHex = ffhex(palette.bgColor);
+  const accentHex = ffhex(palette.accent);
+  const textHex = ffhex(palette.textColor);
+  const subtitleHex = textHex === 'FFFFFF' ? 'E0E0E0' : textHex;
 
   const filters: string[] = [];
 
-  // 1. Container background (skipped in minimal style)
-  if (bgColor) {
-    filters.push(
-      `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=${bgColor}:t=fill:${enable}`,
-    );
-  }
-
-  // 2. Accent stripe — always shown, even in minimal, so the LT has a
-  //    visual anchor.
+  // 1. Container background (always present, always semi-transparent).
   filters.push(
-    `drawbox=x=${boxX}:y=${boxY}:w=${stripeW}:h=${boxH}:color=0x${ACCENT_HEX}@1.0:t=fill:${enable}`,
+    `drawbox=x=${boxX}:y=${boxY}:w=${boxW}:h=${boxH}:color=0x${bgHex}@${bgOpacity}:t=fill:${enable}`,
   );
 
-  // 3. Title text
-  const textShadow = lt.style === 'minimal'
-    ? 'shadowx=2:shadowy=2:shadowcolor=black@0.85'
-    : '';
+  // 2. Accent stripe — left edge, full opacity. Anchors the LT visually
+  //    and gives it brand identity when colors come from a brand kit.
+  filters.push(
+    `drawbox=x=${boxX}:y=${boxY}:w=${stripeW}:h=${boxH}:color=0x${accentHex}@1.0:t=fill:${enable}`,
+  );
+
+  // 3. Title — soft shadow on every style to handle busy backgrounds.
   const titleArgs = [
     `text='${escapedTitle}'`,
     `fontsize=${titleSize}`,
     `x=${textX}`,
     `y=${titleY}`,
-    'fontcolor=white',
+    `fontcolor=0x${textHex}`,
+    'shadowx=2:shadowy=2:shadowcolor=black@0.7',
+    enable,
   ];
-  if (textShadow) titleArgs.push(textShadow);
-  titleArgs.push(enable);
   filters.push(`drawtext=${titleArgs.join(':')}`);
 
-  // 4. Subtitle text (slightly muted relative to title)
+  // 4. Subtitle — slightly muted; same shadow treatment.
   if (escapedSubtitle) {
     const subArgs = [
       `text='${escapedSubtitle}'`,
       `fontsize=${subtitleSize}`,
       `x=${textX}`,
       `y=${subtitleY}`,
-      'fontcolor=0xE0E0E0',
+      `fontcolor=0x${subtitleHex}`,
+      'shadowx=2:shadowy=2:shadowcolor=black@0.7',
+      enable,
     ];
-    if (textShadow) subArgs.push(textShadow);
-    subArgs.push(enable);
     filters.push(`drawtext=${subArgs.join(':')}`);
   }
 
@@ -147,8 +162,16 @@ export async function renderLowerThirdsOverlay(
   const inputMeta = await probeVideo(recordingPath);
   const dims = { width: inputMeta.width || 1920, height: inputMeta.height || 1080 };
 
+  // 1b. Resolve the color palette. Caller may pass colors (resolved via
+  //     services/overlay/colors.resolveLtColors) or omit and accept defaults.
+  const palette = {
+    accent: input.colors?.accent ?? `#${FALLBACK_PALETTE.accent}`,
+    textColor: input.colors?.textColor ?? `#${FALLBACK_PALETTE.textColor}`,
+    bgColor: input.colors?.bgColor ?? `#${FALLBACK_PALETTE.bgColor}`,
+  };
+
   // 2. Build the filter chain
-  const allFilters = lowerThirds.flatMap((lt) => buildLowerThirdFilters(lt, dims));
+  const allFilters = lowerThirds.flatMap((lt) => buildLowerThirdFilters(lt, dims, palette));
   const filterChain = allFilters.join(',');
 
   // 3. Determine output path

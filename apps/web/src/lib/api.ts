@@ -710,12 +710,23 @@ export const renderApi = {
   },
 };
 
+export interface LtPalette {
+  accent: string;
+  textColor: string;
+  bgColor: string;
+  source: 'brand-vpa' | 'brand-primary' | 'default';
+}
+
 export const overlayApi = {
   async render(projectId: string, sceneId: string): Promise<{ outputPath: string; durationSec: number }> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/overlay/render`);
   },
   videoUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/overlay/video`;
+  },
+  /** Resolved lower-thirds colors for this project (brand-aware). Mirrors what the renderer uses. */
+  async colors(projectId: string): Promise<LtPalette> {
+    return request('GET', `/api/projects/${projectId}/overlay/colors`);
   },
 };
 

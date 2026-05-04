@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { recordingsApi, narrationApi } from '../lib/api.js';
+import { useQuery } from '@tanstack/react-query';
+import { recordingsApi, narrationApi, overlayApi } from '../lib/api.js';
 import type { Scene } from '@vpa/shared';
 
 /**
@@ -28,6 +29,19 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
 
   const [currentTime, setCurrentTime] = useState(0);
   const [hasError, setHasError] = useState<string | null>(null);
+
+  // Resolved LT palette — matches what the ffmpeg renderer will produce.
+  const paletteQuery = useQuery({
+    queryKey: ['lt-colors', projectId],
+    queryFn: () => overlayApi.colors(projectId),
+    staleTime: 60_000,
+  });
+  const palette = paletteQuery.data ?? {
+    accent: '#0EA5E9',
+    textColor: '#FFFFFF',
+    bgColor: '#000000',
+    source: 'default' as const,
+  };
 
   // Pre-compute cumulative audio offsets:
   //   offsets[i] = wall-clock time at which chunk i should START
@@ -173,7 +187,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
           }}
         >
           {visibleLTs.map((lt, i) => (
-            <LowerThirdOverlay key={`${lt.title}-${i}`} lt={lt} />
+            <LowerThirdOverlay key={`${lt.title}-${i}`} lt={lt} palette={palette} />
           ))}
         </div>
       </div>
@@ -192,31 +206,41 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
   );
 }
 
-/**
- * Same accent color as the ffmpeg renderer (services/overlay/render.ts
- * ACCENT_HEX). Kept in sync visually so the Preview tab matches the actual
- * rendered overlay output.
- */
-const LT_ACCENT = '#F4A83A';
+/** Convert #RRGGBB into an rgba(...) string at the given alpha. */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#?([0-9A-Fa-f]{6})$/.exec(hex);
+  if (!m) return `rgba(0, 0, 0, ${alpha})`;
+  const v = m[1]!;
+  const r = Number.parseInt(v.slice(0, 2), 16);
+  const g = Number.parseInt(v.slice(2, 4), 16);
+  const b = Number.parseInt(v.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
-function LowerThirdOverlay({ lt }: { lt: { title: string; subtitle?: string; style: 'frosted' | 'solid' | 'minimal' } }) {
-  // Container styles per LT style. All variants share the left accent stripe
-  // (rendered as a `borderLeft`); only the background fill differs.
-  const containerStyles: Record<string, React.CSSProperties> = {
-    frosted: {
-      background: 'rgba(0, 0, 0, 0.55)',
-      backdropFilter: 'blur(4px)',
-      WebkitBackdropFilter: 'blur(4px)',
-    },
-    solid: {
-      background: 'rgba(0, 0, 0, 0.85)',
-    },
-    minimal: {
-      background: 'transparent',
-    },
-  };
-  // Minimal needs a text shadow so the title stays legible without a box.
-  const textShadow = lt.style === 'minimal' ? '0 2px 4px rgba(0, 0, 0, 0.85)' : 'none';
+interface PaletteShape {
+  accent: string;
+  textColor: string;
+  bgColor: string;
+}
+
+function LowerThirdOverlay({
+  lt,
+  palette,
+}: {
+  lt: { title: string; subtitle?: string; style: 'frosted' | 'solid' | 'minimal' };
+  palette: PaletteShape;
+}) {
+  // Opacity table mirrors the ffmpeg renderer so Preview and rendered output
+  // have matching contrast.
+  const bgOpacity =
+    lt.style === 'solid' ? 0.88 :
+    lt.style === 'minimal' ? 0.40 :
+    /* frosted */ 0.62;
+  const containerBg = hexToRgba(palette.bgColor, bgOpacity);
+  // Subtitle is muted relative to title when the brand text is white.
+  // For dark brand text colors, keep the subtitle at the same color.
+  const subtitleColor =
+    palette.textColor.toUpperCase() === '#FFFFFF' ? '#E0E0E0' : palette.textColor;
   return (
     <div
       style={{
@@ -224,13 +248,15 @@ function LowerThirdOverlay({ lt }: { lt: { title: string; subtitle?: string; sty
         left: '4%',
         bottom: '6%',
         display: 'inline-block',
-        color: '#fff',
-        borderLeft: `4px solid ${LT_ACCENT}`,
+        color: palette.textColor,
+        background: containerBg,
+        backdropFilter: lt.style === 'frosted' ? 'blur(4px)' : 'none',
+        WebkitBackdropFilter: lt.style === 'frosted' ? 'blur(4px)' : 'none',
+        borderLeft: `4px solid ${palette.accent}`,
         padding: '10px 16px 10px 14px',
-        ...containerStyles[lt.style],
       }}
     >
-      <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.2, textShadow }}>
+      <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.2, textShadow: '0 2px 4px rgba(0, 0, 0, 0.7)' }}>
         {lt.title}
       </div>
       {lt.subtitle && (
@@ -238,8 +264,8 @@ function LowerThirdOverlay({ lt }: { lt: { title: string; subtitle?: string; sty
           style={{
             fontSize: 14,
             marginTop: 4,
-            color: '#E0E0E0',
-            textShadow,
+            color: subtitleColor,
+            textShadow: '0 2px 4px rgba(0, 0, 0, 0.7)',
           }}
         >
           {lt.subtitle}
