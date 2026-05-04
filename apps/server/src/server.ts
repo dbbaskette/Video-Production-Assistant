@@ -141,7 +141,7 @@ export async function buildServer() {
     registerNarrationRoutes(instance, { store, tts, llm, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
-    registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome }),
+    registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome, tts }),
   );
   await app.register(async (instance) =>
     registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome }),

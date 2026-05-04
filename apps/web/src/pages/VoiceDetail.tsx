@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { voiceCloneApi, type VoiceClone, type VoiceCloneUpdate } from '../lib/api.js';
@@ -110,6 +110,8 @@ export function VoiceDetail() {
           No audio file. (Imported xAI voice without local recording.)
         </div>
       )}
+
+      <PreviewSection voice={voice} />
 
       <MetadataForm voice={voice} onSave={(p) => updateMutation.mutate(p)} pending={updateMutation.isPending} />
 
@@ -363,6 +365,123 @@ function XaiNotRegistered({ consoleUrl, hasTeamId, onRegister, registering, regi
         )}
       </div>
     </div>
+  );
+}
+
+function PreviewSection({ voice }: { voice: VoiceClone }) {
+  const DEFAULT_SAMPLE = "Hi, I'm a sample of how I sound. This is what I'd be like in your narration.";
+  const [text, setText] = useState(DEFAULT_SAMPLE);
+  const [activeProvider, setActiveProvider] = useState<'fish' | 'xai' | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioProvider, setAudioProvider] = useState<'fish' | 'xai' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canFish = voice.hasAudio;
+  const canXai = !!voice.providers.xai;
+
+  const runPreview = async (provider: 'fish' | 'xai') => {
+    if (activeProvider) return;
+    setActiveProvider(provider);
+    setError(null);
+    try {
+      const blob = await voiceCloneApi.preview(voice.id, { provider, text: text.trim() });
+      // Replace any prior object URL to avoid leaks
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+      setAudioProvider(provider);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setActiveProvider(null);
+    }
+  };
+
+  // Cleanup the blob URL on unmount or replacement
+  useEffect(() => {
+    return () => {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <Section title="Preview voice" hint="Hear how this voice reads a short sentence — no project context needed.">
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value.slice(0, 400))}
+        rows={2}
+        placeholder={DEFAULT_SAMPLE}
+        style={{
+          width: '100%',
+          padding: 8,
+          background: 'var(--bg)',
+          color: 'var(--fg)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          fontSize: 13,
+          fontFamily: 'inherit',
+          resize: 'vertical',
+        }}
+      />
+      <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+        {text.length} / 400 chars
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          onClick={() => runPreview('fish')}
+          disabled={!canFish || !!activeProvider || text.trim().length === 0}
+          title={!canFish ? 'Add an audio file to enable Fish preview' : 'Synthesize via Fish Audio (local)'}
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            background: 'var(--bg-elev)',
+            color: canFish ? 'var(--fg)' : 'var(--fg-muted)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            cursor: canFish && !activeProvider ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {activeProvider === 'fish' ? 'Synthesizing…' : '▶ Preview with Fish'}
+        </button>
+        <button
+          onClick={() => runPreview('xai')}
+          disabled={!canXai || !!activeProvider || text.trim().length === 0}
+          title={!canXai ? 'Register this voice with xAI to enable preview' : 'Synthesize via xAI custom voice'}
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            background: 'var(--bg-elev)',
+            color: canXai ? 'var(--fg)' : 'var(--fg-muted)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            cursor: canXai && !activeProvider ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {activeProvider === 'xai' ? 'Synthesizing…' : '▶ Preview with xAI'}
+        </button>
+        {!canFish && !canXai && (
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            Record audio or register with xAI to enable preview
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <p style={{ color: 'var(--danger)', fontSize: 12, margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>
+          {error}
+        </p>
+      )}
+
+      {audioUrl && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
+            Latest preview ({audioProvider})
+          </div>
+          <audio src={audioUrl} controls autoPlay style={{ width: '100%', maxWidth: 480 }} />
+        </div>
+      )}
+    </Section>
   );
 }
 

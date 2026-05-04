@@ -10,10 +10,16 @@ import {
   consoleVoiceLibraryUrl,
 } from '../services/voice-clone/providers/xai.js';
 import { VoiceCloneUpdateSchema } from '@vpa/shared';
+import type { TtsService } from '../services/tts/index.js';
 
 interface Deps {
   vpaHome: string;
+  tts: TtsService;
 }
+
+/** Maximum preview text length in characters — keeps API spend predictable. */
+const PREVIEW_MAX_CHARS = 400;
+const DEFAULT_PREVIEW_TEXT = "Hi, I'm a sample of how I sound. This is what I'd be like in your narration.";
 
 /** Mapping from XaiVoiceError.code → HTTP status. */
 const XAI_STATUS: Record<XaiVoiceError['code'], number> = {
@@ -315,6 +321,84 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
       return await store.setXaiRegistration(id, trimmed, { imported: true });
     } catch {
       return reply.status(404).send({ error: `Voice not found: ${id}`, code: 'not_found' });
+    }
+  });
+
+  // ── POST /api/voice-clone/:id/preview ─────────────────────────────
+  // Synthesize a short sample of this voice on the requested provider
+  // and stream the resulting MP3 back. Used by the Voice detail page's
+  // "Preview voice" buttons — no project context needed.
+  app.post('/api/voice-clone/:id/preview', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { provider?: 'fish' | 'xai'; text?: string };
+    const provider = body.provider;
+    if (provider !== 'fish' && provider !== 'xai') {
+      return reply.status(400).send({
+        error: "provider must be 'fish' or 'xai'",
+        code: 'invalid_request',
+      });
+    }
+    const text = (body.text ?? DEFAULT_PREVIEW_TEXT).trim().slice(0, PREVIEW_MAX_CHARS);
+    if (text.length === 0) {
+      return reply.status(400).send({ error: 'text must not be empty', code: 'invalid_request' });
+    }
+
+    let voice;
+    try {
+      voice = await store.read(id);
+    } catch {
+      return reply.status(404).send({ error: `Voice not found: ${id}`, code: 'not_found' });
+    }
+
+    let engineId: string;
+    let voiceId: string;
+    if (provider === 'fish') {
+      if (!voice.hasAudio) {
+        return reply.status(400).send({
+          error: 'No local audio for this voice — record or upload first',
+          code: 'no_audio',
+        });
+      }
+      if (!deps.tts.getProvider('fish')) {
+        return reply.status(503).send({
+          error: 'Fish Audio TTS provider is not registered. See /setup.',
+          code: 'provider_unavailable',
+        });
+      }
+      engineId = 'fish';
+      voiceId = `clone:${voice.id}`;
+    } else {
+      const xaiReg = voice.providers.xai;
+      if (!xaiReg) {
+        return reply.status(400).send({
+          error: 'This voice is not registered with xAI',
+          code: 'not_registered',
+        });
+      }
+      if (!deps.tts.getProvider('xai')) {
+        return reply.status(503).send({
+          error: 'xAI TTS provider is not registered. Set XAI_API_KEY in .env.',
+          code: 'provider_unavailable',
+        });
+      }
+      engineId = 'xai';
+      voiceId = xaiReg.voice_id;
+    }
+
+    try {
+      const result = await deps.tts.generate(engineId, text, { voice: voiceId, speed: 1.0 });
+      reply.header('Content-Type', 'audio/mpeg');
+      reply.header('Content-Length', result.audio.length);
+      reply.header('Cache-Control', 'no-store');
+      return reply.send(result.audio);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Map xAI 403 (Enterprise / feature-not-enabled) to a clearer status
+      const status = /\(403\b/.test(message) ? 403 : /\(401\b/.test(message) ? 401 : 502;
+      return reply.status(status).send({
+        error: message.slice(0, 500),
+        code: 'preview_failed',
+      });
     }
   });
 }

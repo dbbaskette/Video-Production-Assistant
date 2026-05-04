@@ -574,6 +574,26 @@ export const voiceCloneApi = {
   async getXaiConsoleUrl(): Promise<{ url: string; hasTeamId: boolean }> {
     return request('GET', '/api/voice-clone/xai/console-url');
   },
+  /**
+   * Synthesize a short sample of this voice on the chosen provider. Returns an
+   * audio Blob the caller can drop straight into an <audio src=blob:URL>.
+   */
+  async preview(id: string, opts: { provider: 'fish' | 'xai'; text?: string }): Promise<Blob> {
+    const res = await fetch(`${BASE}/api/voice-clone/${encodeURIComponent(id)}/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    });
+    if (!res.ok) {
+      let message = `Preview failed (${res.status})`;
+      try {
+        const j = await res.json();
+        if (j?.error) message = j.error;
+      } catch { /* ignore */ }
+      throw new ApiError(message, res.status, null);
+    }
+    return res.blob();
+  },
 };
 
 export interface SetupProbe {
