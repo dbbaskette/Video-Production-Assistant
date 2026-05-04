@@ -8,6 +8,24 @@ interface WorkspaceContext {
   project: ProjectTrackerEntry;
 }
 
+/**
+ * Map a quality-review item's `category` to the relevant Scene-page tab so
+ * clicking the issue jumps the user directly to where they need to act.
+ * `general` and unknown categories fall through to no tab (just opens the
+ * scene at its default tab).
+ */
+function categoryToTab(category: string): string | null {
+  switch (category) {
+    case 'recording': return 'Recording';
+    case 'script':    return 'Script';
+    case 'narration': return 'Narration';
+    case 'lower_thirds': return 'Lower Thirds';
+    case 'description': return null; // no dedicated tab; scene name/desc shown across
+    case 'general': return null;
+    default: return null;
+  }
+}
+
 const severityColors: Record<string, string> = {
   info: '#7aa2f7',
   warn: '#f4a83a',
@@ -178,45 +196,58 @@ export function ReviewPage() {
                 Go to scene
               </Link>
             </div>
-            {items.map((item, idx) => (
-              <div
-                key={idx}
-                style={{
-                  padding: '10px 16px',
-                  borderBottom: idx < items.length - 1 ? '1px solid var(--border)' : 'none',
-                  display: 'flex',
-                  gap: 12,
-                  alignItems: 'flex-start',
-                }}
-              >
-                <span
+            {items.map((item, idx) => {
+              const tab = categoryToTab(item.category);
+              const target = tab
+                ? `/project/${projectId}/scene/${sceneId}?tab=${encodeURIComponent(tab)}`
+                : `/project/${projectId}/scene/${sceneId}`;
+              return (
+                <Link
+                  key={idx}
+                  to={target}
                   style={{
-                    fontSize: 10,
-                    padding: '2px 6px',
-                    borderRadius: 3,
-                    background: severityColors[item.severity] ?? '#666',
-                    color: '#fff',
-                    fontWeight: 600,
-                    textTransform: 'uppercase',
-                    whiteSpace: 'nowrap',
-                    marginTop: 2,
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                    padding: '10px 16px',
+                    borderBottom: idx < items.length - 1 ? '1px solid var(--border)' : 'none',
+                    textDecoration: 'none',
+                    color: 'inherit',
+                    transition: 'background 120ms',
                   }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-elev2)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  title={`Jump to ${tab ?? 'scene'}`}
                 >
-                  {severityLabels[item.severity] ?? item.severity}
-                </span>
-                <span style={{ fontSize: 13, color: 'var(--fg)' }}>{item.message}</span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: 'var(--fg-muted)',
-                    marginLeft: 'auto',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {item.category}
-                </span>
-              </div>
-            ))}
+                  <span
+                    style={{
+                      fontSize: 10,
+                      padding: '2px 6px',
+                      borderRadius: 3,
+                      background: severityColors[item.severity] ?? '#666',
+                      color: '#fff',
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      whiteSpace: 'nowrap',
+                      marginTop: 2,
+                    }}
+                  >
+                    {severityLabels[item.severity] ?? item.severity}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 13, color: 'var(--fg)' }}>{item.message}</span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--accent)',
+                      whiteSpace: 'nowrap',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {tab ? `Fix in ${tab} →` : 'Open scene →'}
+                  </span>
+                </Link>
+              );
+            })}
           </div>
         );
       })}

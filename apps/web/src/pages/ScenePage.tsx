@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useOutletContext } from 'react-router-dom';
+import { useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi } from '../lib/api.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
@@ -26,7 +26,16 @@ type Tab = (typeof TABS)[number];
 export function ScenePage() {
   const { projectId, sceneId } = useParams<{ projectId: string; sceneId: string }>();
   const { project } = useOutletContext<WorkspaceContext>();
-  const [activeTab, setActiveTab] = useState<Tab>('Recording');
+  // Quality Review can deep-link with ?tab=Script (etc.) so a click-to-jump
+  // lands the user on the right tab. Validate against TABS to avoid setting
+  // arbitrary state from a URL.
+  const [searchParams] = useSearchParams();
+  const initialTab = ((): Tab => {
+    const fromUrl = searchParams.get('tab');
+    if (fromUrl && (TABS as readonly string[]).includes(fromUrl)) return fromUrl as Tab;
+    return 'Recording';
+  })();
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [editingScript, setEditingScript] = useState<string | null>(null);
   const [scriptDirty, setScriptDirty] = useState(false);
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
