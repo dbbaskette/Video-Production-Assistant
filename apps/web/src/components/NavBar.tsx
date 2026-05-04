@@ -1,4 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
+import { SaveIndicator } from './ui/SaveIndicator.js';
 
 export function NavBar() {
   const location = useLocation();
@@ -25,6 +26,8 @@ export function NavBar() {
         )}
 
         <div className="navbar__spacer" />
+
+        <SaveIndicator />
 
         <Link
           to="/brands"
