@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi } from '../lib/api.js';
+import { useUi } from '../components/ui/UiProvider.js';
 import type { Scene } from '@vpa/shared';
 
 const typeBadgeColors: Record<string, string> = {
@@ -27,6 +28,7 @@ function SceneCard({
   onMoveDown: () => void;
 }) {
   const queryClient = useQueryClient();
+  const ui = useUi();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(scene.name);
   const [description, setDescription] = useState(scene.description);
@@ -131,7 +133,15 @@ function SceneCard({
                 ✏️
               </button>
               <button
-                onClick={() => { if (confirm(`Remove "${scene.name}"?`)) removeMutation.mutate(); }}
+                onClick={async () => {
+                  const ok = await ui.confirm({
+                    title: `Remove "${scene.name}"?`,
+                    body: 'The scene and any associated metadata will be removed from the storyboard. This action cannot be undone.',
+                    confirmLabel: 'Remove',
+                    destructive: true,
+                  });
+                  if (ok) removeMutation.mutate();
+                }}
                 style={{ padding: '4px 8px', fontSize: 12, color: 'var(--danger)' }}
                 title="Remove"
               >

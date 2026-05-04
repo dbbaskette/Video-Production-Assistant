@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { voiceCloneApi, type VoiceClone, type VoiceCloneUpdate } from '../lib/api.js';
+import { useUi } from '../components/ui/UiProvider.js';
 
 export function VoiceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const ui = useUi();
 
   const voiceQuery = useQuery({
     queryKey: ['voice-clone', id],
@@ -81,12 +83,17 @@ export function VoiceDetail() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
         <h1 style={{ margin: 0 }}>{voice.name}</h1>
         <button
-          onClick={() => {
+          onClick={async () => {
             const cascade = voice.providers.xai != null;
-            const msg = cascade
-              ? `Delete "${voice.name}"? This will also remove the cloned voice from xAI.`
-              : `Delete "${voice.name}"? This action cannot be undone.`;
-            if (window.confirm(msg)) deleteMutation.mutate(cascade);
+            const ok = await ui.confirm({
+              title: `Delete "${voice.name}"?`,
+              body: cascade
+                ? 'This will also remove the cloned voice from xAI. This action cannot be undone.'
+                : 'This action cannot be undone.',
+              confirmLabel: 'Delete',
+              destructive: true,
+            });
+            if (ok) deleteMutation.mutate(cascade);
           }}
           disabled={deleteMutation.isPending}
           style={{ padding: '6px 12px', background: 'transparent', color: 'var(--danger)', border: '1px solid var(--danger)', borderRadius: 6, fontSize: 13, cursor: 'pointer' }}

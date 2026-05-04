@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { brandsApi, ApiError } from '../lib/api';
+import { useUi } from '../components/ui/UiProvider.js';
 import type { DesignMdFrontMatter, BrandWithDoc } from '@vpa/shared';
 
 type Tab = 'overview' | 'tokens' | 'markdown' | 'assets' | 'usage';
@@ -211,6 +212,7 @@ export default function BrandDetail() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const ui = useUi();
 
   const [tab, setTab] = useState<Tab>('overview');
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -257,20 +259,28 @@ export default function BrandDetail() {
       queryClient.invalidateQueries({ queryKey: ['brands'] });
       navigate('/');
     },
-    onError: (err) => {
+    onError: async (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        if (confirm('This brand is used by projects. Force delete?')) {
-          deleteMut.mutate(true);
-        }
+        const ok = await ui.confirm({
+          title: 'Brand is in use',
+          body: 'One or more projects currently reference this brand. Force delete anyway? Their applied-brand pointer will be cleared.',
+          confirmLabel: 'Force delete',
+          destructive: true,
+        });
+        if (ok) deleteMut.mutate(true);
       }
     },
   });
 
-  const handleFork = () => {
-    const forkName = prompt('Enter a name for the forked brand:');
-    if (forkName?.trim()) {
-      forkMut.mutate(forkName.trim());
-    }
+  const handleFork = async () => {
+    const forkName = await ui.prompt({
+      title: 'Fork brand',
+      body: `Create a copy of "${slug}" that you can edit independently. Choose a name for the new brand.`,
+      placeholder: 'e.g. tanzu-2025',
+      confirmLabel: 'Fork',
+      validate: (v) => (v.length === 0 ? 'Name is required' : v.length > 80 ? 'Too long' : null),
+    });
+    if (forkName) forkMut.mutate(forkName);
   };
 
   const handleDelete = () => {

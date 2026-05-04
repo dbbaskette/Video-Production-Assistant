@@ -6,6 +6,7 @@ import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInf
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import { ScenePreview } from '../components/ScenePreview.js';
+import { useUi } from '../components/ui/UiProvider.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -31,6 +32,7 @@ export function ScenePage() {
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
   const [dialogEditDirty, setDialogEditDirty] = useState(false);
   const queryClient = useQueryClient();
+  const ui = useUi();
 
   const { data: storyboard } = useQuery({
     queryKey: ['storyboard', projectId],
@@ -287,7 +289,11 @@ export function ScenePage() {
     } catch (err) {
       setGenerateAllProgress(null);
       setGenerateAllJobId(null);
-      window.alert(`Failed to start: ${err instanceof Error ? err.message : 'unknown error'}`);
+      ui.showToast({
+        message: 'Could not start chunk generation',
+        detail: err instanceof Error ? err.message : 'unknown error',
+        tone: 'error',
+      });
       return;
     }
 
@@ -316,7 +322,11 @@ export function ScenePage() {
         setGenerateAllProgress(null);
         setGenerateAllJobId(null);
         const data = evt.data as { error?: string } | undefined;
-        window.alert(`Generate failed: ${data?.error ?? 'unknown error'}`);
+        ui.showToast({
+          message: 'Chunk generation failed',
+          detail: data?.error ?? 'unknown error',
+          tone: 'error',
+        });
         generateAllCloseRef.current?.();
         generateAllCloseRef.current = null;
       } else if (evt.type === 'cancel') {
@@ -328,7 +338,7 @@ export function ScenePage() {
       }
     });
     generateAllCloseRef.current = close;
-  }, [narrationState?.chunks, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, selectedEngine, selectedVoice, selectedSpeed, queryClient]);
+  }, [narrationState?.chunks, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, selectedEngine, selectedVoice, selectedSpeed, queryClient, ui]);
 
   // Cancel an in-flight generate-all job
   const cancelGenerateAll = useCallback(async () => {

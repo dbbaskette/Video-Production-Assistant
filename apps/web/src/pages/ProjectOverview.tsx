@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
+import { useUi } from '../components/ui/UiProvider.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -595,6 +596,7 @@ function BackgroundMusicSection({
   onSelect: (trackId: string | null) => void;
 }) {
   const queryClient = useQueryClient();
+  const ui = useUi();
   const tracksQuery = useQuery({
     queryKey: ['music', projectId],
     queryFn: () => musicApi.list(projectId),
@@ -768,8 +770,14 @@ function BackgroundMusicSection({
                   style={{ width: 240 }}
                 />
                 <button
-                  onClick={() => {
-                    if (window.confirm('Delete this track?')) remove.mutate(t.id);
+                  onClick={async () => {
+                    const ok = await ui.confirm({
+                      title: 'Delete track?',
+                      body: `"${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? '…' : ''}"`,
+                      confirmLabel: 'Delete',
+                      destructive: true,
+                    });
+                    if (ok) remove.mutate(t.id);
                   }}
                   disabled={remove.isPending}
                   title="Delete track"
