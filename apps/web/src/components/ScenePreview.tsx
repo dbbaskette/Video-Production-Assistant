@@ -192,40 +192,59 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
   );
 }
 
+/**
+ * Same accent color as the ffmpeg renderer (services/overlay/render.ts
+ * ACCENT_HEX). Kept in sync visually so the Preview tab matches the actual
+ * rendered overlay output.
+ */
+const LT_ACCENT = '#F4A83A';
+
 function LowerThirdOverlay({ lt }: { lt: { title: string; subtitle?: string; style: 'frosted' | 'solid' | 'minimal' } }) {
-  const styles: Record<string, React.CSSProperties> = {
+  // Container styles per LT style. All variants share the left accent stripe
+  // (rendered as a `borderLeft`); only the background fill differs.
+  const containerStyles: Record<string, React.CSSProperties> = {
     frosted: {
-      background: 'rgba(0, 0, 0, 0.5)',
-      backdropFilter: 'blur(6px)',
-      WebkitBackdropFilter: 'blur(6px)',
-      color: '#fff',
-      borderRadius: 6,
-      padding: '8px 14px',
+      background: 'rgba(0, 0, 0, 0.55)',
+      backdropFilter: 'blur(4px)',
+      WebkitBackdropFilter: 'blur(4px)',
     },
     solid: {
       background: 'rgba(0, 0, 0, 0.85)',
-      color: '#fff',
-      padding: '8px 14px',
     },
     minimal: {
-      color: '#fff',
-      textShadow: '2px 2px 4px rgba(0, 0, 0, 0.8)',
-      padding: '4px 0',
+      background: 'transparent',
     },
   };
-  const s = styles[lt.style];
+  // Minimal needs a text shadow so the title stays legible without a box.
+  const textShadow = lt.style === 'minimal' ? '0 2px 4px rgba(0, 0, 0, 0.85)' : 'none';
   return (
     <div
       style={{
         position: 'absolute',
-        left: 24,
-        bottom: 24,
+        left: '4%',
+        bottom: '6%',
         display: 'inline-block',
-        ...s,
+        color: '#fff',
+        borderLeft: `4px solid ${LT_ACCENT}`,
+        padding: '10px 16px 10px 14px',
+        ...containerStyles[lt.style],
       }}
     >
-      <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.2 }}>{lt.title}</div>
-      {lt.subtitle && <div style={{ fontSize: 13, marginTop: 4, opacity: 0.95 }}>{lt.subtitle}</div>}
+      <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.2, textShadow }}>
+        {lt.title}
+      </div>
+      {lt.subtitle && (
+        <div
+          style={{
+            fontSize: 14,
+            marginTop: 4,
+            color: '#E0E0E0',
+            textShadow,
+          }}
+        >
+          {lt.subtitle}
+        </div>
+      )}
     </div>
   );
 }
