@@ -3,6 +3,7 @@ import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
+import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -37,13 +38,29 @@ export function ProjectOverview() {
         {project.path}
       </p>
 
-      {/* Status cards */}
+      {/* Action buttons — one prominent "next step" plus muted shortcuts.
+          Surfaced at the top so the next step is always one glance away. */}
+      <ActionButtons
+        projectId={project.id}
+        hasStoryboard={hasStoryboard}
+        sceneCount={sceneCount}
+        recordingCount={recordingCount}
+        narrationCount={narrationCount}
+      />
+
+      {/* ── Status — pipeline progress at a glance ─────────────────── */}
+      <CollapsibleSection
+        title="Status"
+        defaultOpen
+        subtitle={hasStoryboard
+          ? `${recordingCount}/${sceneCount} recorded · ${narrationCount}/${sceneCount} narrated`
+          : 'Not started'}
+      >
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: '1fr 1fr',
           gap: 16,
-          marginTop: 32,
         }}
       >
         <div
@@ -149,28 +166,27 @@ export function ProjectOverview() {
           </div>
         </div>
       </div>
+      </CollapsibleSection>
 
-      {/* Brand applied to this project */}
-      <ProjectBrandSection projectId={project.id} />
+      {/* ── Output — brand, music, finished video, export bundle ────
+          Collapsed by default until a storyboard exists; the user
+          doesn't need any of this before there are scenes. */}
+      <CollapsibleSection
+        title="Output"
+        defaultOpen={hasStoryboard}
+        subtitle="Brand · music · render · export"
+      >
+        <ProjectBrandSection projectId={project.id} />
+        <ProjectMusicAndRender projectId={project.id} hasStoryboard={hasStoryboard} />
+      </CollapsibleSection>
 
-      <ProjectMusicAndRender projectId={project.id} hasStoryboard={hasStoryboard} />
-
-      {/* Action buttons — one prominent "next step" plus muted shortcuts */}
-      <ActionButtons
-        projectId={project.id}
-        hasStoryboard={hasStoryboard}
-        sceneCount={sceneCount}
-        recordingCount={recordingCount}
-        narrationCount={narrationCount}
-      />
-
-      {/* Workflow guide */}
+      {/* ── Workflow guide — per-scene reference, collapsed by default ── */}
       {hasStoryboard && (
-        <div style={{ marginTop: 32 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Per-Scene Workflow</div>
-          <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 12px', lineHeight: 1.6 }}>
-            Click any scene in the sidebar to access its full editing pipeline:
-          </p>
+        <CollapsibleSection
+          title="Per-scene workflow"
+          defaultOpen={false}
+          subtitle="Click any scene in the sidebar"
+        >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             {[
               { icon: '📹', title: 'Recording', desc: 'Upload screen recording' },
@@ -194,7 +210,7 @@ export function ProjectOverview() {
               </div>
             ))}
           </div>
-        </div>
+        </CollapsibleSection>
       )}
     </div>
   );
