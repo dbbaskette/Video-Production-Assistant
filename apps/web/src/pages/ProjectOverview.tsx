@@ -600,7 +600,6 @@ function BackgroundMusicSection({
     queryFn: () => musicApi.list(projectId),
   });
   const [prompt, setPrompt] = useState('');
-  const [model, setModel] = useState<'clip' | 'pro'>('clip');
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<(() => void) | null>(null);
@@ -618,7 +617,9 @@ function BackgroundMusicSection({
 
   const generate = useMutation({
     mutationFn: () =>
-      musicApi.generate(projectId, { prompt: prompt.trim(), model, format: 'mp3' }),
+      // 30-second clips loop across the video. Plenty for a demo bed; faster
+      // and cheaper than the Pro model.
+      musicApi.generate(projectId, { prompt: prompt.trim(), model: 'clip', format: 'mp3' }),
     onSuccess: ({ jobId }) => {
       setError(null);
       setProgressMessage('Generating…');
@@ -674,8 +675,8 @@ function BackgroundMusicSection({
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
             {tracks.length === 0
-              ? 'None yet — describe the vibe and generate'
-              : `${tracks.length} track${tracks.length === 1 ? '' : 's'} (Lyria 3)`}
+              ? 'None yet — describe the vibe and generate a 30-second loop'
+              : `${tracks.length} loop${tracks.length === 1 ? '' : 's'}`}
           </div>
         </div>
       </div>
@@ -684,7 +685,7 @@ function BackgroundMusicSection({
         rows={2}
         value={prompt}
         onChange={(e) => setPrompt(e.target.value.slice(0, 1500))}
-        placeholder="e.g. calm low-key technical demo background, no vocals, soft piano and pads"
+        placeholder="e.g. calm low-key tech demo loop, soft piano and pads, no vocals, consistent feel — a 30-second bed that loops cleanly"
         disabled={isBusy}
         style={{
           width: '100%',
@@ -699,28 +700,16 @@ function BackgroundMusicSection({
         }}
       />
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-        <label style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
-          Model:
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value as 'clip' | 'pro')}
-            disabled={isBusy}
-            style={{ padding: '4px 8px', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4 }}
-          >
-            <option value="clip">Lyria 3 Clip — 30 seconds, fast</option>
-            <option value="pro">Lyria 3 Pro — full track, slower</option>
-          </select>
-        </label>
         <button
           onClick={() => generate.mutate()}
           disabled={isBusy || prompt.trim().length === 0}
           className="primary"
           style={{ padding: '8px 16px', fontSize: 13 }}
         >
-          {isBusy ? (progressMessage ?? 'Working…') : 'Generate Music'}
+          {isBusy ? (progressMessage ?? 'Working…') : 'Generate 30-Second Bed'}
         </button>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-          {prompt.length} / 1500
+          {prompt.length} / 1500 · Lyria 3 · loops to fit any video length
         </span>
       </div>
 
@@ -754,8 +743,9 @@ function BackgroundMusicSection({
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-                    {t.model === 'pro' ? 'Pro' : 'Clip'} · {(t.sizeBytes / 1024).toFixed(0)} KB ·{' '}
-                    {new Date(t.generatedAt).toLocaleTimeString()}
+                    {(t.sizeBytes / 1024).toFixed(0)} KB ·{' '}
+                    {new Date(t.generatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                    {t.model === 'pro' ? ' · Pro (legacy)' : ''}
                   </div>
                   <div
                     style={{
