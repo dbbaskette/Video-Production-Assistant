@@ -102,6 +102,18 @@ body {
 .navbar__icon:hover { color: var(--fg); background: var(--bg-elev2); }
 .navbar__icon--active { color: var(--accent); }
 
+.navbar__link {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color var(--transition), background var(--transition);
+}
+.navbar__link:hover { color: var(--fg); background: var(--bg-elev2); text-decoration: none; }
+.navbar__link--active { color: var(--accent); background: var(--accent-bg); }
+
 /* ── Typography ──────────────────────────────────────── */
 
 h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.3px; margin: 0 0 4px; }

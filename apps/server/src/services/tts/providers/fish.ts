@@ -23,7 +23,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile, mkdir, rm } from 'node:fs/promises';
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
 
@@ -153,10 +153,26 @@ export function createFishTtsProvider(): TtsProvider {
 
         // Voice cloning via reference audio
         // Accept runtime refAudio (from opts) or fall back to config
-        const refAudio = (opts as any).refAudio ?? config.refAudio;
-        const refText = (opts as any).refText ?? config.refText;
+        let refAudio = (opts as any).refAudio ?? config.refAudio;
+        let refText = (opts as any).refText ?? config.refText;
 
-        if (voiceId === 'clone' && refAudio) {
+        // Voice IDs of the form `clone:<slug>` resolve to a per-voice directory
+        // under ~/.vpa/voice-clones/<slug>/{audio.wav,transcript.txt}.
+        if (voiceId.startsWith('clone:')) {
+          const slug = voiceId.slice('clone:'.length);
+          const home = process.env.HOME ?? '';
+          const wav = `${home}/.vpa/voice-clones/${slug}/audio.wav`;
+          const txt = `${home}/.vpa/voice-clones/${slug}/transcript.txt`;
+          if (existsSync(wav)) {
+            refAudio = wav;
+            try {
+              const t = readFileSync(txt, 'utf-8');
+              if (t.trim()) refText = t.trim();
+            } catch { /* no transcript */ }
+          }
+        }
+
+        if ((voiceId === 'clone' || voiceId.startsWith('clone:')) && refAudio) {
           args.push('--ref_audio', refAudio);
           if (refText) args.push('--ref_text', refText);
         } else if (refAudio && voiceId === 'speaker-0') {

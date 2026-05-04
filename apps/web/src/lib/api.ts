@@ -469,33 +469,76 @@ export const narrationApi = {
   },
 };
 
-export interface VoiceCloneRef {
-  filename: string;
-  path: string;
-  size: number;
-  createdAt: string;
-  transcript?: string;
-}
+// Re-export the canonical VoiceClone types from shared.
+export type { VoiceClone, VoiceCloneUpdate } from '@vpa/shared';
+import type { VoiceClone, VoiceCloneUpdate } from '@vpa/shared';
 
 export const voiceCloneApi = {
-  async list(): Promise<VoiceCloneRef[]> {
-    return request<VoiceCloneRef[]>('GET', '/api/voice-clone/list');
+  async list(): Promise<VoiceClone[]> {
+    return request('GET', '/api/voice-clone');
   },
-  async upload(file: File): Promise<{ path: string; filename: string; size: number }> {
+  async get(id: string): Promise<VoiceClone> {
+    return request('GET', `/api/voice-clone/${encodeURIComponent(id)}`);
+  },
+  async create(input: { name: string; description?: string; transcript?: string; file?: File | Blob; metadata?: Partial<VoiceCloneUpdate> }): Promise<VoiceClone> {
     const form = new FormData();
-    form.append('file', file);
-    const res = await fetch(`${BASE}/api/voice-clone/upload`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+    form.append('name', input.name);
+    if (input.description) form.append('description', input.description);
+    if (input.transcript) form.append('transcript', input.transcript);
+    if (input.file) {
+      const filename = (input.file as File).name ?? 'audio.webm';
+      form.append('file', input.file, filename);
+    }
+    if (input.metadata) {
+      for (const [k, v] of Object.entries(input.metadata)) {
+        if (v !== undefined && v !== null && v !== '') form.append(k, String(v));
+      }
+    }
+    const res = await fetch(`${BASE}/api/voice-clone`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new ApiError(text || `Upload failed (${res.status})`, res.status, null);
+    }
     return res.json();
   },
-  async saveTranscript(filename: string, transcript: string): Promise<{ saved: boolean }> {
-    return request('PUT', `/api/voice-clone/${encodeURIComponent(filename)}/transcript`, { transcript });
+  async replaceAudio(id: string, file: File | Blob): Promise<VoiceClone> {
+    const form = new FormData();
+    const filename = (file as File).name ?? 'audio.webm';
+    form.append('file', file, filename);
+    const res = await fetch(`${BASE}/api/voice-clone/${encodeURIComponent(id)}/audio`, { method: 'PUT', body: form });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new ApiError(text || `Upload failed (${res.status})`, res.status, null);
+    }
+    return res.json();
   },
-  async remove(filename: string): Promise<void> {
-    await request('DELETE', `/api/voice-clone/${encodeURIComponent(filename)}`);
+  async update(id: string, patch: VoiceCloneUpdate): Promise<VoiceClone> {
+    return request('PATCH', `/api/voice-clone/${encodeURIComponent(id)}`, patch);
+  },
+  async saveTranscript(id: string, transcript: string): Promise<VoiceClone> {
+    return request('PUT', `/api/voice-clone/${encodeURIComponent(id)}/transcript`, { transcript });
+  },
+  async remove(id: string, opts: { cascadeXai?: boolean } = {}): Promise<{ deleted: boolean; xaiDeleteError?: string }> {
+    const qs = opts.cascadeXai ? '?cascade=xai' : '';
+    return request('DELETE', `/api/voice-clone/${encodeURIComponent(id)}${qs}`);
+  },
+  audioUrl(id: string): string {
+    return `${BASE}/api/voice-clone/${encodeURIComponent(id)}/audio`;
+  },
+  async registerXai(id: string): Promise<VoiceClone> {
+    return request('POST', `/api/voice-clone/${encodeURIComponent(id)}/register/xai`);
+  },
+  async unregisterXai(id: string): Promise<VoiceClone> {
+    return request('DELETE', `/api/voice-clone/${encodeURIComponent(id)}/register/xai`);
+  },
+  async importXai(id: string, voice_id: string): Promise<VoiceClone> {
+    return request('POST', `/api/voice-clone/${encodeURIComponent(id)}/import/xai`, { voice_id });
   },
   async getScript(): Promise<{ script: string; instructions: string }> {
     return request('GET', '/api/voice-clone/script');
+  },
+  async getXaiConsoleUrl(): Promise<{ url: string; hasTeamId: boolean }> {
+    return request('GET', '/api/voice-clone/xai/console-url');
   },
 };
 

@@ -14,6 +14,7 @@ import {
   deleteProfile,
 } from '../services/voice-profile/index.js';
 import type { VoiceProfile } from '../services/voice-profile/index.js';
+import { VoiceCloneStore } from '../services/voice-clone/store.js';
 
 interface Deps {
   store: ProjectStore;
@@ -29,35 +30,46 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
   return entry.path;
 }
 
-/** The script a user should read aloud when recording a voice clone reference WAV. */
-const VOICE_CLONE_SCRIPT = `The sun was setting behind the mountains, casting long shadows across the valley below. A gentle breeze rustled through the trees, carrying the scent of pine and wildflowers. In the distance, a river wound its way through the landscape, its surface reflecting the orange and purple hues of the evening sky.
-
-Technology continues to reshape how we work and communicate. From cloud-native platforms to artificial intelligence, the tools we use every day are becoming more powerful and more intuitive. The key is finding the right balance between automation and human creativity.
-
-Let me walk you through the main dashboard. Notice how the navigation is organized into clear sections. Each panel updates in real time, giving you instant visibility into your system's performance. You can customize the layout to match your workflow, and everything syncs automatically across devices.
-
-Questions often come up about security and compliance. Our platform uses end-to-end encryption, role-based access controls, and continuous monitoring. We regularly publish audit reports and maintain certifications for SOC 2, ISO 27001, and GDPR compliance.
-
-That wraps up our overview. The combination of speed, reliability, and ease of use makes this a compelling solution for teams of any size. I'm excited to see what you'll build with it.`;
-
-const VOICE_CLONE_INSTRUCTIONS = `## How to Record Your Voice Clone
-
-1. **Find a quiet room** — minimize background noise, echo, and fan hum
-2. **Use a decent microphone** — a USB headset or laptop mic works, but a condenser mic is better
-3. **Speak naturally** — read the script in your normal speaking voice at a comfortable pace
-4. **Don't rush** — pause briefly between paragraphs
-5. **Record as WAV** — use any recording app (QuickTime, Audacity, Voice Memos) and export as WAV
-6. **Aim for 30-60 seconds** — the script above is about 60 seconds at a natural pace
-7. **Upload the WAV file** below and it will be used as your voice reference for Fish Audio TTS
-
-The script covers a range of tones (descriptive, technical, instructional, conversational) to give the model a well-rounded sample of your voice.`;
+// Voice clone reading script + instructions moved to routes/voice-clone.ts.
 
 export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store, tts, llm, vpaHome } = deps;
 
-  // GET /api/tts/engines — list available TTS engines
+  const voiceCloneStore = new VoiceCloneStore({ vpaHome });
+
+  // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
   app.get('/api/tts/engines', async () => {
-    return tts.listEngines();
+    const engines = tts.listEngines();
+    let clones: Awaited<ReturnType<VoiceCloneStore['list']>> = [];
+    try {
+      clones = await voiceCloneStore.list();
+    } catch { /* no clones */ }
+
+    return engines.map((engine) => {
+      if (engine.id === 'xai') {
+        const cloneVoices = clones
+          .filter((c) => c.providers.xai?.voice_id)
+          .map((c) => ({
+            id: c.providers.xai!.voice_id,
+            name: `${c.name} (cloned)`,
+            description: 'Custom voice cloned via xAI',
+          }));
+        return { ...engine, voices: [...engine.voices, ...cloneVoices] };
+      }
+      if (engine.id === 'fish') {
+        // Fish gets one entry per local clone: voice id is the slug,
+        // provider reads ~/.vpa/voice-clones/<slug>/audio.wav directly.
+        const cloneVoices = clones
+          .filter((c) => c.hasAudio)
+          .map((c) => ({
+            id: `clone:${c.id}`,
+            name: `${c.name} (cloned)`,
+            description: 'Voice clone — uses your local recording',
+          }));
+        return { ...engine, voices: [...engine.voices, ...cloneVoices] };
+      }
+      return engine;
+    });
   });
 
   // GET /api/voices — list voice profiles
@@ -550,108 +562,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     }
   });
 
-  // POST /api/voice-clone/upload — upload a reference WAV for voice cloning
-  app.post('/api/voice-clone/upload', async (req, reply) => {
-    const data = await req.file();
-    if (!data) {
-      return reply.status(400).send({ error: 'No file uploaded', code: 'invalid_request' });
-    }
-
-    // Collect the file buffer
-    const buffers: Buffer[] = [];
-    for await (const chunk of data.file) {
-      buffers.push(chunk as Buffer);
-    }
-    const fileBuffer = Buffer.concat(buffers);
-
-    // Save to ~/.vpa/voice-clones/<filename>
-    const cloneDir = join(vpaHome, 'voice-clones');
-    await mkdir(cloneDir, { recursive: true });
-
-    const filename = data.filename || `clone-${Date.now()}.wav`;
-    const filePath = join(cloneDir, filename);
-    await writeFile(filePath, fileBuffer);
-
-    return { path: filePath, filename, size: fileBuffer.length };
-  });
-
-  // GET /api/voice-clone/list — list saved voice clone reference files
-  app.get('/api/voice-clone/list', async (_req, reply) => {
-    const cloneDir = join(vpaHome, 'voice-clones');
-    try {
-      await mkdir(cloneDir, { recursive: true });
-      const { readdir } = await import('node:fs/promises');
-      const files = await readdir(cloneDir);
-      const wavFiles = files.filter((f) => f.endsWith('.wav'));
-      const result = await Promise.all(
-        wavFiles.map(async (f) => {
-          const filePath = join(cloneDir, f);
-          const fileStat = await stat(filePath);
-          // Try to read companion transcript
-          const transcriptPath = filePath.replace(/\.wav$/, '.txt');
-          let transcript: string | undefined;
-          try {
-            transcript = await readFile(transcriptPath, 'utf-8');
-          } catch { /* no transcript file */ }
-          return {
-            filename: f,
-            path: filePath,
-            size: fileStat.size,
-            createdAt: fileStat.birthtime.toISOString(),
-            transcript,
-          };
-        }),
-      );
-      return result;
-    } catch {
-      return [];
-    }
-  });
-
-  // PUT /api/voice-clone/:filename/transcript — save transcript for a clone reference
-  app.put('/api/voice-clone/:filename/transcript', async (req, reply) => {
-    const { filename } = req.params as { filename: string };
-    const { transcript } = req.body as { transcript: string };
-
-    if (!transcript) {
-      return reply.status(400).send({ error: 'transcript is required', code: 'invalid_request' });
-    }
-
-    const cloneDir = join(vpaHome, 'voice-clones');
-    const transcriptPath = join(cloneDir, filename.replace(/\.wav$/, '.txt'));
-
-    try {
-      await writeFile(transcriptPath, transcript, 'utf-8');
-      return { saved: true };
-    } catch {
-      return reply.status(500).send({ error: 'Failed to save transcript', code: 'write_error' });
-    }
-  });
-
-  // DELETE /api/voice-clone/:filename — delete a voice clone reference
-  app.delete('/api/voice-clone/:filename', async (req, reply) => {
-    const { filename } = req.params as { filename: string };
-    const cloneDir = join(vpaHome, 'voice-clones');
-    const filePath = join(cloneDir, filename);
-
-    try {
-      const { rm } = await import('node:fs/promises');
-      await rm(filePath, { force: true });
-      // Also remove companion transcript
-      await rm(filePath.replace(/\.wav$/, '.txt'), { force: true });
-      return { deleted: true };
-    } catch {
-      return reply.status(404).send({ error: 'File not found', code: 'not_found' });
-    }
-  });
-
-  // GET /api/voice-clone/script — return the recommended script for recording a voice clone
-  app.get('/api/voice-clone/script', async () => {
-    return {
-      script: VOICE_CLONE_SCRIPT,
-      instructions: VOICE_CLONE_INSTRUCTIONS,
-    };
-  });
+  // Voice clone endpoints moved to routes/voice-clone.ts (per-voice directory layout
+  // with provider registrations). Old flat-file endpoints removed.
 
   // GET /api/projects/:id/scenes/:sceneId/narration/audio — stream full MP3
   app.get('/api/projects/:id/scenes/:sceneId/narration/audio', async (req, reply) => {

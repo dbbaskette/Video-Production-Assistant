@@ -5,3 +5,4 @@ export * from './design-md.js';
 export * from './brand.js';
 export * from './storyboard.js';
 export * from './state.js';
+export * from './voice-clone.js';

@@ -27,6 +27,21 @@ export function NavBar() {
         <div className="navbar__spacer" />
 
         <Link
+          to="/brands"
+          className={`navbar__link${location.pathname.startsWith('/brands') ? ' navbar__link--active' : ''}`}
+          title="Brands"
+        >
+          Brands
+        </Link>
+        <Link
+          to="/voices"
+          className={`navbar__link${location.pathname.startsWith('/voices') ? ' navbar__link--active' : ''}`}
+          title="Voices"
+        >
+          Voices
+        </Link>
+
+        <Link
           to="/settings"
           className={`navbar__icon${location.pathname === '/settings' ? ' navbar__icon--active' : ''}`}
           title="Settings"
