@@ -209,3 +209,167 @@ export async function generateChunkNarration(
     unsupportedEmotives,
   };
 }
+
+// ── Batch generation orchestrator (issues #5 + #8) ───────────────────
+
+export type ChunkSelector = 'all' | 'missing' | 'failed';
+
+export interface BatchProgress {
+  type: 'chunk-start' | 'chunk-success' | 'chunk-failed' | 'cancelled' | 'done';
+  chunkIndex?: number;
+  total: number;
+  completed: number;
+  failed: number;
+  message: string;
+  reason?: string;
+}
+
+export interface BatchInput {
+  projectPath: string;
+  sceneId: string;
+  engine: string;
+  voice: string;
+  speed?: number;
+  /** Which chunks to generate. Default: 'missing' — skip ones already rendered. */
+  selector?: ChunkSelector;
+}
+
+/**
+ * Mark one chunk as failed in storyboard.yaml. Persisted so the UI can show
+ * the red border + reason after a refresh.
+ */
+async function markChunkFailed(
+  projectPath: string,
+  sceneId: string,
+  chunkIndex: number,
+  reason: string,
+): Promise<void> {
+  const sb = await loadStoryboard(projectPath);
+  if (!sb) return;
+  const scene = sb.scenes.find((s) => s.id === sceneId);
+  if (!scene) return;
+  const existing = scene.narration?.chunks ?? [];
+  const idx = existing.findIndex((c) => c.index === chunkIndex);
+  const failedRecord = { reason: reason.slice(0, 500), at: new Date().toISOString() };
+  let updated;
+  if (idx >= 0) {
+    updated = [...existing];
+    updated[idx] = { ...updated[idx]!, failed: failedRecord };
+  } else {
+    // Build a stub chunk with text from the script (split index)
+    const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
+    const paragraphs = scene.narration?.script
+      ? (isDialog ? splitDialogIntoChunks(scene.narration.script) : splitIntoParagraphs(scene.narration.script))
+      : [];
+    const text = paragraphs[chunkIndex] ?? '';
+    updated = [...existing, { index: chunkIndex, text, failed: failedRecord }];
+    updated.sort((a, b) => a.index - b.index);
+  }
+  const narration = { ...(scene.narration ?? {}), chunks: updated };
+  const next = updateScene(sb, sceneId, { narration: narration as any });
+  await saveStoryboard(projectPath, next);
+}
+
+/**
+ * Generate audio for many chunks of a scene with progress callbacks and
+ * per-chunk failure persistence.
+ *
+ * - One chunk failing does NOT stop the rest of the batch.
+ * - Failures are persisted to `narration.chunks[i].failed` so the UI can
+ *   surface the reason and offer per-chunk retry.
+ * - `isCancelled` is checked between chunks to support a cancel button.
+ */
+export async function generateAllChunks(
+  input: BatchInput,
+  tts: TtsService,
+  onProgress: (p: BatchProgress) => void,
+  isCancelled: () => boolean = () => false,
+): Promise<{ total: number; completed: number; failed: number }> {
+  const { projectPath, sceneId, engine, voice, speed, selector = 'missing' } = input;
+
+  const sb = await loadStoryboard(projectPath);
+  if (!sb) throw new Error('No storyboard found');
+  const scene = sb.scenes.find((s) => s.id === sceneId);
+  if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+  if (!scene.narration?.script) throw new Error('Scene has no script to narrate');
+
+  const isDialog = (scene.narration.mode ?? 'monologue') === 'dialog';
+  const paragraphs = isDialog
+    ? splitDialogIntoChunks(scene.narration.script)
+    : splitIntoParagraphs(scene.narration.script);
+
+  const stored = scene.narration.chunks ?? [];
+  const allIndices = paragraphs.map((_, i) => i);
+  const targetIndices = allIndices.filter((i) => {
+    const c = stored.find((s) => s.index === i);
+    if (selector === 'all') return true;
+    if (selector === 'missing') return !c?.audio;
+    if (selector === 'failed') return !!c?.failed;
+    return true;
+  });
+
+  const total = targetIndices.length;
+  let completed = 0;
+  let failedCount = 0;
+
+  for (const i of targetIndices) {
+    if (isCancelled()) {
+      onProgress({
+        type: 'cancelled',
+        total,
+        completed,
+        failed: failedCount,
+        message: `Cancelled after ${completed} of ${total} chunks`,
+      });
+      return { total, completed, failed: failedCount };
+    }
+    const text = paragraphs[i]!;
+    onProgress({
+      type: 'chunk-start',
+      chunkIndex: i,
+      total,
+      completed,
+      failed: failedCount,
+      message: `Generating chunk ${completed + failedCount + 1}/${total}`,
+    });
+    try {
+      await generateChunkNarration(
+        { projectPath, sceneId, chunkIndex: i, text, engine, voice, speed },
+        tts,
+      );
+      completed += 1;
+      onProgress({
+        type: 'chunk-success',
+        chunkIndex: i,
+        total,
+        completed,
+        failed: failedCount,
+        message: `Chunk ${i} done`,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failedCount += 1;
+      try {
+        await markChunkFailed(projectPath, sceneId, i, reason);
+      } catch { /* best-effort */ }
+      onProgress({
+        type: 'chunk-failed',
+        chunkIndex: i,
+        total,
+        completed,
+        failed: failedCount,
+        message: `Chunk ${i} failed`,
+        reason,
+      });
+    }
+  }
+
+  onProgress({
+    type: 'done',
+    total,
+    completed,
+    failed: failedCount,
+    message: failedCount === 0 ? `All ${total} chunks generated` : `Done — ${completed} ok, ${failedCount} failed`,
+  });
+  return { total, completed, failed: failedCount };
+}

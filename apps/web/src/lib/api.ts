@@ -340,6 +340,8 @@ export interface NarrationChunkInfo {
   audio: string | null;
   durationSec: number | null;
   speaker?: string;   // "A" | "B" — dialog mode
+  /** Last failed-generation record for this chunk. Cleared on next success. */
+  failed?: { reason: string; at: string };
 }
 
 export interface SpeakerConfig {
@@ -469,6 +471,35 @@ export const narrationApi = {
   },
   chunkAudioUrl(projectId: string, sceneId: string, chunkIndex: number): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/narration/chunk/${chunkIndex}/audio`;
+  },
+  /**
+   * Kick off a server-side batch generate. `selector` decides which chunks
+   * are touched: 'all' (regenerate everything), 'missing' (only ones without
+   * audio — default), 'failed' (only ones flagged as failed).
+   */
+  async generateAll(
+    projectId: string,
+    sceneId: string,
+    opts: { engine: string; voice: string; speed?: number; selector?: 'all' | 'missing' | 'failed' },
+  ): Promise<{ jobId: string; status: 'running' }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/narration/generate-all`, opts);
+  },
+  /** Subscribe to SSE events for a generate-all job. Returns a close function. */
+  subscribeGenerateAll(jobId: string, onEvent: (event: { type: string; data?: unknown }) => void): () => void {
+    const es = new EventSource(`${BASE}/api/jobs/${jobId}/stream`);
+    const handler = (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data);
+        onEvent(parsed);
+      } catch { /* ignore */ }
+    };
+    for (const t of ['start', 'progress', 'done', 'error', 'cancel', 'message']) {
+      es.addEventListener(t, handler);
+    }
+    return () => es.close();
+  },
+  async cancelJob(jobId: string): Promise<{ cancelled: boolean }> {
+    return request('POST', `/api/jobs/${jobId}/cancel`);
   },
 };
 

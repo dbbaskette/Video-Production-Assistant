@@ -14,7 +14,21 @@ Open http://localhost:5173 in your browser.
 ## Prerequisites
 
 - **Node.js 20+** and **npm 10+**
-- **ffmpeg / ffprobe** — required for video metadata, recording splitting, and overlay rendering
+- **ffmpeg / ffprobe with `drawtext` support** — needed for video metadata, recording splitting, lower-thirds rendering, and final video render. The default `brew install ffmpeg` formula often ships **without** the `freetype` library, which silently breaks the `drawtext` filter that lower-thirds depend on. Use the homebrew-ffmpeg tap, which builds with everything enabled by default:
+
+  ```bash
+  brew install homebrew-ffmpeg/ffmpeg/ffmpeg
+  ```
+
+  After install, confirm `drawtext` is available:
+
+  ```bash
+  ffmpeg -filters | grep drawtext
+  # → T. drawtext  V->V  Draw text on top of video frames using libfreetype library.
+  ```
+
+  The in-app **Setup Health** page (top-right nav → **Setup**) probes this automatically and tells you what to fix when something is missing.
+
 - [Claude Code](https://claude.ai/code) CLI installed and logged in for AI features (recommended, no API key needed), or a Gemini/Anthropic API key, or use `fake` provider for development
 
 ### Optional
@@ -30,24 +44,31 @@ npx playwright install chromium # only needed for E2E tests
 
 1. **Ideate** — Chat with AI to plan a demo storyboard (or upload recordings and let AI generate one)
 2. **Record** — Record each scene as an MP4 against the storyboard
-3. **Script** — AI generates narration scripts from your recordings
-4. **Narrate** — TTS engine produces MP3 audio + SRT/VTT subtitles
-5. **Lower Thirds** — AI recommends on-screen title overlays; render them onto video with ffmpeg
-6. **Review** — AI quality review catches missing assets, unclear descriptions, timing issues
-7. **Export** — Collect all scene assets into an editor-ready bundle
+3. **Script** — AI generates per-paragraph narration scripts; monologue and dialog modes are edited independently with restore-previous backup
+4. **Voices (optional)** — Record or upload a voice clone in-browser; use it with Fish Audio (local) or register it as an xAI custom voice
+5. **Narrate** — TTS engine produces per-paragraph MP3 chunks + SRT/VTT subtitles. Per-mode chunks survive monologue↔dialog toggling
+6. **Lower Thirds** — AI recommends on-screen title overlays; render them onto video with ffmpeg
+7. **Review** — AI quality review catches missing assets, unclear descriptions, timing issues
+8. **Render** — Stitch everything into a single `final.mp4` (per-scene mux + concat) with optional subtitle burn-in
+9. **Export** (optional) — Collect all scene assets into an editor-ready bundle for external editing apps
 
 ### Features
 
 | Feature | Description |
 |---|---|
 | **Brand Library** | Create reusable brand profiles from PDFs, URLs, or free text. Stored as `design.md` files. |
+| **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand |
+| **Voices Library** | Record or upload voice clones in-browser; ffmpeg transcodes to canonical 24 kHz mono WAV. Use them with Fish Audio (local) or register them as xAI custom voices |
 | **AI Ideation** | Chat-based storyboard planning with scene proposals and refinement |
 | **Recording Ingestion** | Upload per-scene MP4s, or upload one long recording and split it at AI-proposed boundaries |
-| **Script Generation** | AI writes narration scripts with emotive tags from scene context |
-| **TTS Narration** | Text-to-speech with multiple engines/voices, word-level timing, SRT/VTT subtitles |
+| **Script Generation** | AI writes narration scripts with emotive tags from scene context. Monologue and dialog modes are independent. |
+| **TTS Narration** | Per-paragraph chunked TTS with multiple engines/voices, word-level timing, SRT/VTT subtitles. Cloned voices appear automatically in the engine voice picker. |
+| **Scene Preview** | Combined recording + narration + lower-thirds preview, played inline without rendering |
 | **Lower Thirds** | AI-recommended title overlays with style/timing controls and ffmpeg rendering |
 | **Quality Review** | AI inspection of the full storyboard with severity-graded issue punch list |
-| **Export** | Bundle all assets per scene into an organized directory with manifest |
+| **Final Render** | Three-stage ffmpeg pipeline (audio concat → per-scene mux → multi-scene concat) with progress UI and inline playback |
+| **Setup Health** | In-app probes for ffmpeg/drawtext, ffprobe, LLM connectivity, TTS providers, env vars, and `VPA_HOME` |
+| **Export** | Bundle all scene assets into an organized directory with manifest for external editing apps |
 
 ## Configuration
 
@@ -62,8 +83,11 @@ Copy `.env.example` to `.env` and adjust:
 | `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app API base URL |
 | `VPA_LLM_PROVIDER` | `fake` | LLM backend: `fake`, `claude-code`, `gemini`, or `anthropic` |
 | `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.5-flash-lite`) |
-| `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` |
+| `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` and to enable Gemini TTS |
 | `ANTHROPIC_API_KEY` | — | Required when `VPA_LLM_PROVIDER=anthropic` (direct REST API) |
+| `XAI_API_KEY` | — | Enables xAI TTS (Sal/Eve/Ara/Leo/Rex) and xAI custom voice cloning. Custom voice **creation** via the API requires the Enterprise plan; the manual `voice_id` import flow works on any plan. |
+| `XAI_TEAM_ID` | — | Optional. When set, the "Clone via xAI console →" link on a voice's detail page jumps directly to your team's voice library. Find your team id at https://console.x.ai/. |
+| `FISH_AUDIO_MODEL` | `~/.lmstudio/models/mlx-community/fish-audio-s2-pro-bf16` | Path to a local Fish Audio MLX model. Also requires `mlx_audio` Python module (`scripts/setup-python.sh`). |
 
 ### LLM Providers
 
@@ -121,23 +145,39 @@ docs/superpowers/     Design specs and implementation plans
 | `narration/` | TTS orchestration, subtitle generation (SRT/VTT) |
 | `tts/` | TTS provider plugin system (fake, extensible) |
 | `voice-profile/` | YAML-based voice profile CRUD |
+| `voice-clone/` | Per-voice directory layout (audio + transcript + meta), ffmpeg transcode, and xAI custom-voices client |
 | `lower-thirds/` | AI lower-third recommendation |
 | `overlay/` | ffmpeg lower-third overlay rendering |
+| `render/` | Three-stage final-video pipeline: per-scene audio concat → mux → multi-scene concat |
+| `setup/` | Dependency probes for the in-app `/setup` health check |
 | `quality-review/` | AI storyboard quality inspection |
 | `export/` | Asset bundling and manifest generation |
-| `llm/` | LLM client interface + providers (fake, Claude Code, Gemini, Anthropic) |
+| `llm/` | LLM client interface + providers (fake, Claude Code, Gemini, Anthropic) with retry-on-transient-errors wrapper |
 
 ### Project Workspace Layout
 
 ```
 ~/Movies/VPA/my-demo/
-  project.yaml           # project metadata
-  storyboard.yaml        # scene definitions + all metadata
+  project.yaml           # project metadata, including applied brand
+  storyboard.yaml        # scene definitions, scripts (monologue + dialog), per-mode chunks
   recordings/            # per-scene MP4 files
-  narration/             # per-scene MP3 + SRT + VTT
+  narration/             # per-scene MP3 + SRT + VTT (and per-paragraph chunk MP3s)
   overlays/              # rendered videos with lower-third overlays
+  renders/               # final.mp4 + per-scene mp4s from the render pipeline
   export/                # exported asset bundles
   source-docs/           # uploaded reference documents
+```
+
+### VPA_HOME Layout
+
+```
+~/.vpa/
+  projects.json          # tracker of known projects
+  brands/<slug>/         # brand kits (design.md + assets/)
+  brands.json            # brand registry with default brand
+  voices/*.yaml          # named voice profiles (engine + voice + speed)
+  voice-clones/<slug>/   # per-voice clone directory: audio.wav + voice.json + transcript.txt
+  models.json            # active LLM model selection
 ```
 
 ## Brand Library
@@ -147,6 +187,32 @@ Create reusable brand profiles from documents (PDF, markdown, URL, free text). E
 - Brand directories: `<VPA_HOME>/brands/<slug>/design.md`
 - Registry: `<VPA_HOME>/brands.json`
 - Voice profiles: `<VPA_HOME>/voices/*.yaml`
+- Voice clones: `<VPA_HOME>/voice-clones/<slug>/`
+
+Each project's `project.yaml` carries an applied brand reference (`brand: { id, applied_version }`); the active brand surfaces in the project sidebar and Overview.
+
+## Voices
+
+A voice clone = your reference audio + metadata + provider registrations. Two providers are supported today:
+
+- **Fish Audio** (local, no key): the `<slug>` audio file is passed as a reference clip on every TTS call. Pick `clone:<slug>` in the Fish engine voice picker.
+- **xAI Custom Voices**: upload your audio to xAI once (`POST /v1/custom-voices`) → xAI returns an 8-character `voice_id`. The cloned voice then appears in the xAI engine voice picker. Custom voice creation requires the Enterprise plan; on lower tiers you can clone via the xAI console and paste the resulting `voice_id` into the manual import field on `/voices`.
+
+The `/voices` page lets you record in-browser (`MediaRecorder` → server transcodes to 24 kHz mono WAV) or upload an existing clip in any common format.
+
+## Final Render
+
+The Project Overview has a **Render Final Video** button that runs a three-stage ffmpeg pipeline:
+
+1. Concatenate per-paragraph narration chunks into a single audio track per scene
+2. Mux each scene's audio with its recording (and optional rendered lower-thirds overlay), with audio-mode = "replace original" or "mix narration over recording at -20dB" and optional subtitle burn-in
+3. Concat all scene mp4s into `<project>/renders/final.mp4`
+
+Progress streams over SSE (`/api/jobs/:jobId/stream`); the page shows a live progress bar and plays the result inline once done.
+
+## Setup Health
+
+Top-right nav → **Setup** runs nine probes (ffmpeg, drawtext filter, ffprobe, LLM connectivity, TTS providers, `XAI_API_KEY`, `XAI_TEAM_ID`, Fish Audio model + `mlx_audio` import, `VPA_HOME` writable) and surfaces actionable fix hints when something is missing. Useful right after a fresh install.
 
 ## License
 

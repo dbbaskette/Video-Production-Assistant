@@ -24,6 +24,7 @@ import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
 import { createLlm, createLlmFromEntry } from './services/llm/factory.js';
 import { SwappableLlm } from './services/llm/swappable.js';
+import { RetryingLlm } from './services/llm/retrying.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
@@ -74,8 +75,12 @@ export async function buildServer() {
     innerLlm = createLlm(config.llm);
     llmLabel = `${config.llm.provider}${config.llm.model ? ` / ${config.llm.model}` : ''}`;
   }
-  const llm = new SwappableLlm(innerLlm, llmLabel);
-  app.log.info(`LLM: ${llm.getLabel()}`);
+  // Wrap each provider in retry-on-transient logic. SwappableLlm sees the
+  // wrapped client; settings.swap() goes through the same wrapper helper.
+  const wrapWithRetry = (inner: ReturnType<typeof createLlmFromEntry>) =>
+    new RetryingLlm(inner, undefined, (m) => app.log.warn(m));
+  const llm = new SwappableLlm(wrapWithRetry(innerLlm), llmLabel);
+  app.log.info(`LLM: ${llm.getLabel()} (with retry on 429/5xx/network)`);
 
   const ideationManager = new IdeationManager();
 

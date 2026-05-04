@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { ModelRegistry, type ModelProvider } from '../services/llm/model-registry.js';
 import { createLlmFromEntry } from '../services/llm/factory.js';
 import type { SwappableLlm } from '../services/llm/swappable.js';
+import { RetryingLlm } from '../services/llm/retrying.js';
 
 interface SettingsDeps {
   registry: ModelRegistry;
@@ -13,6 +14,10 @@ export async function registerSettingsRoutes(
   deps: SettingsDeps,
 ): Promise<void> {
   const { registry, llm } = deps;
+
+  /** Build a retry-wrapped client to hand to the SwappableLlm. */
+  const wrap = (entry: Parameters<typeof createLlmFromEntry>[0]) =>
+    new RetryingLlm(createLlmFromEntry(entry), undefined, (m) => app.log.warn(m));
 
   // ──────────────────── GET /api/settings/models ────────────────────
   app.get('/api/settings/models', async (_req, reply) => {
@@ -58,7 +63,7 @@ export async function registerSettingsRoutes(
       const entry = await registry.update(req.params.id, req.body);
       // If this is the active model, re-swap the LLM client
       if (entry.active) {
-        llm.swap(createLlmFromEntry(entry), `${entry.name} (${entry.model})`);
+        llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
       }
       return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
     } catch (err: any) {
@@ -72,7 +77,7 @@ export async function registerSettingsRoutes(
     async (req, reply) => {
       try {
         const entry = await registry.activate(req.params.id);
-        llm.swap(createLlmFromEntry(entry), `${entry.name} (${entry.model})`);
+        llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
         app.log.info(`Switched LLM to: ${entry.name} (${entry.provider}/${entry.model})`);
         return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
       } catch (err: any) {
@@ -92,7 +97,7 @@ export async function registerSettingsRoutes(
         if (wasActive) {
           const next = registry.getActive();
           if (next) {
-            llm.swap(createLlmFromEntry(next), `${next.name} (${next.model})`);
+            llm.swap(wrap(next), `${next.name} (${next.model})`);
             app.log.info(`Switched LLM to: ${next.name} after removing active model`);
           }
         }

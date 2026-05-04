@@ -113,7 +113,9 @@ export function ScenePage() {
   const [editedChunks, setEditedChunks] = useState<Map<number, string>>(new Map());
   const [chunkScriptDirty, setChunkScriptDirty] = useState(false);
   const [generatingChunks, setGeneratingChunks] = useState<Set<number>>(new Set());
-  const [generateAllProgress, setGenerateAllProgress] = useState<{ done: number; total: number } | null>(null);
+  const [generateAllProgress, setGenerateAllProgress] = useState<{ done: number; total: number; failed: number; message?: string } | null>(null);
+  const [generateAllJobId, setGenerateAllJobId] = useState<string | null>(null);
+  const generateAllCloseRef = useRef<(() => void) | null>(null);
   // Cache-bust key for audio elements after regeneration
   const audioCacheBust = useRef(0);
   // Dialog mode state
@@ -254,24 +256,93 @@ export function ScenePage() {
     }
   }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient, narrationMode, chunkSpeakers]);
 
-  // Generate all chunks sequentially with progress
-  const generateAllChunks = useCallback(async () => {
+  // Generate chunks on the server with SSE progress. `selector`:
+  //   'missing' (default) — only chunks without audio (skips already-rendered ones)
+  //   'failed' — only chunks marked failed
+  //   'all' — regenerate everything
+  const generateAllChunks = useCallback(async (selector: 'all' | 'missing' | 'failed' = 'missing') => {
     if (!narrationState?.chunks?.length || !projectId || !sceneId) return;
-    // Always persist speaker configs + assignments before generating
+    if (!selectedEngine || !selectedVoice) return;
+    // Persist speaker configs + assignments before generating
     await narrationApi.saveMode(projectId, sceneId, narrationMode, speakerConfigs);
     if (narrationMode === 'dialog') {
       const assignments = Array.from(chunkSpeakers.entries()).map(([index, speaker]) => ({ index, speaker }));
       await narrationApi.saveSpeakerAssignments(projectId, sceneId, assignments);
     }
-    const chunks = narrationState.chunks;
-    setGenerateAllProgress({ done: 0, total: chunks.length });
-    for (let i = 0; i < chunks.length; i++) {
-      await generateChunk(chunks[i]!);
-      setGenerateAllProgress({ done: i + 1, total: chunks.length });
+
+    // Close any prior subscription
+    generateAllCloseRef.current?.();
+
+    setGenerateAllProgress({ done: 0, total: narrationState.chunks.length, failed: 0, message: 'Starting…' });
+    let jobId: string;
+    try {
+      const res = await narrationApi.generateAll(projectId, sceneId, {
+        engine: selectedEngine,
+        voice: selectedVoice,
+        speed: selectedSpeed,
+        selector,
+      });
+      jobId = res.jobId;
+      setGenerateAllJobId(jobId);
+    } catch (err) {
+      setGenerateAllProgress(null);
+      setGenerateAllJobId(null);
+      window.alert(`Failed to start: ${err instanceof Error ? err.message : 'unknown error'}`);
+      return;
     }
-    setGenerateAllProgress(null);
-    queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-  }, [narrationState?.chunks, generateChunk, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, queryClient]);
+
+    const close = narrationApi.subscribeGenerateAll(jobId, (raw) => {
+      const evt = raw as { type: string; data?: { type?: string; total?: number; completed?: number; failed?: number; message?: string; chunkIndex?: number; reason?: string } };
+      if (evt.type === 'progress' && evt.data) {
+        setGenerateAllProgress({
+          done: evt.data.completed ?? 0,
+          total: evt.data.total ?? 0,
+          failed: evt.data.failed ?? 0,
+          message: evt.data.message,
+        });
+        // On any per-chunk completion, refresh narration state so the UI shows the audio player
+        if (evt.data.type === 'chunk-success' || evt.data.type === 'chunk-failed') {
+          queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+          audioCacheBust.current += 1;
+        }
+      } else if (evt.type === 'done') {
+        setGenerateAllProgress(null);
+        setGenerateAllJobId(null);
+        queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+        queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+        generateAllCloseRef.current?.();
+        generateAllCloseRef.current = null;
+      } else if (evt.type === 'error') {
+        setGenerateAllProgress(null);
+        setGenerateAllJobId(null);
+        const data = evt.data as { error?: string } | undefined;
+        window.alert(`Generate failed: ${data?.error ?? 'unknown error'}`);
+        generateAllCloseRef.current?.();
+        generateAllCloseRef.current = null;
+      } else if (evt.type === 'cancel') {
+        setGenerateAllProgress(null);
+        setGenerateAllJobId(null);
+        queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+        generateAllCloseRef.current?.();
+        generateAllCloseRef.current = null;
+      }
+    });
+    generateAllCloseRef.current = close;
+  }, [narrationState?.chunks, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, selectedEngine, selectedVoice, selectedSpeed, queryClient]);
+
+  // Cancel an in-flight generate-all job
+  const cancelGenerateAll = useCallback(async () => {
+    if (!generateAllJobId) return;
+    try {
+      await narrationApi.cancelJob(generateAllJobId);
+    } catch { /* best-effort */ }
+  }, [generateAllJobId]);
+
+  useEffect(() => {
+    return () => {
+      generateAllCloseRef.current?.();
+    };
+  }, []);
 
   // Switch mode handler — swaps scripts, only converts when needed
   // Generate (or regenerate) dialog from monologue — used by Script tab
@@ -1083,10 +1154,31 @@ export function ScenePage() {
                     );
                   })}
 
-                  {/* Generate All button spanning both columns */}
-                  <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' }}>
+                  {/* Generate All / Retry Failed buttons */}
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    {(() => {
+                      const failedCount = (narrationState.chunks ?? []).filter((c) => c.failed).length;
+                      return failedCount > 0 ? (
+                        <button
+                          onClick={() => generateAllChunks('failed')}
+                          disabled={!!generateAllProgress || generatingChunks.size > 0}
+                          style={{
+                            padding: '8px 16px',
+                            background: 'var(--surface)',
+                            color: 'var(--danger)',
+                            border: '1px solid var(--danger)',
+                            borderRadius: 6,
+                            cursor: generateAllProgress ? 'wait' : 'pointer',
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
+                        >
+                          Retry Failed ({failedCount})
+                        </button>
+                      ) : null;
+                    })()}
                     <button
-                      onClick={() => generateAllChunks()}
+                      onClick={() => generateAllChunks('missing')}
                       disabled={!!generateAllProgress || generatingChunks.size > 0}
                       style={{
                         padding: '8px 20px',
@@ -1102,31 +1194,54 @@ export function ScenePage() {
                       }}
                     >
                       {generateAllProgress
-                        ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}...`
-                        : 'Generate All Chunks'}
+                        ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}…`
+                        : 'Generate Missing Chunks'}
                     </button>
                   </div>
                 </div>
               )}
 
-              {/* ── Progress bar ─────────────────────────────── */}
+              {/* ── Progress bar with cancel ─────────────────── */}
               {generateAllProgress && (
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
-                    <span>Generating narration...</span>
-                    <span>{generateAllProgress.done} / {generateAllProgress.total} chunks</span>
+                    <span>{generateAllProgress.message ?? 'Generating narration…'}</span>
+                    <span>
+                      {generateAllProgress.done} / {generateAllProgress.total}
+                      {generateAllProgress.failed > 0 && (
+                        <span style={{ color: 'var(--danger)', marginLeft: 8 }}>· {generateAllProgress.failed} failed</span>
+                      )}
+                    </span>
                   </div>
                   <div style={{ height: 6, background: 'var(--surface)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--border)' }}>
                     <div
                       style={{
                         height: '100%',
-                        width: `${(generateAllProgress.done / generateAllProgress.total) * 100}%`,
+                        width: `${generateAllProgress.total > 0 ? ((generateAllProgress.done + generateAllProgress.failed) / generateAllProgress.total) * 100 : 0}%`,
                         background: 'var(--accent)',
                         borderRadius: 3,
                         transition: 'width 0.3s ease',
                       }}
                     />
                   </div>
+                  {generateAllJobId && (
+                    <div style={{ marginTop: 6, textAlign: 'right' }}>
+                      <button
+                        onClick={cancelGenerateAll}
+                        style={{
+                          fontSize: 11,
+                          padding: '4px 10px',
+                          background: 'transparent',
+                          color: 'var(--fg-muted)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1145,16 +1260,50 @@ export function ScenePage() {
                         key={chunk.index}
                         style={{
                           background: isDialog ? colors.bg : 'var(--surface)',
-                          border: chunk.hasAudio
-                            ? `1px solid #5e8a3a40`
-                            : isDialog ? `1px solid ${colors.border}` : '1px solid var(--border)',
+                          border: chunk.failed
+                            ? '1px solid var(--danger)'
+                            : chunk.hasAudio
+                              ? `1px solid #5e8a3a40`
+                              : isDialog ? `1px solid ${colors.border}` : '1px solid var(--border)',
                           borderRadius: 10,
                           padding: 14,
                           opacity: isGenerating ? 0.7 : 1,
                           transition: 'all 0.2s ease',
-                          borderLeft: isDialog ? `3px solid ${colors.badge}` : undefined,
+                          borderLeft: chunk.failed
+                            ? '3px solid var(--danger)'
+                            : isDialog ? `3px solid ${colors.badge}` : undefined,
                         }}
                       >
+                        {chunk.failed && (
+                          <div
+                            title={chunk.failed.reason}
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--danger)',
+                              background: 'rgba(194, 93, 93, 0.08)',
+                              border: '1px solid rgba(194, 93, 93, 0.4)',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              marginBottom: 8,
+                              display: 'flex',
+                              gap: 6,
+                              alignItems: 'flex-start',
+                            }}
+                          >
+                            <span style={{ flexShrink: 0, fontWeight: 700 }}>FAILED</span>
+                            <span style={{
+                              flex: 1,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical' as const,
+                              wordBreak: 'break-word',
+                            }}>
+                              {chunk.failed.reason}
+                            </span>
+                          </div>
+                        )}
                         {/* Chunk header */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                           {/* Speaker toggle (dialog mode) */}

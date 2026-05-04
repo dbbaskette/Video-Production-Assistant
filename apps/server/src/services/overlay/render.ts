@@ -100,7 +100,16 @@ export async function renderLowerThirdsOverlay(
     outputAbsolute,
   ];
 
-  await execFileAsync('ffmpeg', args);
+  try {
+    await execFileAsync('ffmpeg', args);
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? '';
+    const message = (err as Error).message ?? String(err);
+    throw new OverlayRenderError(message, {
+      stderrTail: stderr.slice(-2000),
+      hint: hintFromStderr(stderr),
+    });
+  }
 
   // 5. Probe the output to get duration
   const metadata = await probeVideo(outputAbsolute);
@@ -109,6 +118,37 @@ export async function renderLowerThirdsOverlay(
     outputPath: outputRelative,
     durationSec: metadata.duration_sec,
   };
+}
+
+/**
+ * Map known ffmpeg stderr patterns to a human-readable fix hint.
+ * Same vocabulary as services/render so the UI can render either uniformly.
+ */
+function hintFromStderr(stderr: string): string | undefined {
+  if (/No such filter:\s*'?drawtext'?/i.test(stderr)) {
+    return "ffmpeg lacks freetype — see /setup. Reinstall via: brew install homebrew-ffmpeg/ffmpeg/ffmpeg";
+  }
+  if (/No such filter:\s*'?subtitles'?/i.test(stderr)) {
+    return 'ffmpeg lacks libass — disable subtitle burn-in or rebuild ffmpeg with --enable-libass';
+  }
+  if (/Unable to choose an output format|No suitable output format/i.test(stderr)) {
+    return 'Output filename must end with a recognized extension (.mp4, .mov, etc.)';
+  }
+  if (/Invalid data found when processing input/i.test(stderr)) {
+    return 'The input recording is malformed — re-encode the source file';
+  }
+  return undefined;
+}
+
+export class OverlayRenderError extends Error {
+  hint?: string;
+  stderrTail?: string;
+  constructor(message: string, opts: { hint?: string; stderrTail?: string } = {}) {
+    super(message);
+    this.name = 'OverlayRenderError';
+    this.hint = opts.hint;
+    this.stderrTail = opts.stderrTail;
+  }
 }
 
 /**

@@ -20,6 +20,11 @@ export const NarrationChunkSchema = z.object({
   durationSec: z.number().optional(),
   timings: z.array(TimingSchema).optional(),
   speaker: z.string().optional(),      // "A" | "B" — dialog mode speaker assignment
+  /** Last failed-generation record. Cleared on next successful regeneration. */
+  failed: z.object({
+    reason: z.string(),
+    at: z.string(),
+  }).optional(),
 });
 export type NarrationChunk = z.infer<typeof NarrationChunkSchema>;
 

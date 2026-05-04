@@ -7,7 +7,8 @@ import type { TtsService } from '../services/tts/index.js';
 import type { LlmClient } from '../services/llm/index.js';
 import { loadPrompt } from '../services/llm/prompts.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { generateNarration, generateChunkNarration, splitIntoParagraphs, splitDialogIntoChunks } from '../services/narration/index.js';
+import { generateNarration, generateChunkNarration, generateAllChunks, splitIntoParagraphs, splitDialogIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { jobQueue } from '../lib/job-queue.js';
 import {
   listProfiles,
   saveProfile,
@@ -134,6 +135,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       audio: string | null;
       durationSec: number | null;
       speaker?: string;
+      failed?: { reason: string; at: string };
     }> = [];
 
     if (narration?.script) {
@@ -151,6 +153,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
           durationSec: stored?.durationSec ?? null,
           speaker: stored?.speaker
             ?? (isDialog ? (text.match(/^\[Speaker ([A-Z])\]/)?.[1] ?? undefined) : undefined),
+          ...(stored?.failed ? { failed: stored.failed } : {}),
         };
       });
     }
@@ -243,6 +246,76 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       }
       throw err;
     }
+  });
+
+  // POST /api/projects/:id/scenes/:sceneId/narration/generate-all — batch generate
+  // chunks as a server-side job. Body: { engine, voice, speed?, selector? }.
+  // selector: 'all' (regenerate everything), 'missing' (default — only ones without
+  // audio), or 'failed' (only previously-failed chunks).
+  // Returns { jobId } immediately; subscribe to /api/jobs/:jobId/stream for progress.
+  app.post('/api/projects/:id/scenes/:sceneId/narration/generate-all', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as {
+      engine?: string;
+      voice?: string;
+      speed?: number;
+      selector?: ChunkSelector;
+    };
+    if (!body.engine || !body.voice) {
+      return reply.status(400).send({ error: 'engine and voice are required', code: 'invalid_request' });
+    }
+    let projectPath: string;
+    try {
+      projectPath = await resolveProjectPath(store, id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+
+    const job = jobQueue.create('narration-generate-all');
+    jobQueue.setStatus(job.id, 'running');
+    jobQueue.emit(job.id, 'start', { sceneId, engine: body.engine, voice: body.voice, selector: body.selector ?? 'missing' });
+
+    void (async () => {
+      try {
+        const result = await generateAllChunks(
+          {
+            projectPath,
+            sceneId,
+            engine: body.engine!,
+            voice: body.voice!,
+            speed: body.speed,
+            selector: body.selector ?? 'missing',
+          },
+          tts,
+          (progress) => jobQueue.emit(job.id, 'progress', progress),
+          () => jobQueue.get(job.id)?.status === 'cancelled',
+        );
+        // If we were cancelled, the loop already returned without throwing
+        const j = jobQueue.get(job.id);
+        if (j?.status === 'cancelled') return;
+        jobQueue.complete(job.id, result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        jobQueue.fail(job.id, message);
+      }
+    })();
+
+    return { jobId: job.id, status: 'running' };
+  });
+
+  // POST /api/jobs/:jobId/cancel — request cancellation. Long-running jobs that
+  // poll their own status (the chunk batch) check this and bail at the next safe
+  // boundary. One-shot jobs (e.g. final render) ignore cancellation today.
+  app.post('/api/jobs/:jobId/cancel', async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    const j = jobQueue.get(jobId);
+    if (!j) return reply.status(404).send({ error: 'Job not found', code: 'not_found' });
+    if (j.status === 'completed' || j.status === 'failed') {
+      return { cancelled: false, status: j.status };
+    }
+    jobQueue.setStatus(jobId, 'cancelled');
+    jobQueue.emit(jobId, 'cancel', {});
+    return { cancelled: true };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/narration/script — save edited script

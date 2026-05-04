@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { renderLowerThirdsOverlay } from '../services/overlay/render.js';
+import { renderLowerThirdsOverlay, OverlayRenderError } from '../services/overlay/render.js';
 import { projectFiles } from '../services/project/paths.js';
 
 interface OverlayRouteDeps {
@@ -66,12 +66,25 @@ export async function registerOverlayRoutes(
       const recordingAbsolute = join(entry.path, scene.recording.source);
 
       // 6. Call render service
-      const result = await renderLowerThirdsOverlay({
-        projectPath: entry.path,
-        sceneId,
-        recordingPath: recordingAbsolute,
-        lowerThirds: scene.lower_thirds,
-      });
+      let result;
+      try {
+        result = await renderLowerThirdsOverlay({
+          projectPath: entry.path,
+          sceneId,
+          recordingPath: recordingAbsolute,
+          lowerThirds: scene.lower_thirds,
+        });
+      } catch (err) {
+        if (err instanceof OverlayRenderError) {
+          return reply.status(500).send({
+            error: err.message,
+            code: 'overlay_render_failed',
+            hint: err.hint,
+            stderrTail: err.stderrTail,
+          });
+        }
+        throw err;
+      }
 
       // 7. Update storyboard with overlay_render path
       const updated = updateScene(sb, sceneId, {
