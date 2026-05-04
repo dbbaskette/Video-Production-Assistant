@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { NavBar } from './components/NavBar.js';
+import { CommandPalette } from './components/ui/CommandPalette.js';
 import { Dashboard } from './pages/Dashboard.js';
 import BrandNew from './pages/BrandNew.js';
 import BrandDetail from './pages/BrandDetail.js';
@@ -21,6 +22,7 @@ export function App() {
   return (
     <>
       <NavBar />
+      <CommandPalette />
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/settings" element={<Settings />} />
