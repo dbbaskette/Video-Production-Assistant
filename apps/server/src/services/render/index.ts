@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 
 export type RenderProgress = (event: {
   type: 'step';
-  step: 'concat-audio' | 'mux-scene' | 'concat-scenes' | 'done';
+  step: 'concat-audio' | 'mux-scene' | 'concat-scenes' | 'mix-music' | 'done';
   sceneIndex?: number;
   sceneId?: string;
   totalScenes?: number;
@@ -22,6 +22,15 @@ export interface RenderOptions {
   audioMode?: 'replace' | 'mix';
   /** Burn subtitles into the video instead of writing only the sidecar SRT. */
   burnSubtitles?: boolean;
+  /**
+   * Optional background music track. When provided, the music is looped
+   * across the full video and mixed under the narration at `musicVolumeDb`
+   * (default -20). The music is added in a final stage after scene concat.
+   */
+  music?: {
+    audioPath: string;          // absolute path to the music file (mp3/wav)
+    volumeDb?: number;          // gain offset in dB; -20 = quiet bed, 0 = full volume
+  };
 }
 
 export interface RenderResult {
@@ -104,7 +113,27 @@ export async function renderFinalVideo(
   });
 
   const finalPath = join(rendersDir, 'final.mp4');
-  await concatScenes(scenePaths, finalPath, tmpDir);
+  // If we're going to overlay music, write the concat result to a temp file
+  // first so we can run a 2-input ffmpeg pass into the real final.mp4.
+  const concatOutPath = opts.music ? join(tmpDir, 'concat.mp4') : finalPath;
+  await concatScenes(scenePaths, concatOutPath, tmpDir);
+
+  // Stage 4: optional background music overlay
+  if (opts.music) {
+    onProgress?.({
+      type: 'step',
+      step: 'mix-music',
+      totalScenes: renderableScenes.length,
+      message: `Mixing background music (${opts.music.volumeDb ?? -20} dB)`,
+    });
+    await overlayMusic({
+      videoPath: concatOutPath,
+      musicPath: opts.music.audioPath,
+      volumeDb: opts.music.volumeDb ?? -20,
+      outputPath: finalPath,
+    });
+  }
+
   const durationSec = await probeDuration(finalPath);
 
   // Clean up tmp dir but keep per-scene mp4s for debugging / re-runs
@@ -118,6 +147,49 @@ export async function renderFinalVideo(
   });
 
   return { outputPath: finalPath, scenePaths, durationSec };
+}
+
+// ── Stage 4: music overlay ──────────────────────────────────────────
+
+interface MusicOverlayOpts {
+  videoPath: string;        // input video (post scene-concat)
+  musicPath: string;        // background music track (mp3/wav)
+  volumeDb: number;         // negative dB to duck music under narration
+  outputPath: string;       // final.mp4
+}
+
+/**
+ * Overlay background music under the existing audio of `videoPath`. Music
+ * is loop-extended with `-stream_loop -1` and trimmed to the video duration
+ * via amix's `duration=first`. Existing narration sits on top at full volume.
+ *
+ * Filter chain:
+ *   [1:a] aloop -> volume=Xdb -> afade out at end -> [music]
+ *   [0:a][music] amix=duration=first:dropout_transition=2 -> [aout]
+ *   then map [aout] + the original [0:v]
+ */
+async function overlayMusic(opts: MusicOverlayOpts): Promise<void> {
+  const dur = await probeDuration(opts.videoPath);
+  // 1.5s tail fade keeps the music from cutting off abruptly.
+  const fadeOutStart = Math.max(0, dur - 1.5);
+
+  const filterComplex = [
+    `[1:a]aloop=loop=-1:size=2147483647,volume=${opts.volumeDb}dB,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=1.5[music]`,
+    `[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
+  ].join(';');
+
+  await runFfmpeg([
+    '-y',
+    '-i', opts.videoPath,
+    '-i', opts.musicPath,
+    '-filter_complex', filterComplex,
+    '-map', '0:v:0',
+    '-map', '[aout]',
+    '-c:v', 'copy',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-shortest',
+    opts.outputPath,
+  ]);
 }
 
 // ── Stage 1: audio prep ──────────────────────────────────────────────

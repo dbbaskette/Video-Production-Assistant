@@ -632,7 +632,54 @@ export interface RenderStartResult {
 export interface RenderOptions {
   audioMode?: 'replace' | 'mix';
   burnSubtitles?: boolean;
+  /** Optional generated music track id to mix under the video. */
+  musicTrackId?: string | null;
+  /** Music gain offset in dB (negative = ducked under narration). Default -20. */
+  musicVolumeDb?: number;
 }
+
+export interface MusicTrack {
+  id: string;
+  prompt: string;
+  model: 'clip' | 'pro';
+  modelId: string;
+  format: 'mp3' | 'wav';
+  generatedAt: string;
+  lyrics?: string;
+  sizeBytes: number;
+}
+
+export const musicApi = {
+  async list(projectId: string): Promise<MusicTrack[]> {
+    return request('GET', `/api/projects/${projectId}/music`);
+  },
+  async generate(
+    projectId: string,
+    opts: { prompt: string; model: 'clip' | 'pro'; format?: 'mp3' | 'wav' },
+  ): Promise<{ jobId: string; status: 'running' }> {
+    return request('POST', `/api/projects/${projectId}/music/generate`, opts);
+  },
+  async remove(projectId: string, trackId: string): Promise<{ deleted: boolean }> {
+    return request('DELETE', `/api/projects/${projectId}/music/${encodeURIComponent(trackId)}`);
+  },
+  audioUrl(projectId: string, trackId: string): string {
+    return `${BASE}/api/projects/${projectId}/music/${encodeURIComponent(trackId)}/audio`;
+  },
+  /**
+   * Subscribe to a music-generate job's SSE stream. Returns close fn.
+   * Events: 'start' / 'progress' / 'done' (data.track) / 'error'.
+   */
+  subscribe(jobId: string, onEvent: (event: { type: string; data?: unknown }) => void): () => void {
+    const es = new EventSource(`${BASE}/api/jobs/${jobId}/stream`);
+    const handler = (e: MessageEvent) => {
+      try { onEvent(JSON.parse(e.data)); } catch { /* ignore */ }
+    };
+    for (const t of ['start', 'progress', 'done', 'error', 'message']) {
+      es.addEventListener(t, handler);
+    }
+    return () => es.close();
+  },
+};
 
 export const renderApi = {
   async start(projectId: string, opts: RenderOptions = {}): Promise<RenderStartResult> {

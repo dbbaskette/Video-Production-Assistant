@@ -5,6 +5,7 @@ import { extname, join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import { renderFinalVideo, RenderError, type RenderOptions } from '../services/render/index.js';
 import { jobQueue } from '../lib/job-queue.js';
+import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 
 interface Deps {
   store: ProjectStore;
@@ -24,7 +25,10 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
   // immediately; client subscribes to /api/jobs/:jobId/stream for progress.
   app.post('/api/projects/:id/render', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as Partial<RenderOptions>;
+    const body = (req.body ?? {}) as Partial<RenderOptions> & {
+      musicTrackId?: string | null;
+      musicVolumeDb?: number;
+    };
     const opts: RenderOptions = {
       audioMode: body.audioMode === 'mix' ? 'mix' : 'replace',
       burnSubtitles: !!body.burnSubtitles,
@@ -36,6 +40,22 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     } catch (err) {
       const e = err as { statusCode?: number; message?: string };
       return reply.status(e.statusCode ?? 500).send({ error: e.message ?? 'Project lookup failed', code: 'not_found' });
+    }
+
+    // Resolve the music track if the caller asked for one. We accept either
+    // an empty string / null for "no music" or a valid generated track id.
+    if (body.musicTrackId) {
+      const track = await readMusicTrack(projectPath, body.musicTrackId);
+      if (!track) {
+        return reply.status(400).send({
+          error: `Music track not found: ${body.musicTrackId}`,
+          code: 'invalid_request',
+        });
+      }
+      opts.music = {
+        audioPath: resolveTrackAudioPath(projectPath, track),
+        volumeDb: typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : -20,
+      };
     }
 
     const job = jobQueue.create('render');

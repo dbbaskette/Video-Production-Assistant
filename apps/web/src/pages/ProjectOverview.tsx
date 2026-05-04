@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi } from '../lib/api.js';
+import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -152,7 +152,7 @@ export function ProjectOverview() {
       {/* Brand applied to this project */}
       <ProjectBrandSection projectId={project.id} />
 
-      <RenderSection projectId={project.id} hasStoryboard={hasStoryboard} />
+      <ProjectMusicAndRender projectId={project.id} hasStoryboard={hasStoryboard} />
 
       {/* Action buttons — one prominent "next step" plus muted shortcuts */}
       <ActionButtons
@@ -292,7 +292,19 @@ interface RenderProgressEvent {
   message: string;
 }
 
-function RenderSection({ projectId, hasStoryboard }: { projectId: string; hasStoryboard: boolean }) {
+function RenderSection({
+  projectId,
+  hasStoryboard,
+  musicTrackId,
+  musicVolumeDb,
+  musicEnabled,
+}: {
+  projectId: string;
+  hasStoryboard: boolean;
+  musicTrackId: string | null;
+  musicVolumeDb: number;
+  musicEnabled: boolean;
+}) {
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState<RenderProgressEvent | null>(null);
   const [doneAt, setDoneAt] = useState<number | null>(null);
@@ -308,7 +320,13 @@ function RenderSection({ projectId, hasStoryboard }: { projectId: string; hasSto
   });
 
   const startRender = useMutation({
-    mutationFn: () => renderApi.start(projectId, { audioMode, burnSubtitles }),
+    mutationFn: () =>
+      renderApi.start(projectId, {
+        audioMode,
+        burnSubtitles,
+        musicTrackId: musicEnabled ? musicTrackId : null,
+        musicVolumeDb,
+      }),
     onSuccess: ({ jobId }) => {
       setError(null);
       setProgress(null);
@@ -491,6 +509,299 @@ function timeAgo(iso?: string | null): string {
   if (hr < 24) return `${hr}h ago`;
   const d = Math.floor(hr / 24);
   return `${d}d ago`;
+}
+
+/**
+ * Holds the shared music selection state so the BackgroundMusicSection (where
+ * tracks are generated and picked) and the RenderSection (which mixes the
+ * selected track in) stay in sync without prop-drilling through ProjectOverview.
+ */
+function ProjectMusicAndRender({
+  projectId,
+  hasStoryboard,
+}: {
+  projectId: string;
+  hasStoryboard: boolean;
+}) {
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [musicVolumeDb, setMusicVolumeDb] = useState(-20);
+  return (
+    <>
+      <BackgroundMusicSection
+        projectId={projectId}
+        selectedTrackId={selectedTrackId}
+        onSelect={setSelectedTrackId}
+      />
+      <RenderSection
+        projectId={projectId}
+        hasStoryboard={hasStoryboard}
+        musicTrackId={selectedTrackId}
+        musicEnabled={musicEnabled && !!selectedTrackId}
+        musicVolumeDb={musicVolumeDb}
+      />
+      {selectedTrackId && (
+        <div
+          style={{
+            marginTop: -16,
+            padding: '12px 20px',
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            display: 'flex',
+            gap: 16,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={musicEnabled}
+              onChange={(e) => setMusicEnabled(e.target.checked)}
+            />
+            Mix selected music into the next render
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, opacity: musicEnabled ? 1 : 0.5 }}>
+            Volume:
+            <input
+              type="range"
+              min={-30}
+              max={0}
+              step={1}
+              value={musicVolumeDb}
+              disabled={!musicEnabled}
+              onChange={(e) => setMusicVolumeDb(Number.parseInt(e.target.value, 10))}
+              style={{ width: 160 }}
+            />
+            <span style={{ fontFamily: 'monospace', minWidth: 48 }}>{musicVolumeDb} dB</span>
+          </label>
+          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+            -20 dB sits comfortably under narration; 0 dB is full volume.
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
+function BackgroundMusicSection({
+  projectId,
+  selectedTrackId,
+  onSelect,
+}: {
+  projectId: string;
+  selectedTrackId: string | null;
+  onSelect: (trackId: string | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const tracksQuery = useQuery({
+    queryKey: ['music', projectId],
+    queryFn: () => musicApi.list(projectId),
+  });
+  const [prompt, setPrompt] = useState('');
+  const [model, setModel] = useState<'clip' | 'pro'>('clip');
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const closeRef = useRef<(() => void) | null>(null);
+
+  const tracks = tracksQuery.data ?? [];
+
+  // Auto-select the most recent track when it lands
+  useEffect(() => {
+    if (!selectedTrackId && tracks.length > 0) {
+      onSelect(tracks[0]!.id);
+    }
+  }, [tracks, selectedTrackId, onSelect]);
+
+  useEffect(() => () => { closeRef.current?.(); }, []);
+
+  const generate = useMutation({
+    mutationFn: () =>
+      musicApi.generate(projectId, { prompt: prompt.trim(), model, format: 'mp3' }),
+    onSuccess: ({ jobId }) => {
+      setError(null);
+      setProgressMessage('Generating…');
+      closeRef.current?.();
+      const close = musicApi.subscribe(jobId, (raw) => {
+        const evt = raw as { type: string; data?: { message?: string; track?: { id: string }; error?: string } };
+        if (evt.type === 'progress') {
+          setProgressMessage(evt.data?.message ?? 'Generating…');
+        } else if (evt.type === 'done') {
+          setProgressMessage(null);
+          queryClient.invalidateQueries({ queryKey: ['music', projectId] });
+          // Newly-generated track becomes the selection
+          const tid = evt.data?.track?.id;
+          if (tid) onSelect(tid);
+          closeRef.current?.();
+          closeRef.current = null;
+        } else if (evt.type === 'error') {
+          setProgressMessage(null);
+          setError(evt.data?.error ?? 'Music generation failed');
+          closeRef.current?.();
+          closeRef.current = null;
+        }
+      });
+      closeRef.current = close;
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to start'),
+  });
+
+  const remove = useMutation({
+    mutationFn: (trackId: string) => musicApi.remove(projectId, trackId),
+    onSuccess: (_, trackId) => {
+      if (selectedTrackId === trackId) onSelect(null);
+      queryClient.invalidateQueries({ queryKey: ['music', projectId] });
+    },
+  });
+
+  const isBusy = generate.isPending || progressMessage !== null;
+
+  return (
+    <div
+      style={{
+        marginTop: 32,
+        background: 'var(--bg-elev)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 20,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            Background Music
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
+            {tracks.length === 0
+              ? 'None yet — describe the vibe and generate'
+              : `${tracks.length} track${tracks.length === 1 ? '' : 's'} (Lyria 3)`}
+          </div>
+        </div>
+      </div>
+
+      <textarea
+        rows={2}
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value.slice(0, 1500))}
+        placeholder="e.g. calm low-key technical demo background, no vocals, soft piano and pads"
+        disabled={isBusy}
+        style={{
+          width: '100%',
+          padding: 8,
+          background: 'var(--bg)',
+          color: 'var(--fg)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          fontSize: 13,
+          fontFamily: 'inherit',
+          resize: 'vertical',
+        }}
+      />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+        <label style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          Model:
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value as 'clip' | 'pro')}
+            disabled={isBusy}
+            style={{ padding: '4px 8px', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4 }}
+          >
+            <option value="clip">Lyria 3 Clip — 30 seconds, fast</option>
+            <option value="pro">Lyria 3 Pro — full track, slower</option>
+          </select>
+        </label>
+        <button
+          onClick={() => generate.mutate()}
+          disabled={isBusy || prompt.trim().length === 0}
+          className="primary"
+          style={{ padding: '8px 16px', fontSize: 13 }}
+        >
+          {isBusy ? (progressMessage ?? 'Working…') : 'Generate Music'}
+        </button>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+          {prompt.length} / 1500
+        </span>
+      </div>
+
+      {error && (
+        <p style={{ fontSize: 12, color: 'var(--danger)', margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>{error}</p>
+      )}
+
+      {tracks.length > 0 && (
+        <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {tracks.map((t) => {
+            const isSelected = t.id === selectedTrackId;
+            return (
+              <div
+                key={t.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '8px 12px',
+                  background: isSelected ? 'var(--accent-bg)' : 'var(--bg)',
+                  border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 6,
+                }}
+              >
+                <input
+                  type="radio"
+                  name="bg-music-selection"
+                  checked={isSelected}
+                  onChange={() => onSelect(t.id)}
+                  aria-label={`Use ${t.prompt.slice(0, 40)}`}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                    {t.model === 'pro' ? 'Pro' : 'Clip'} · {(t.sizeBytes / 1024).toFixed(0)} KB ·{' '}
+                    {new Date(t.generatedAt).toLocaleTimeString()}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical' as const,
+                    }}
+                    title={t.prompt}
+                  >
+                    {t.prompt}
+                  </div>
+                </div>
+                <audio
+                  src={musicApi.audioUrl(projectId, t.id)}
+                  controls
+                  preload="none"
+                  style={{ width: 240 }}
+                />
+                <button
+                  onClick={() => {
+                    if (window.confirm('Delete this track?')) remove.mutate(t.id);
+                  }}
+                  disabled={remove.isPending}
+                  title="Delete track"
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    color: 'var(--danger)',
+                    background: 'transparent',
+                    border: '1px solid var(--danger)',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ProjectBrandSection({ projectId }: { projectId: string }) {
