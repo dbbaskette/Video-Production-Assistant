@@ -366,7 +366,7 @@ function RenderSection({ projectId, hasStoryboard }: { projectId: string; hasSto
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Final Render
+            Finished Video
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
             {exists
@@ -408,16 +408,21 @@ function RenderSection({ projectId, hasStoryboard }: { projectId: string; hasSto
           className="btn--accent"
           style={{ padding: '10px 20px', fontSize: 14 }}
         >
-          {isRunning ? 'Rendering…' : exists ? 'Re-render Final Video' : 'Render Final Video'}
+          {isRunning ? 'Rendering…' : exists ? 'Re-render Finished Video' : 'Render Finished Video'}
         </button>
         {exists && (
-          <a
-            href={renderApi.videoUrl(projectId)}
-            download="final.mp4"
-            style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
-          >
-            Download final.mp4
-          </a>
+          <>
+            <a
+              href={renderApi.videoUrl(projectId)}
+              download="final.mp4"
+              style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
+            >
+              Download
+            </a>
+            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+              ready-to-share mp4 with narration + lower thirds baked in
+            </span>
+          </>
         )}
       </div>
 
@@ -621,13 +626,16 @@ function ExportButton({ projectId }: { projectId: string }) {
           fontSize: 14,
         }}
       >
-        {exportMutation.isPending ? 'Exporting...' : 'Export Assets'}
+        {exportMutation.isPending ? 'Exporting…' : 'Export Source Assets'}
       </button>
       {exportDir && (
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
           Exported to: {exportDir}
         </span>
       )}
+      <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+        Bundle of source clips + narration + subtitles for an external editor (Final Cut, Premiere, etc.)
+      </span>
       {exportMutation.isError && (
         <span style={{ fontSize: 11, color: 'var(--danger)' }}>
           {exportMutation.error instanceof Error ? exportMutation.error.message : 'Export failed'}

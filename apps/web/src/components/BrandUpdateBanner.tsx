@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { brandsApi } from '../lib/api';
 
@@ -9,6 +10,8 @@ interface Props {
 
 export function BrandUpdateBanner({ projectId, brandId, appliedVersion }: Props) {
   const qc = useQueryClient();
+  const [dismissed, setDismissed] = useState(false);
+
   const { data } = useQuery({
     queryKey: ['brand', brandId],
     queryFn: () => brandsApi.detail(brandId),
@@ -17,7 +20,6 @@ export function BrandUpdateBanner({ projectId, brandId, appliedVersion }: Props)
 
   const apply = useMutation({
     mutationFn: async (newVersion: number) => {
-      // Project update endpoint — to be implemented when the project detail page lands.
       const res = await fetch(`/api/projects/${projectId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -30,6 +32,7 @@ export function BrandUpdateBanner({ projectId, brandId, appliedVersion }: Props)
 
   if (!data) return null;
   if (data.registry.version <= appliedVersion) return null;
+  if (dismissed) return null;
 
   return (
     <aside className="banner banner--info">
@@ -38,15 +41,15 @@ export function BrandUpdateBanner({ projectId, brandId, appliedVersion }: Props)
         <span className="hint"> (project last applied v{appliedVersion})</span>
       </span>
       <button
-        className="button button--primary"
+        className="primary"
         onClick={() => apply.mutate(data.registry.version)}
         disabled={apply.isPending}
       >
         {apply.isPending ? 'Applying...' : 'Apply'}
       </button>
       <button
-        className="button"
-        onClick={() => apply.mutate(data.registry.version)}
+        className="btn--ghost"
+        onClick={() => setDismissed(true)}
         disabled={apply.isPending}
       >
         Dismiss

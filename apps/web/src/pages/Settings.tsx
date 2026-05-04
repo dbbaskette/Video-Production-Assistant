@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 
@@ -381,14 +381,16 @@ function AddVoiceProfileForm({ onAdded }: { onAdded: () => void }) {
 
   const selectedEngine = engines?.find((e) => e.id === engineId);
 
-  // Auto-select first engine & voice when engines load
-  const enginesLoaded = engines && engines.length > 0;
-  if (enginesLoaded && !engineId) {
-    setEngineId(engines[0]!.id);
-    if (engines[0]!.voices.length > 0) {
-      setVoiceId(engines[0]!.voices[0]!.id);
+  // Auto-select first engine & voice when engines load. Must run in an effect —
+  // calling setState during render produces React warnings + double renders.
+  useEffect(() => {
+    if (engines && engines.length > 0 && !engineId) {
+      setEngineId(engines[0]!.id);
+      if (engines[0]!.voices.length > 0) {
+        setVoiceId(engines[0]!.voices[0]!.id);
+      }
     }
-  }
+  }, [engines, engineId]);
 
   const createMutation = useMutation({
     mutationFn: () =>
