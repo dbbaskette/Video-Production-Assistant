@@ -567,6 +567,51 @@ export const setupApi = {
   },
 };
 
+export interface RenderStatus {
+  exists: boolean;
+  sizeBytes?: number;
+  modifiedAt?: string;
+}
+
+export interface RenderStartResult {
+  jobId: string;
+  status: 'running';
+}
+
+export interface RenderOptions {
+  audioMode?: 'replace' | 'mix';
+  burnSubtitles?: boolean;
+}
+
+export const renderApi = {
+  async start(projectId: string, opts: RenderOptions = {}): Promise<RenderStartResult> {
+    return request('POST', `/api/projects/${projectId}/render`, opts);
+  },
+  async status(projectId: string): Promise<RenderStatus> {
+    return request('GET', `/api/projects/${projectId}/render/status`);
+  },
+  videoUrl(projectId: string): string {
+    return `${BASE}/api/projects/${projectId}/render/video`;
+  },
+  /** Subscribe to SSE events for a render job. Returns a close function. */
+  subscribe(jobId: string, onEvent: (event: { type: string; data?: unknown }) => void): () => void {
+    const es = new EventSource(`${BASE}/api/jobs/${jobId}/stream`);
+    const handler = (e: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(e.data);
+        onEvent(parsed);
+      } catch { /* ignore */ }
+    };
+    // Listen to all event types we emit ('start', 'progress', 'done', 'error')
+    es.addEventListener('start', handler);
+    es.addEventListener('progress', handler);
+    es.addEventListener('done', handler);
+    es.addEventListener('error', handler);
+    es.addEventListener('message', handler);
+    return () => es.close();
+  },
+};
+
 export const overlayApi = {
   async render(projectId: string, sceneId: string): Promise<{ outputPath: string; durationSec: number }> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/overlay/render`);

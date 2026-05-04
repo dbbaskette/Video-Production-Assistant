@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi } from '../lib/api.js';
+import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi } from '../lib/api.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -152,6 +152,8 @@ export function ProjectOverview() {
       {/* Brand applied to this project */}
       <ProjectBrandSection projectId={project.id} />
 
+      <RenderSection projectId={project.id} hasStoryboard={hasStoryboard} />
+
       {/* Action buttons */}
       <div style={{ marginTop: 32, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
         {!hasStoryboard ? (
@@ -278,6 +280,211 @@ export function ProjectOverview() {
       )}
     </div>
   );
+}
+
+interface RenderProgressEvent {
+  type: 'step';
+  step: 'concat-audio' | 'mux-scene' | 'concat-scenes' | 'done';
+  sceneIndex?: number;
+  sceneId?: string;
+  totalScenes?: number;
+  message: string;
+}
+
+function RenderSection({ projectId, hasStoryboard }: { projectId: string; hasStoryboard: boolean }) {
+  const queryClient = useQueryClient();
+  const [progress, setProgress] = useState<RenderProgressEvent | null>(null);
+  const [doneAt, setDoneAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [audioMode, setAudioMode] = useState<'replace' | 'mix'>('replace');
+  const [burnSubtitles, setBurnSubtitles] = useState(false);
+  const closeStreamRef = useRef<(() => void) | null>(null);
+
+  const status = useQuery({
+    queryKey: ['render-status', projectId],
+    queryFn: () => renderApi.status(projectId),
+    enabled: hasStoryboard,
+  });
+
+  const startRender = useMutation({
+    mutationFn: () => renderApi.start(projectId, { audioMode, burnSubtitles }),
+    onSuccess: ({ jobId }) => {
+      setError(null);
+      setProgress(null);
+      setDoneAt(null);
+      // Subscribe to SSE for progress
+      closeStreamRef.current?.();
+      const close = renderApi.subscribe(jobId, (raw) => {
+        // Each event from the queue is shaped as { type, timestamp, data }.
+        const evt = raw as { type: string; data?: unknown };
+        if (evt.type === 'progress' && evt.data) {
+          setProgress(evt.data as RenderProgressEvent);
+        } else if (evt.type === 'done') {
+          setProgress(null);
+          setDoneAt(Date.now());
+          queryClient.invalidateQueries({ queryKey: ['render-status', projectId] });
+          closeStreamRef.current?.();
+          closeStreamRef.current = null;
+        } else if (evt.type === 'error') {
+          const data = evt.data as { error?: string } | undefined;
+          setError(data?.error ?? 'Render failed');
+          setProgress(null);
+          closeStreamRef.current?.();
+          closeStreamRef.current = null;
+        }
+      });
+      closeStreamRef.current = close;
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to start render'),
+  });
+
+  useEffect(() => {
+    return () => {
+      closeStreamRef.current?.();
+    };
+  }, []);
+
+  if (!hasStoryboard) return null;
+
+  const exists = status.data?.exists;
+  const sizeMb = exists && status.data?.sizeBytes ? (status.data.sizeBytes / 1024 / 1024).toFixed(1) : null;
+  const isRunning = startRender.isPending || progress !== null;
+  const progressPct = progress && progress.totalScenes && progress.sceneIndex !== undefined
+    ? Math.round(((progress.sceneIndex + (progress.step === 'mux-scene' ? 0.5 : 0)) / progress.totalScenes) * 100)
+    : progress?.step === 'concat-scenes' ? 95 : null;
+
+  return (
+    <div
+      style={{
+        marginTop: 32,
+        background: 'var(--bg-elev)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: 20,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+            Final Render
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
+            {exists
+              ? <>Ready · {sizeMb} MB · <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 400 }}>last rendered {timeAgo(status.data?.modifiedAt)}</span></>
+              : 'Not rendered yet'}
+          </div>
+        </div>
+      </div>
+
+      {/* Options */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 13 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          Audio:
+          <select
+            value={audioMode}
+            onChange={(e) => setAudioMode(e.target.value as 'replace' | 'mix')}
+            disabled={isRunning}
+            style={{ padding: '4px 8px', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4 }}
+          >
+            <option value="replace">replace original</option>
+            <option value="mix">mix narration over original (-20dB)</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={burnSubtitles}
+            onChange={(e) => setBurnSubtitles(e.target.checked)}
+            disabled={isRunning}
+          />
+          Burn in subtitles
+        </label>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          onClick={() => startRender.mutate()}
+          disabled={isRunning}
+          className="btn--accent"
+          style={{ padding: '10px 20px', fontSize: 14 }}
+        >
+          {isRunning ? 'Rendering…' : exists ? 'Re-render Final Video' : 'Render Final Video'}
+        </button>
+        {exists && (
+          <a
+            href={renderApi.videoUrl(projectId)}
+            download="final.mp4"
+            style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
+          >
+            Download final.mp4
+          </a>
+        )}
+      </div>
+
+      {/* Progress */}
+      {progress && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            height: 8,
+            overflow: 'hidden',
+          }}>
+            <div
+              style={{
+                background: 'var(--accent)',
+                height: '100%',
+                width: `${progressPct ?? 0}%`,
+                transition: 'width 200ms',
+              }}
+            />
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 6 }}>
+            {progress.message}
+            {progressPct !== null && ` (${progressPct}%)`}
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <p style={{ fontSize: 13, color: 'var(--danger)', marginTop: 12, whiteSpace: 'pre-wrap' }}>
+          {error}
+        </p>
+      )}
+
+      {/* Inline player */}
+      {(exists || doneAt) && !isRunning && (
+        <video
+          key={status.data?.modifiedAt ?? doneAt}
+          src={renderApi.videoUrl(projectId)}
+          controls
+          playsInline
+          preload="metadata"
+          style={{
+            display: 'block',
+            width: '100%',
+            maxWidth: 720,
+            marginTop: 16,
+            borderRadius: 6,
+            background: '#000',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function timeAgo(iso?: string | null): string {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  return `${d}d ago`;
 }
 
 function ProjectBrandSection({ projectId }: { projectId: string }) {
