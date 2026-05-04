@@ -182,6 +182,9 @@ export interface IngestResult {
 }
 
 export const recordingsApi = {
+  videoUrl(projectId: string, sceneId: string): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording/video`;
+  },
   async uploadForScene(projectId: string, sceneId: string, file: File): Promise<IngestResult> {
     const form = new FormData();
     form.append('file', file);
@@ -539,6 +542,28 @@ export const voiceCloneApi = {
   },
   async getXaiConsoleUrl(): Promise<{ url: string; hasTeamId: boolean }> {
     return request('GET', '/api/voice-clone/xai/console-url');
+  },
+};
+
+export interface SetupProbe {
+  id: string;
+  label: string;
+  status: 'ok' | 'warn' | 'fail';
+  message: string;
+  fixHint?: string;
+  ranAt: number;
+}
+
+export interface SetupHealth {
+  probes: SetupProbe[];
+  allOk: boolean;
+  allClean: boolean;
+}
+
+export const setupApi = {
+  async health(opts: { refresh?: boolean } = {}): Promise<SetupHealth> {
+    const qs = opts.refresh ? '?refresh=1' : '';
+    return request('GET', `/api/setup/health${qs}`);
   },
 };
 

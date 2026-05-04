@@ -12,6 +12,7 @@ import { registerRecordingRoutes } from './routes/recordings.js';
 import { registerScriptRoutes } from './routes/scripts.js';
 import { registerNarrationRoutes } from './routes/narration.js';
 import { registerVoiceCloneRoutes } from './routes/voice-clone.js';
+import { registerSetupRoutes } from './routes/setup.js';
 import { registerLowerThirdsRoutes } from './routes/lower-thirds.js';
 import { registerQualityReviewRoutes } from './routes/quality-review.js';
 import { registerOverlayRoutes } from './routes/overlay.js';
@@ -135,6 +136,9 @@ export async function buildServer() {
   );
   await app.register(async (instance) =>
     registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome }),
+  );
+  await app.register(async (instance) =>
+    registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
     registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot }),

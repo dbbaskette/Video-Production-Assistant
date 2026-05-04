@@ -5,6 +5,7 @@ import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
+import { ScenePreview } from '../components/ScenePreview.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -18,7 +19,7 @@ const typeBadgeColors: Record<string, string> = {
   slide: '#c25d5d',
 };
 
-const TABS = ['Recording', 'Script', 'Narration', 'Lower Thirds'] as const;
+const TABS = ['Recording', 'Script', 'Narration', 'Lower Thirds', 'Preview'] as const;
 type Tab = (typeof TABS)[number];
 
 export function ScenePage() {
@@ -137,7 +138,7 @@ export function ScenePage() {
   const { data: narrationState } = useQuery({
     queryKey: ['narration', projectId, sceneId],
     queryFn: () => narrationApi.get(projectId!, sceneId!),
-    enabled: !!projectId && !!sceneId && (activeTab === 'Narration' || activeTab === 'Script'),
+    enabled: !!projectId && !!sceneId && (activeTab === 'Narration' || activeTab === 'Script' || activeTab === 'Preview'),
   });
 
   // Sync engine/voice from narration state when it loads
@@ -1580,6 +1581,18 @@ export function ScenePage() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'Preview' && projectId && scene && (
+        <ScenePreview
+          projectId={projectId}
+          scene={scene}
+          chunks={(narrationState?.chunks ?? []).map((c) => ({
+            index: c.index,
+            durationSec: c.durationSec ?? null,
+            hasAudio: c.hasAudio,
+          }))}
+        />
       )}
     </div>
   );

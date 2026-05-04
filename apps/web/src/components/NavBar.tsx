@@ -40,6 +40,13 @@ export function NavBar() {
         >
           Voices
         </Link>
+        <Link
+          to="/setup"
+          className={`navbar__link${location.pathname.startsWith('/setup') ? ' navbar__link--active' : ''}`}
+          title="Setup health check"
+        >
+          Setup
+        </Link>
 
         <Link
           to="/settings"

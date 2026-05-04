@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { mkdir, writeFile, unlink } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
@@ -120,6 +121,60 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     }
 
     return { results, assignedCount: results.length, totalScenes: sb.scenes.length };
+  });
+
+  // GET /api/projects/:id/scenes/:sceneId/recording/video — stream the recording mp4.
+  // Honors Range header so the browser video player can seek without
+  // downloading the whole file.
+  app.get('/api/projects/:id/scenes/:sceneId/recording/video', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const projectPath = await resolveProjectPath(store, id);
+
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    if (!scene.recording?.source) {
+      return reply.status(404).send({ error: 'No recording for this scene', code: 'no_recording' });
+    }
+
+    const filePath = path.join(projectPath, scene.recording.source);
+    let fileStat;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      return reply.status(404).send({ error: 'Recording file missing on disk', code: 'file_missing' });
+    }
+
+    const total = fileStat.size;
+    const range = req.headers.range;
+    const ext = path.extname(filePath).toLowerCase();
+    const mime = ext === '.mp4' ? 'video/mp4' : ext === '.mov' ? 'video/quicktime' : 'application/octet-stream';
+
+    if (range) {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (!m) {
+        reply.header('Content-Range', `bytes */${total}`);
+        return reply.status(416).send();
+      }
+      const start = Number.parseInt(m[1]!, 10);
+      const end = m[2] && m[2].length > 0 ? Number.parseInt(m[2], 10) : total - 1;
+      if (start >= total || end >= total || start > end) {
+        reply.header('Content-Range', `bytes */${total}`);
+        return reply.status(416).send();
+      }
+      reply.code(206);
+      reply.header('Content-Type', mime);
+      reply.header('Accept-Ranges', 'bytes');
+      reply.header('Content-Range', `bytes ${start}-${end}/${total}`);
+      reply.header('Content-Length', end - start + 1);
+      return reply.send(createReadStream(filePath, { start, end }));
+    }
+
+    reply.header('Content-Type', mime);
+    reply.header('Accept-Ranges', 'bytes');
+    reply.header('Content-Length', total);
+    return reply.send(createReadStream(filePath));
   });
 
   // GET /api/projects/:id/scenes/:sceneId/recording/metadata — get metadata for scene recording
