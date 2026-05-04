@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, recordingsApi, type VideoMetadata } from '../lib/api.js';
@@ -28,6 +28,8 @@ export function RecordingsPage() {
   const queryClient = useQueryClient();
 
   const [uploadMode, setUploadMode] = useState<UploadMode>('idle');
+  const [bulkBannerVisible, setBulkBannerVisible] = useState(false);
+  const [generateBannerVisible, setGenerateBannerVisible] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   const { data: storyboard } = useQuery({
@@ -47,6 +49,7 @@ export function RecordingsPage() {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       setPendingFiles([]);
       setUploadMode('idle');
+      setBulkBannerVisible(true);
     },
   });
 
@@ -57,8 +60,21 @@ export function RecordingsPage() {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       setPendingFiles([]);
       setUploadMode('idle');
+      setGenerateBannerVisible(true);
     },
   });
+
+  // Auto-dismiss success banners after 6 s so the page doesn't accumulate them.
+  useEffect(() => {
+    if (!bulkBannerVisible) return;
+    const t = window.setTimeout(() => setBulkBannerVisible(false), 6000);
+    return () => window.clearTimeout(t);
+  }, [bulkBannerVisible]);
+  useEffect(() => {
+    if (!generateBannerVisible) return;
+    const t = window.setTimeout(() => setGenerateBannerVisible(false), 8000);
+    return () => window.clearTimeout(t);
+  }, [generateBannerVisible]);
 
   const isUploading = bulkMutation.isPending || generateMutation.isPending;
   const error = bulkMutation.error || generateMutation.error;
@@ -284,8 +300,8 @@ export function RecordingsPage() {
           </div>
         )}
 
-        {/* Success feedback */}
-        {bulkMutation.isSuccess && (
+        {/* Success feedback (auto-dismisses) */}
+        {bulkBannerVisible && bulkMutation.isSuccess && bulkMutation.data && (
           <div
             style={{
               marginTop: 16,
@@ -295,13 +311,26 @@ export function RecordingsPage() {
               borderRadius: 'var(--radius-sm)',
               fontSize: 13,
               color: 'var(--success)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
             }}
           >
-            Successfully uploaded {bulkMutation.data.assignedCount} recording{bulkMutation.data.assignedCount === 1 ? '' : 's'} to {bulkMutation.data.totalScenes} scene{bulkMutation.data.totalScenes === 1 ? '' : 's'}.
+            <span>
+              Successfully uploaded {bulkMutation.data.assignedCount} recording{bulkMutation.data.assignedCount === 1 ? '' : 's'} to {bulkMutation.data.totalScenes} scene{bulkMutation.data.totalScenes === 1 ? '' : 's'}.
+            </span>
+            <button
+              onClick={() => setBulkBannerVisible(false)}
+              aria-label="Dismiss"
+              style={{ background: 'transparent', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: 4, lineHeight: 1 }}
+            >
+              ✕
+            </button>
           </div>
         )}
 
-        {generateMutation.isSuccess && (
+        {generateBannerVisible && generateMutation.isSuccess && (
           <div
             style={{
               marginTop: 16,
@@ -311,13 +340,26 @@ export function RecordingsPage() {
               borderRadius: 'var(--radius-sm)',
               fontSize: 13,
               color: 'var(--success)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
             }}
           >
-            Storyboard generated! Check the{' '}
-            <Link to={`/project/${projectId}/storyboard`} style={{ color: 'var(--accent)' }}>
-              Storyboard
-            </Link>{' '}
-            page to review your scenes.
+            <span>
+              Storyboard generated! Check the{' '}
+              <Link to={`/project/${projectId}/storyboard`} style={{ color: 'var(--accent)' }}>
+                Storyboard
+              </Link>{' '}
+              page to review your scenes.
+            </span>
+            <button
+              onClick={() => setGenerateBannerVisible(false)}
+              aria-label="Dismiss"
+              style={{ background: 'transparent', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: 4, lineHeight: 1 }}
+            >
+              ✕
+            </button>
           </div>
         )}
 

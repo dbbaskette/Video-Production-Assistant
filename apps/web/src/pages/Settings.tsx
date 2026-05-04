@@ -672,10 +672,11 @@ export function Settings() {
       {/* Voice Profiles section */}
       <section style={{ marginTop: 48 }}>
         <div className="section-header" style={{ marginBottom: 18 }}>
-          <span className="section-label">Voice Profiles</span>
+          <span className="section-label">TTS Voice Profiles</span>
         </div>
         <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 16px' }}>
-          Configure TTS voices for narration. Each profile pairs a TTS engine with a voice and speed setting.
+          Saved presets that pair a TTS engine + voice + speed. Different from voice clones —
+          for those go to <a href="/voices" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Voices</a>.
         </p>
 
         {voicesLoading && <p className="hint">Loading voice profiles...</p>}

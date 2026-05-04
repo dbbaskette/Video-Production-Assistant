@@ -92,7 +92,10 @@ export function ProjectSidebar({ projectName }: Props) {
               {appliedBrand.name}
             </Link>
           ) : (
-            <Link to={`/project/${projectId}`} style={{ color: 'var(--fg-muted)', textDecoration: 'underline' }}>
+            <Link
+              to={`/project/${projectId}#brand`}
+              style={{ color: 'var(--fg-muted)', textDecoration: 'underline' }}
+            >
               none — set
             </Link>
           )}

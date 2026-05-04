@@ -127,11 +127,11 @@ export function ProjectOverview() {
               fontWeight: 700,
               marginTop: 8,
               color: review?.status === 'ok'
-                ? '#5e8a3a'
+                ? 'var(--success)'
                 : review?.status === 'warnings'
-                  ? '#f4a83a'
+                  ? 'var(--warn)'
                   : review?.status === 'issues'
-                    ? '#c25d5d'
+                    ? 'var(--danger)'
                     : 'var(--fg)',
             }}
           >
@@ -154,97 +154,14 @@ export function ProjectOverview() {
 
       <RenderSection projectId={project.id} hasStoryboard={hasStoryboard} />
 
-      {/* Action buttons */}
-      <div style={{ marginTop: 32, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        {!hasStoryboard ? (
-          <>
-            <Link
-              to={`/project/${project.id}/ideation`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--accent-bg)',
-                border: '1px solid var(--accent)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-                fontWeight: 600,
-              }}
-            >
-              Start Ideation
-            </Link>
-            <Link
-              to={`/project/${project.id}/recordings`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--bg-elev)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-              }}
-            >
-              Upload Recordings
-            </Link>
-          </>
-        ) : (
-          <>
-            <Link
-              to={`/project/${project.id}/storyboard`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--accent-bg)',
-                border: '1px solid var(--accent)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-                fontWeight: 600,
-              }}
-            >
-              View Storyboard
-            </Link>
-            <Link
-              to={`/project/${project.id}/recordings`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--bg-elev)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-              }}
-            >
-              Recordings
-            </Link>
-            <Link
-              to={`/project/${project.id}/ideation`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--bg-elev)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-              }}
-            >
-              Continue Ideation
-            </Link>
-            <Link
-              to={`/project/${project.id}/review`}
-              style={{
-                padding: '12px 24px',
-                background: 'var(--bg-elev)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                textDecoration: 'none',
-              }}
-            >
-              Quality Review
-            </Link>
-            <ExportButton projectId={project.id} />
-          </>
-        )}
-      </div>
+      {/* Action buttons — one prominent "next step" plus muted shortcuts */}
+      <ActionButtons
+        projectId={project.id}
+        hasStoryboard={hasStoryboard}
+        sceneCount={sceneCount}
+        recordingCount={recordingCount}
+        narrationCount={narrationCount}
+      />
 
       {/* Workflow guide */}
       {hasStoryboard && (
@@ -276,6 +193,90 @@ export function ProjectOverview() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Pick the most useful "next step" link based on where the project is in the
+ * workflow, render it prominently, and demote the other shortcuts to a small
+ * muted row beneath. Keeps the same set of destinations, just clarifies
+ * where the user should go.
+ */
+function ActionButtons({
+  projectId,
+  hasStoryboard,
+  sceneCount,
+  recordingCount,
+  narrationCount,
+}: {
+  projectId: string;
+  hasStoryboard: boolean;
+  sceneCount: number;
+  recordingCount: number;
+  narrationCount: number;
+}) {
+  type Action = { to: string; label: string };
+  const ALL = {
+    ideation: { to: `/project/${projectId}/ideation`, label: 'Ideation' } as Action,
+    storyboard: { to: `/project/${projectId}/storyboard`, label: 'Storyboard' } as Action,
+    recordings: { to: `/project/${projectId}/recordings`, label: 'Recordings' } as Action,
+    review: { to: `/project/${projectId}/review`, label: 'Quality Review' } as Action,
+  };
+
+  // Decide the next step
+  let primary: Action;
+  if (!hasStoryboard) {
+    primary = { ...ALL.ideation, label: 'Start Ideation' };
+  } else if (recordingCount < sceneCount) {
+    primary = { ...ALL.recordings, label: `Upload Recordings (${recordingCount}/${sceneCount})` };
+  } else if (narrationCount < sceneCount) {
+    primary = { ...ALL.storyboard, label: `Narrate Scenes (${narrationCount}/${sceneCount})` };
+  } else {
+    primary = { ...ALL.review, label: 'Quality Review' };
+  }
+
+  const secondary: Action[] = Object.values(ALL).filter((a) => a.to !== primary.to);
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Link
+          to={primary.to}
+          className="primary"
+          style={{
+            display: 'inline-block',
+            padding: '12px 24px',
+            borderRadius: 8,
+            textDecoration: 'none',
+            fontSize: 15,
+          }}
+        >
+          → {primary.label}
+        </Link>
+        {hasStoryboard && <ExportButton projectId={projectId} />}
+      </div>
+      {hasStoryboard && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Or jump to:</span>
+          {secondary.map((a) => (
+            <Link
+              key={a.to}
+              to={a.to}
+              style={{
+                fontSize: 13,
+                color: 'var(--fg-muted)',
+                textDecoration: 'none',
+                padding: '4px 10px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+              }}
+            >
+              {a.label}
+            </Link>
+          ))}
         </div>
       )}
     </div>
@@ -494,6 +495,24 @@ function timeAgo(iso?: string | null): string {
 
 function ProjectBrandSection({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const [highlight, setHighlight] = useState(false);
+
+  // When the route lands with #brand, scroll the section into view, focus the
+  // picker, and flash a subtle highlight so it's obvious which control to use.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hash !== '#brand') return;
+    sectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlight(true);
+    const focusTimer = window.setTimeout(() => selectRef.current?.focus(), 350);
+    const fadeTimer = window.setTimeout(() => setHighlight(false), 1800);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(fadeTimer);
+    };
+  }, []);
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -518,12 +537,16 @@ function ProjectBrandSection({ projectId }: { projectId: string }) {
 
   return (
     <div
+      id="brand"
+      ref={sectionRef}
       style={{
         marginTop: 32,
         background: 'var(--bg-elev)',
-        border: '1px solid var(--border)',
+        border: highlight ? '1px solid var(--accent)' : '1px solid var(--border)',
+        boxShadow: highlight ? '0 0 0 3px var(--accent-bg)' : 'none',
         borderRadius: 8,
         padding: 20,
+        transition: 'border-color 200ms, box-shadow 600ms',
       }}
     >
       <div
@@ -562,6 +585,7 @@ function ProjectBrandSection({ projectId }: { projectId: string }) {
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <select
+          ref={selectRef}
           value={appliedBrandId ?? ''}
           onChange={(e) => {
             const id = e.target.value;

@@ -15,9 +15,10 @@ export function VoicesList() {
     <main className="page">
       <header style={{ marginBottom: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
         <div>
-          <h1 style={{ margin: 0 }}>Voices</h1>
+          <h1 style={{ margin: 0 }}>Voice Clones</h1>
           <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: '4px 0 0' }}>
-            Voice clones you've recorded. Use them with Fish Audio (local) or xAI (custom voice).
+            Reference recordings that clone your voice for TTS narration. Use them via Fish Audio (local) or xAI (uploaded as a custom voice).
+            Different from TTS Voice Profiles in <a href="/settings" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Settings</a>.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -87,7 +88,7 @@ function VoiceCard({ voice }: { voice: VoiceClone }) {
         </Badge>
         {xai ? (
           <Badge tone="accent" title={`xAI voice_id: ${xai.voice_id}${xai.imported ? ' (imported)' : ''}`}>
-            xAI ✓ {xai.voice_id}
+            xAI ✓
           </Badge>
         ) : (
           <Badge tone="muted">xAI</Badge>

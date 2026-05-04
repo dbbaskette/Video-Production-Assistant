@@ -427,45 +427,67 @@ function PreviewSection({ voice }: { voice: VoiceClone }) {
       <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
         {text.length} / 400 chars
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button
-          onClick={() => runPreview('fish')}
-          disabled={!canFish || !!activeProvider || text.trim().length === 0}
-          title={!canFish ? 'Add an audio file to enable Fish preview' : 'Synthesize via Fish Audio (local)'}
-          style={{
-            padding: '8px 14px',
-            fontSize: 13,
-            background: 'var(--bg-elev)',
-            color: canFish ? 'var(--fg)' : 'var(--fg-muted)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            cursor: canFish && !activeProvider ? 'pointer' : 'not-allowed',
-          }}
-        >
-          {activeProvider === 'fish' ? 'Synthesizing…' : '▶ Preview with Fish'}
-        </button>
-        <button
-          onClick={() => runPreview('xai')}
-          disabled={!canXai || !!activeProvider || text.trim().length === 0}
-          title={!canXai ? 'Register this voice with xAI to enable preview' : 'Synthesize via xAI custom voice'}
-          style={{
-            padding: '8px 14px',
-            fontSize: 13,
-            background: 'var(--bg-elev)',
-            color: canXai ? 'var(--fg)' : 'var(--fg-muted)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            cursor: canXai && !activeProvider ? 'pointer' : 'not-allowed',
-          }}
-        >
-          {activeProvider === 'xai' ? 'Synthesizing…' : '▶ Preview with xAI'}
-        </button>
-        {!canFish && !canXai && (
-          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-            Record audio or register with xAI to enable preview
-          </span>
-        )}
-      </div>
+      {/*
+        Preview button hierarchy: whichever provider is available is rendered as
+        the primary CTA so the user has an obvious next action. If both are
+        available, Fish wins (faster + free). If only xAI is registered, xAI is
+        the primary. The unavailable side stays disabled with a tooltip.
+       */}
+      {(() => {
+        const fishIsPrimary = canFish; // Fish wins when present
+        const xaiIsPrimary = !canFish && canXai;
+        return (
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              onClick={() => runPreview('fish')}
+              disabled={!canFish || !!activeProvider || text.trim().length === 0}
+              title={!canFish ? 'Add an audio file to enable Fish preview' : 'Synthesize via Fish Audio (local)'}
+              className={fishIsPrimary ? 'primary' : undefined}
+              style={{
+                padding: '8px 14px',
+                fontSize: 13,
+                cursor: canFish && !activeProvider ? 'pointer' : 'not-allowed',
+                ...(fishIsPrimary
+                  ? {}
+                  : {
+                      background: 'var(--bg-elev)',
+                      color: canFish ? 'var(--fg)' : 'var(--fg-muted)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                    }),
+              }}
+            >
+              {activeProvider === 'fish' ? 'Synthesizing…' : '▶ Preview with Fish'}
+            </button>
+            <button
+              onClick={() => runPreview('xai')}
+              disabled={!canXai || !!activeProvider || text.trim().length === 0}
+              title={!canXai ? 'Register this voice with xAI to enable preview' : 'Synthesize via xAI custom voice'}
+              className={xaiIsPrimary ? 'primary' : undefined}
+              style={{
+                padding: '8px 14px',
+                fontSize: 13,
+                cursor: canXai && !activeProvider ? 'pointer' : 'not-allowed',
+                ...(xaiIsPrimary
+                  ? {}
+                  : {
+                      background: 'var(--bg-elev)',
+                      color: canXai ? 'var(--fg)' : 'var(--fg-muted)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                    }),
+              }}
+            >
+              {activeProvider === 'xai' ? 'Synthesizing…' : '▶ Preview with xAI'}
+            </button>
+            {!canFish && !canXai && (
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                Record audio or register with xAI to enable preview
+              </span>
+            )}
+          </div>
+        );
+      })()}
 
       {error && (
         <p style={{ color: 'var(--danger)', fontSize: 12, margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>
