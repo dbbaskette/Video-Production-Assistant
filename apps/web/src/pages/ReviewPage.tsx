@@ -2,6 +2,7 @@ import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { qualityReviewApi, storyboardApi } from '../lib/api.js';
 import type { ReviewItem } from '../lib/api.js';
+import { SEVERITY_COLOR, reviewSummaryColor, reviewSummaryLabel } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -26,11 +27,10 @@ function categoryToTab(category: string): string | null {
   }
 }
 
-const severityColors: Record<string, string> = {
-  info: '#7aa2f7',
-  warn: '#f4a83a',
-  issue: '#c25d5d',
-};
+// Severity palette + labels: single source of truth in lib/palette.ts.
+// Local re-exports (kept named the same) so the rest of the file's JSX
+// reads as before.
+const severityColors = SEVERITY_COLOR;
 
 const severityLabels: Record<string, string> = {
   info: 'Info',
@@ -116,23 +116,30 @@ export function ReviewPage() {
             alignItems: 'center',
           }}
         >
+          {/* Status label + color come from lib/palette.ts so this matches
+              the Project Overview status tile vocabulary. Same data, same
+              words. */}
           <div
             style={{
               fontSize: 14,
               fontWeight: 600,
-              color:
+              color: reviewSummaryColor(
                 review.status === 'ok'
-                  ? '#5e8a3a'
+                  ? 'ready'
                   : review.status === 'warnings'
-                    ? '#f4a83a'
-                    : '#c25d5d',
+                    ? 'warnings'
+                    : 'issues',
+              ),
             }}
           >
-            {review.status === 'ok'
-              ? 'All Good'
-              : review.status === 'warnings'
-                ? 'Warnings Found'
-                : 'Issues Found'}
+            {reviewSummaryLabel(
+              review.status === 'ok'
+                ? 'ready'
+                : review.status === 'warnings'
+                  ? 'warnings'
+                  : 'issues',
+              { warnings: review.summary.warn, issues: review.summary.issue },
+            )}
           </div>
           <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
             {review.summary.total} items: {review.summary.info} info, {review.summary.warn} warnings, {review.summary.issue} issues

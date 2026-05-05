@@ -5,6 +5,7 @@ import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, 
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
+import { STATUS_COLOR, reviewSummaryColor, reviewSummaryLabel, type ReviewStatus } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -28,9 +29,17 @@ export function ProjectOverview() {
   });
 
   const sceneCount = storyboard?.scenes?.length ?? 0;
-  const hasStoryboard = storyboard !== null && storyboard !== undefined;
+  const hasStoryboard = storyboard !== null && storyboard !== undefined && sceneCount > 0;
   const recordingCount = storyboard?.scenes?.filter((s) => s.recording).length ?? 0;
   const narrationCount = storyboard?.scenes?.filter((s) => s.narration?.audio).length ?? 0;
+  const lowerThirdCount = storyboard?.scenes?.filter((s) => (s.lower_thirds?.length ?? 0) > 0).length ?? 0;
+
+  // Render presence — drives the last pipeline step.
+  const { data: renderStatus } = useQuery({
+    queryKey: ['render-status', project.id],
+    queryFn: () => renderApi.status(project.id),
+  });
+  const finalRendered = !!renderStatus?.exists;
 
   return (
     <div style={{ padding: '40px 48px', maxWidth: 800 }}>
@@ -39,135 +48,23 @@ export function ProjectOverview() {
         {project.path}
       </p>
 
-      {/* Action buttons — one prominent "next step" plus muted shortcuts.
-          Surfaced at the top so the next step is always one glance away. */}
-      <ActionButtons
+      {/* Pipeline — replaces the old "status grid + Action Buttons" combo.
+          One linear lane shows the workflow as a sequence with a clear
+          "next step" highlight. The previous design had four equally-
+          sized status tiles that LOOKED like buttons (and made the
+          actual primary CTA compete for attention with passive readouts).
+          Now the active step is the only filled element and reads as a
+          call to action. */}
+      <Pipeline
         projectId={project.id}
         hasStoryboard={hasStoryboard}
         sceneCount={sceneCount}
         recordingCount={recordingCount}
         narrationCount={narrationCount}
+        lowerThirdCount={lowerThirdCount}
+        finalRendered={finalRendered}
+        review={review}
       />
-
-      {/* ── Status — pipeline progress at a glance ─────────────────── */}
-      <CollapsibleSection
-        title="Status"
-        defaultOpen
-        subtitle={hasStoryboard
-          ? `${recordingCount}/${sceneCount} recorded · ${narrationCount}/${sceneCount} narrated`
-          : 'Not started'}
-      >
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 16,
-        }}
-      >
-        <div
-          style={{
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            padding: 20,
-          }}
-        >
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Storyboard
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8 }}>
-            {hasStoryboard ? `${sceneCount} scenes` : '—'}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-            {hasStoryboard ? 'Created' : 'Not started'}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            padding: 20,
-          }}
-        >
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Recordings
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8 }}>
-            {hasStoryboard ? `${recordingCount}/${sceneCount}` : '—'}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-            {recordingCount > 0
-              ? recordingCount === sceneCount
-                ? 'All recorded'
-                : `${sceneCount - recordingCount} remaining`
-              : 'Not started'}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            padding: 20,
-          }}
-        >
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Narration
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8 }}>
-            {hasStoryboard ? `${narrationCount}/${sceneCount}` : '—'}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-            {narrationCount > 0
-              ? narrationCount === sceneCount
-                ? 'All narrated'
-                : `${sceneCount - narrationCount} remaining`
-              : 'Not started'}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            padding: 20,
-          }}
-        >
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-            Quality Review
-          </div>
-          <div
-            style={{
-              fontSize: 28,
-              fontWeight: 700,
-              marginTop: 8,
-              color: review?.status === 'ok'
-                ? 'var(--success)'
-                : review?.status === 'warnings'
-                  ? 'var(--warn)'
-                  : review?.status === 'issues'
-                    ? 'var(--danger)'
-                    : 'var(--fg)',
-            }}
-          >
-            {review?.status === 'ok'
-              ? 'Pass'
-              : review?.status === 'warnings'
-                ? `${review.summary.warn} warns`
-                : review?.status === 'issues'
-                  ? `${review.summary.issue} issues`
-                  : '—'}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-            {review?.status ? 'Reviewed' : 'Not reviewed'}
-          </div>
-        </div>
-      </div>
-      </CollapsibleSection>
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
       <CollapsibleSection
@@ -232,81 +129,250 @@ export function ProjectOverview() {
  * muted row beneath. Keeps the same set of destinations, just clarifies
  * where the user should go.
  */
-function ActionButtons({
+// ── Pipeline ──────────────────────────────────────────────────────
+//
+// One horizontal lane that shows the workflow as a sequence:
+//   Storyboard → Recordings → Narration → Lower Thirds → Render → Review
+//
+// Each step has a status (`done` / `next` / `todo`) computed from the
+// project state. The single `next` step renders as the primary CTA;
+// done steps collapse to a check + label; todo steps render muted.
+// Replaces the old 2×2 status grid that had four equally-sized tiles
+// looking like buttons and an above-the-fold "next action" pill that
+// competed with them for attention.
+
+interface PipelineStep {
+  key: string;
+  label: string;
+  to: string;
+  status: 'done' | 'next' | 'todo';
+  detail?: string;
+}
+
+function Pipeline({
   projectId,
   hasStoryboard,
   sceneCount,
   recordingCount,
   narrationCount,
+  lowerThirdCount,
+  finalRendered,
+  review,
 }: {
   projectId: string;
   hasStoryboard: boolean;
   sceneCount: number;
   recordingCount: number;
   narrationCount: number;
+  lowerThirdCount: number;
+  finalRendered: boolean;
+  review:
+    | undefined
+    | {
+        status?: ReviewStatus | 'ok' | null;
+        summary: { info: number; warn: number; issue: number; total: number };
+      };
 }) {
-  type Action = { to: string; label: string };
-  const ALL = {
-    ideation: { to: `/project/${projectId}/ideation`, label: 'Ideation' } as Action,
-    storyboard: { to: `/project/${projectId}/storyboard`, label: 'Storyboard' } as Action,
-    recordings: { to: `/project/${projectId}/recordings`, label: 'Recordings' } as Action,
-    review: { to: `/project/${projectId}/review`, label: 'Quality Review' } as Action,
-  };
+  const reviewStatus: ReviewStatus = !review?.status
+    ? 'unrun'
+    : review.status === 'ok'
+      ? 'ready'
+      : (review.status as ReviewStatus);
 
-  // Decide the next step
-  let primary: Action;
-  if (!hasStoryboard) {
-    primary = { ...ALL.ideation, label: 'Start Ideation' };
-  } else if (recordingCount < sceneCount) {
-    primary = { ...ALL.recordings, label: `Upload Recordings (${recordingCount}/${sceneCount})` };
-  } else if (narrationCount < sceneCount) {
-    primary = { ...ALL.storyboard, label: `Narrate Scenes (${narrationCount}/${sceneCount})` };
-  } else {
-    primary = { ...ALL.review, label: 'Quality Review' };
-  }
+  // Compute each step's done-ness in workflow order; the first non-done
+  // becomes the "next" step.
+  const raw: Array<Omit<PipelineStep, 'status'> & { done: boolean }> = [
+    {
+      key: 'storyboard',
+      label: 'Storyboard',
+      to: `/project/${projectId}/storyboard`,
+      detail: hasStoryboard ? `${sceneCount} scenes` : 'Generate or upload',
+      done: hasStoryboard,
+    },
+    {
+      key: 'recordings',
+      label: 'Recordings',
+      to: `/project/${projectId}/recordings`,
+      detail: hasStoryboard ? `${recordingCount}/${sceneCount}` : '—',
+      done: hasStoryboard && recordingCount === sceneCount,
+    },
+    {
+      key: 'narration',
+      label: 'Narration',
+      to: `/project/${projectId}/storyboard`,
+      detail: hasStoryboard ? `${narrationCount}/${sceneCount}` : '—',
+      done: hasStoryboard && narrationCount === sceneCount,
+    },
+    {
+      key: 'lower-thirds',
+      label: 'Lower Thirds',
+      to: `/project/${projectId}/storyboard`,
+      // LTs are optional per scene — "done" means at least one scene has
+      // them OR the user has explicitly skipped (we can't tell, so we
+      // mark this step done as soon as narration is finished). Pragmatic.
+      detail: lowerThirdCount > 0 ? `${lowerThirdCount}/${sceneCount}` : 'Optional',
+      done: hasStoryboard && narrationCount === sceneCount,
+    },
+    {
+      key: 'render',
+      label: 'Render',
+      to: `/project/${projectId}`, // the Render section sits inside Output below
+      detail: finalRendered ? 'Done' : 'final.mp4',
+      done: finalRendered,
+    },
+    {
+      key: 'review',
+      label: 'Quality Review',
+      to: `/project/${projectId}/review`,
+      detail: reviewSummaryLabel(reviewStatus, {
+        warnings: review?.summary.warn ?? 0,
+        issues: review?.summary.issue ?? 0,
+      }),
+      done: reviewStatus === 'ready',
+    },
+  ];
 
-  const secondary: Action[] = Object.values(ALL).filter((a) => a.to !== primary.to);
+  let foundNext = false;
+  const steps: PipelineStep[] = raw.map((s) => {
+    if (s.done) return { ...s, status: 'done' };
+    if (!foundNext) {
+      foundNext = true;
+      return { ...s, status: 'next' };
+    }
+    return { ...s, status: 'todo' };
+  });
+
+  const nextStep = steps.find((s) => s.status === 'next');
 
   return (
-    <div style={{ marginTop: 32 }}>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Link
-          to={primary.to}
-          className="primary"
-          style={{
-            display: 'inline-block',
-            padding: '12px 24px',
-            borderRadius: 8,
-            textDecoration: 'none',
-            fontSize: 15,
-          }}
-        >
-          → {primary.label}
-        </Link>
-        {hasStoryboard && <ExportButton projectId={projectId} />}
-      </div>
-      {hasStoryboard && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Or jump to:</span>
-          {secondary.map((a) => (
+    <section
+      style={{
+        marginTop: 32,
+        padding: 20,
+        background: 'var(--bg-elev)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+      }}
+      aria-label="Project pipeline"
+    >
+      {/* Step row */}
+      <ol
+        style={{
+          listStyle: 'none',
+          padding: 0,
+          margin: 0,
+          display: 'flex',
+          gap: 4,
+          alignItems: 'stretch',
+          flexWrap: 'wrap',
+        }}
+      >
+        {steps.map((step, i) => (
+          <li key={step.key} style={{ flex: '1 1 0', minWidth: 0, display: 'flex' }}>
             <Link
-              key={a.to}
-              to={a.to}
+              to={step.to}
               style={{
-                fontSize: 13,
-                color: 'var(--fg-muted)',
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                padding: '12px 14px',
                 textDecoration: 'none',
-                padding: '4px 10px',
-                borderRadius: 4,
-                border: '1px solid var(--border)',
+                borderRadius: 8,
+                border:
+                  step.status === 'next'
+                    ? `2px solid var(--accent)`
+                    : `1px solid var(--border)`,
+                background:
+                  step.status === 'next'
+                    ? 'var(--accent-bg)'
+                    : step.status === 'done'
+                      ? 'var(--surface)'
+                      : 'transparent',
+                opacity: step.status === 'todo' ? 0.55 : 1,
               }}
             >
-              {a.label}
+              <span
+                style={{
+                  fontSize: 11,
+                  color:
+                    step.status === 'done'
+                      ? STATUS_COLOR.success
+                      : step.status === 'next'
+                        ? 'var(--accent)'
+                        : 'var(--fg-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                  fontWeight: 700,
+                }}
+              >
+                {step.status === 'done'
+                  ? '✓ Done'
+                  : step.status === 'next'
+                    ? `Step ${i + 1} · Next`
+                    : `Step ${i + 1}`}
+              </span>
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: 'var(--fg)',
+                }}
+              >
+                {step.label}
+              </span>
+              {step.detail && (
+                <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{step.detail}</span>
+              )}
             </Link>
-          ))}
-        </div>
-      )}
-    </div>
+          </li>
+        ))}
+      </ol>
+
+      {/* Primary CTA — points to the same destination as the highlighted
+          step, surfaced as a real button so it reads as a call to action
+          rather than just a card link. Plus the export button alongside
+          when there's something to export. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginTop: 16,
+          flexWrap: 'wrap',
+        }}
+      >
+        {nextStep ? (
+          <Link
+            to={nextStep.to}
+            className="primary"
+            style={{
+              display: 'inline-block',
+              padding: '10px 20px',
+              borderRadius: 8,
+              textDecoration: 'none',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            → {nextStep.label}
+            {nextStep.detail ? ` (${nextStep.detail})` : ''}
+          </Link>
+        ) : (
+          <span
+            style={{
+              fontSize: 13,
+              color: STATUS_COLOR.success,
+              fontWeight: 600,
+            }}
+          >
+            ✓ All steps complete
+          </span>
+        )}
+        {hasStoryboard && <ExportButton projectId={projectId} />}
+      </div>
+    </section>
   );
 }
 

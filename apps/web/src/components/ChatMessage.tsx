@@ -1,4 +1,5 @@
 import type { Scene } from '@vpa/shared';
+import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 
 interface Props {
   role: 'user' | 'assistant';
@@ -7,12 +8,7 @@ interface Props {
   timestamp: string;
 }
 
-const typeBadgeColors: Record<string, string> = {
-  desktop: '#7aa2f7',
-  terminal: '#5e8a3a',
-  browser: '#f4a83a',
-  slide: '#c25d5d',
-};
+const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
 
 export function ChatMessage({ role, content, scenes, timestamp }: Props) {
   const isUser = role === 'user';

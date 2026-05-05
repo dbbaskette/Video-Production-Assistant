@@ -18,18 +18,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
+import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 import type { Scene, ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
 }
 
-const typeBadgeColors: Record<string, string> = {
-  desktop: '#7aa2f7',
-  terminal: '#5e8a3a',
-  browser: '#f4a83a',
-  slide: '#c25d5d',
-};
+const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
 
 export function StoryboardView() {
   const { projectId } = useParams<{ projectId: string }>();

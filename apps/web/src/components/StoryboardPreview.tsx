@@ -1,11 +1,7 @@
 import type { Scene } from '@vpa/shared';
+import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 
-const typeBadgeColors: Record<string, string> = {
-  desktop: '#7aa2f7',
-  terminal: '#5e8a3a',
-  browser: '#f4a83a',
-  slide: '#c25d5d',
-};
+const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
 
 interface Props {
   scenes: Scene[];

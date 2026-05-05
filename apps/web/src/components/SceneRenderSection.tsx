@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { sceneRenderApi, type SceneRenderKind } from '../lib/api.js';
 import { GenerationModal } from './ui/GenerationModal.js';
+import { STATUS_COLOR } from '../lib/palette.js';
 
 interface Props {
   projectId: string;
@@ -119,7 +120,7 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
       )}
 
       {renderMutation.isSuccess && (
-        <p style={{ color: '#5e8a3a', fontSize: 12, marginBottom: 12 }}>
+        <p style={{ color: STATUS_COLOR.success, fontSize: 12, marginBottom: 12 }}>
           Rendered ({renderMutation.data.durationSec.toFixed(1)}s)
           {!renderMutation.data.hadLowerThirds && ' — no lower thirds, overlay.mp4 is a copy of the recording'}
           {!renderMutation.data.hasNarration && ' — no narration audio'}
@@ -190,7 +191,7 @@ function FileRow({
             width: 8,
             height: 8,
             borderRadius: '50%',
-            background: file.exists ? '#5e8a3a' : 'var(--border)',
+            background: file.exists ? STATUS_COLOR.success : 'var(--border)',
             flexShrink: 0,
           }}
         />
