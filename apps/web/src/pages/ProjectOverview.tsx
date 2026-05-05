@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
+import { SourceDocsSection } from '../components/SourceDocsSection.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -166,6 +167,15 @@ export function ProjectOverview() {
           </div>
         </div>
       </div>
+      </CollapsibleSection>
+
+      {/* ── Reference materials — source docs that ground every AI write ── */}
+      <CollapsibleSection
+        title="Reference materials"
+        defaultOpen
+        subtitle="Used as AI context for every generated line"
+      >
+        <SourceDocsSection projectId={project.id} />
       </CollapsibleSection>
 
       {/* ── Output — brand, music, finished video, export bundle ────

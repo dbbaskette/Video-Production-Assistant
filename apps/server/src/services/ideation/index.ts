@@ -64,7 +64,13 @@ export class IdeationSession {
     this.projectId = projectId;
   }
 
-  async sendMessage(content: string, llm: LlmClient, objective?: string): Promise<IdeationMessage> {
+  async sendMessage(
+    content: string,
+    llm: LlmClient,
+    objective?: string,
+    /** When provided, project source-docs are prepended to the user prompt. */
+    projectPath?: string,
+  ): Promise<IdeationMessage> {
     // Add user message
     const userMsg: IdeationMessage = {
       id: randomUUID(),
@@ -88,7 +94,14 @@ export class IdeationSession {
 
     const objectiveContext = objective ? `\n\nProject objective: ${objective}` : '';
 
-    const userPrompt = `${objectiveContext}${currentScenesContext}\n\nConversation:\n${historyContext}`;
+    const baseUserPrompt = `${objectiveContext}${currentScenesContext}\n\nConversation:\n${historyContext}`;
+
+    const { withReferenceContext } = await import('../project-source-docs/inject.js');
+    const userPrompt = await withReferenceContext(baseUserPrompt, {
+      projectPath,
+      summarize: true,
+      llm,
+    });
 
     // Call LLM
     const completion = await llm.complete({

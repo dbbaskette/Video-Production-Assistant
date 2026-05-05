@@ -57,6 +57,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         durationSec: scene.recording?.duration_sec,
         projectObjective: sb.project.objective,
         projectAudience: sb.project.audience,
+        projectPath,
       },
       llm,
       workspaceRoot,

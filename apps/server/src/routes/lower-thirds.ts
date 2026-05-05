@@ -52,6 +52,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
         sceneDescription: scene.description,
         sceneType: scene.type,
         durationSec: scene.recording?.duration_sec,
+        projectPath,
       },
       llm,
       workspaceRoot,

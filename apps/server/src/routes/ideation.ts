@@ -31,7 +31,7 @@ export async function registerIdeationRoutes(app: FastifyInstance, deps: Deps): 
   // POST /api/projects/:id/ideation/message — send a user message
   app.post('/api/projects/:id/ideation/message', async (req, reply) => {
     const { id } = req.params as { id: string };
-    await resolveProject(store, id);
+    const entry = await resolveProject(store, id);
     const { content } = req.body as { content?: string };
 
     if (!content || typeof content !== 'string' || !content.trim()) {
@@ -39,7 +39,12 @@ export async function registerIdeationRoutes(app: FastifyInstance, deps: Deps): 
     }
 
     const session = ideationManager.getOrCreate(id);
-    const response = await session.sendMessage(content.trim(), llm);
+    const response = await session.sendMessage(
+      content.trim(),
+      llm,
+      undefined,
+      entry.path,
+    );
     return response;
   });
 

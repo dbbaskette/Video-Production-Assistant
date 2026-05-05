@@ -1,12 +1,15 @@
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/prompts.js';
 import type { LowerThird } from '@vpa/shared';
+import { withReferenceContext } from '../project-source-docs/inject.js';
 
 export interface LowerThirdInput {
   sceneName: string;
   sceneDescription: string;
   sceneType: string;
   durationSec?: number;
+  /** When provided, the project's source-docs are prepended to the prompt. */
+  projectPath?: string;
 }
 
 export async function recommendLowerThirds(
@@ -25,9 +28,15 @@ export async function recommendLowerThirds(
     parts.push(`Recording duration: ${input.durationSec}s`);
   }
 
+  const userPrompt = await withReferenceContext(parts.join('\n'), {
+    projectPath: input.projectPath,
+    summarize: true,
+    llm,
+  });
+
   const result = await llm.complete({
     systemPrompt,
-    userPrompt: parts.join('\n'),
+    userPrompt,
     responseFormat: 'json',
     temperature: 0.7,
   });

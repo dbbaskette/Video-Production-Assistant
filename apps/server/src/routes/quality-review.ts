@@ -35,7 +35,7 @@ export async function registerQualityReviewRoutes(
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
 
-    const result = await runQualityReview(sb, llm, workspaceRoot);
+    const result = await runQualityReview(sb, llm, workspaceRoot, projectPath);
     reviewCache.set(id, result);
 
     return result;

@@ -72,9 +72,17 @@ export async function runQualityReview(
   storyboard: Storyboard,
   llm: LlmClient,
   workspaceRoot: string,
+  /** Optional — project path is needed to inject source-docs reference. */
+  projectPath?: string,
 ): Promise<ReviewResult> {
   const systemPrompt = await loadPrompt(workspaceRoot, 'quality-review');
-  const userPrompt = buildStoryboardContext(storyboard);
+  const baseUserPrompt = buildStoryboardContext(storyboard);
+  const { withReferenceContext } = await import('../project-source-docs/inject.js');
+  const userPrompt = await withReferenceContext(baseUserPrompt, {
+    projectPath,
+    summarize: true,
+    llm,
+  });
 
   const result = await llm.complete({
     systemPrompt,

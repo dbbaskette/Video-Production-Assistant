@@ -1,5 +1,6 @@
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/index.js';
+import { withReferenceContext } from '../project-source-docs/inject.js';
 
 export interface ScriptInput {
   sceneName: string;
@@ -8,6 +9,8 @@ export interface ScriptInput {
   durationSec?: number;
   projectObjective?: string;
   projectAudience?: string;
+  /** When provided, the project's source-docs are prepended to the prompt. */
+  projectPath?: string;
 }
 
 export async function generateScript(
@@ -37,9 +40,15 @@ export async function generateScript(
     lines.push(`Target audience: ${input.projectAudience}`);
   }
 
+  const userPrompt = await withReferenceContext(lines.join('\n'), {
+    projectPath: input.projectPath,
+    summarize: true,
+    llm,
+  });
+
   const result = await llm.complete({
     systemPrompt,
-    userPrompt: lines.join('\n'),
+    userPrompt,
     temperature: 0.8,
   });
 

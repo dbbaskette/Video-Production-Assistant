@@ -15,6 +15,7 @@ import { registerVoiceCloneRoutes } from './routes/voice-clone.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerRenderRoutes } from './routes/render.js';
 import { registerMusicRoutes } from './routes/music.js';
+import { registerSourceDocsRoutes } from './routes/source-docs.js';
 import { registerLowerThirdsRoutes } from './routes/lower-thirds.js';
 import { registerQualityReviewRoutes } from './routes/quality-review.js';
 import { registerOverlayRoutes } from './routes/overlay.js';
@@ -152,6 +153,9 @@ export async function buildServer() {
   );
   await app.register(async (instance) =>
     registerMusicRoutes(instance, { store }),
+  );
+  await app.register(async (instance) =>
+    registerSourceDocsRoutes(instance, { store }),
   );
   await app.register(async (instance) =>
     registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot }),

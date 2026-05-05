@@ -1,5 +1,6 @@
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/index.js';
+import { withReferenceContext } from '../project-source-docs/inject.js';
 
 export interface SceneAnalysis {
   name: string;
@@ -15,6 +16,8 @@ export interface AnalysisInput {
   sceneIndex: number;
   totalScenes: number;
   projectObjective?: string;
+  /** When provided, the project's source-docs are prepended to the prompt. */
+  projectPath?: string;
 }
 
 export async function analyzeRecording(
@@ -24,13 +27,19 @@ export async function analyzeRecording(
 ): Promise<SceneAnalysis> {
   const systemPrompt = await loadPrompt(workspaceRoot, 'scene-description');
 
-  const userPrompt = [
+  const baseUserPrompt = [
     `Scene ${input.sceneIndex + 1} of ${input.totalScenes}`,
     `Filename: ${input.filename}`,
     `Duration: ${input.duration_sec.toFixed(1)} seconds`,
     `Resolution: ${input.width}x${input.height}`,
     input.projectObjective ? `Project objective: ${input.projectObjective}` : '',
   ].filter(Boolean).join('\n');
+
+  const userPrompt = await withReferenceContext(baseUserPrompt, {
+    projectPath: input.projectPath,
+    summarize: true,
+    llm,
+  });
 
   const result = await llm.complete({
     systemPrompt,

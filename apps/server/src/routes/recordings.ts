@@ -247,6 +247,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
           sceneIndex: i,
           totalScenes: uploadedFiles.length,
           projectObjective: (entry as Record<string, unknown>).objective as string | undefined,
+          projectPath: entry.path,
         },
         llm,
         workspaceRoot,

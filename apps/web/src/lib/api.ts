@@ -611,6 +611,53 @@ export interface SetupHealth {
   allClean: boolean;
 }
 
+export interface SourceDoc {
+  id: string;
+  kind: 'file' | 'url' | 'text';
+  name: string;
+  originalRel?: string;
+  extractedRel: string;
+  url?: string;
+  extractor: 'markitdown' | 'pdf-parse' | 'readability' | 'passthrough';
+  extractedChars: number;
+  uploadedAt: string;
+}
+
+export interface SourceDocWithMarkdown extends SourceDoc {
+  markdown: string;
+}
+
+export const sourceDocsApi = {
+  async list(projectId: string): Promise<SourceDoc[]> {
+    return request('GET', `/api/projects/${projectId}/source-docs`);
+  },
+  async get(projectId: string, docId: string): Promise<SourceDocWithMarkdown> {
+    return request('GET', `/api/projects/${projectId}/source-docs/${encodeURIComponent(docId)}`);
+  },
+  async uploadFiles(projectId: string, files: File[]): Promise<{ created: SourceDoc[] }> {
+    const form = new FormData();
+    files.forEach((f, i) => form.append(`file${i}`, f));
+    const res = await fetch(`${BASE}/api/projects/${projectId}/source-docs`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new ApiError(text || `Upload failed (${res.status})`, res.status, null);
+    }
+    return res.json();
+  },
+  async addUrl(projectId: string, url: string, name?: string): Promise<{ created: SourceDoc[] }> {
+    return request('POST', `/api/projects/${projectId}/source-docs`, { url, name });
+  },
+  async addText(projectId: string, text: string, name: string): Promise<{ created: SourceDoc[] }> {
+    return request('POST', `/api/projects/${projectId}/source-docs`, { text, name });
+  },
+  async remove(projectId: string, docId: string): Promise<{ deleted: boolean }> {
+    return request('DELETE', `/api/projects/${projectId}/source-docs/${encodeURIComponent(docId)}`);
+  },
+};
+
 export const setupApi = {
   async health(opts: { refresh?: boolean } = {}): Promise<SetupHealth> {
     const qs = opts.refresh ? '?refresh=1' : '';
