@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { TtsService } from '../services/tts/index.js';
 import type { LlmClient } from '../services/llm/index.js';
-import { loadPrompt } from '../services/llm/prompts.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateNarration, generateChunkNarration, generateAllChunks, splitIntoParagraphs, splitDialogIntoChunks, type ChunkSelector } from '../services/narration/index.js';
 import { jobQueue } from '../lib/job-queue.js';
@@ -580,46 +579,23 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     if (!script)
       return reply.status(400).send({ error: 'No monologue script to convert', code: 'missing_script' });
 
-    // Load the dialog conversion prompt
     const wsRoot = join(import.meta.dirname, '../../../../..');
-    let systemPrompt: string;
     try {
-      systemPrompt = await loadPrompt(wsRoot, 'narration-convert-dialog');
-    } catch {
-      // Inline fallback if prompt file is missing
-      systemPrompt = 'Convert the following narration monologue into a natural two-person dialog between Speaker A and Speaker B. Prefix each paragraph with [Speaker A] or [Speaker B]. Keep total word count similar. Return only the script.';
-    }
+      const { convertToDialog } = await import('../services/script/convert-to-dialog.js');
+      const { dialogScript, chunks } = await convertToDialog(script, llm, wsRoot, projectPath);
 
-    try {
-      const result = await llm.complete({
-        systemPrompt,
-        userPrompt: `Convert this narration script to dialog:\n\n${script}`,
-        temperature: 0.7,
-      });
-
-      const dialogScript = result.text.trim();
-
-      // Parse speaker assignments from the generated dialog
-      const paragraphs = splitDialogIntoChunks(dialogScript);
-      const chunks = paragraphs.map((text, i) => {
-        const speakerMatch = text.match(/^\[Speaker\s+(A|B)\]/i);
-        return {
-          index: i,
-          text: speakerMatch ? text.replace(/^\[Speaker\s+(?:A|B)\]\s*/i, '') : text,
-          speaker: speakerMatch ? speakerMatch[1]!.toUpperCase() : (i % 2 === 0 ? 'A' : 'B'),
-        };
-      });
-
-      // Save both versions: dialog as active + backup, monologue preserved
+      // Explicit user-triggered conversion: flip mode to 'dialog', persist
+      // both versions, clear stale full-narration audio. (The script-generate
+      // path uses the same converter but doesn't flip mode — that's the only
+      // behavioral difference.)
       const narration = {
         ...(scene.narration ?? {}),
         script: dialogScript,
-        dialogScript,                                                 // persist dialog version
-        monologueScript: scene.narration?.monologueScript ?? script,  // preserve monologue
-        dialogDirty: false,                                           // legacy field, kept for schema compat
+        dialogScript,
+        monologueScript: scene.narration?.monologueScript ?? script,
+        dialogDirty: false,
         mode: 'dialog' as const,
         chunks: chunks.map((c) => ({ index: c.index, text: c.text, speaker: c.speaker })),
-        // Clear stale audio
         audio: undefined,
         subtitles: undefined,
         timings: undefined,

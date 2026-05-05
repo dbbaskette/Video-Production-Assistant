@@ -3,6 +3,7 @@ import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateScript } from '../services/script/index.js';
+import { convertToDialog } from '../services/script/convert-to-dialog.js';
 
 interface Deps {
   store: ProjectStore;
@@ -63,12 +64,36 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       workspaceRoot,
     );
 
-    // Save script to storyboard under narration.script AND monologueScript
-    const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
+    // Auto-generate the dialog variant alongside the monologue so flipping
+    // modes in the Script tab is instant. Best-effort — if the conversion
+    // call fails (rate limit, prompt safety block, etc.) we still return the
+    // monologue so the primary flow isn't blocked.
+    let dialogScript: string | undefined;
+    try {
+      const result = await convertToDialog(script, llm, workspaceRoot, projectPath);
+      dialogScript = result.dialogScript;
+    } catch (err) {
+      app.log.warn(
+        `Auto dialog-conversion failed for ${sceneId}; monologue saved. Reason: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // Save: monologue is the active version; dialogScript is persisted as a
+    // backup that switches in instantly when the user toggles to dialog mode.
+    // We deliberately do NOT change `mode` — that stays at whatever the
+    // scene already had (defaulting to monologue).
+    const narration = {
+      ...(scene.narration ?? {}),
+      script,
+      monologueScript: script,
+      ...(dialogScript ? { dialogScript } : {}),
+    };
     const updated = updateScene(sb, sceneId, { narration: narration as any });
     await saveStoryboard(projectPath, updated);
 
-    return { sceneId, script };
+    return { sceneId, script, dialogScript };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/script — save edited script
