@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { TtsService, createFakeTtsProvider } from '../tts/index.js';
 import { saveStoryboard, loadStoryboard } from '../storyboard/index.js';
-import { generateNarration } from './index.js';
+import { generateNarration, generateAllChunks } from './index.js';
 import type { Storyboard } from '@vpa/shared';
 
 function makeSampleStoryboard(): Storyboard {
@@ -128,6 +128,54 @@ describe('narration service', () => {
         tts,
       ),
     ).rejects.toThrow('No storyboard found');
+  });
+
+  it("'missing' selector regenerates chunks whose stored text drifted from the script", async () => {
+    // Repro of a real bug: user regenerates the script, then clicks Generate
+    // All. The default 'missing' selector originally only checked
+    // !chunk.audio, so chunks left over from the previous script (with stale
+    // audio paths) were silently skipped — leaving a per-scene render with
+    // narration that didn't match the new script.
+    const sb = makeSampleStoryboard();
+    // Pretend the user previously generated chunks for an old script. The
+    // chunks reference audio files that "exist" and have OLD text.
+    sb.scenes[0]!.narration = {
+      script:
+        '[warm] This is the NEW first paragraph after a regen.\n\n[confident] And the NEW second paragraph.',
+      chunks: [
+        {
+          index: 0,
+          text: '[warm] OLD first paragraph that no longer matches the script.',
+          audio: 'narration/scene-01-chunk-00.mp3',
+          durationSec: 5,
+        },
+        {
+          index: 1,
+          text: '[confident] And the NEW second paragraph.', // unchanged
+          audio: 'narration/scene-01-chunk-01.mp3',
+          durationSec: 4,
+        },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const result = await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      () => {},
+    );
+
+    // Only chunk 0 should have been regenerated (text drifted); chunk 1 was
+    // unchanged so 'missing' should skip it.
+    expect(result.total).toBe(1);
+    expect(result.completed).toBe(1);
+
+    // Storyboard should reflect the new text on chunk 0.
+    const updated = await loadStoryboard(projectPath);
+    const scene = updated!.scenes.find((s) => s.id === 'scene-01');
+    expect(scene?.narration?.chunks?.[0]?.text).toBe(
+      '[warm] This is the NEW first paragraph after a regen.',
+    );
   });
 
   it('reports unsupported emotive tags', async () => {
