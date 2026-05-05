@@ -124,8 +124,23 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     // while the dialog half is still running, refreshing storyboard.yaml
     // will at least show the monologue rather than the previous (or empty)
     // state. Mode stays at whatever the scene already had.
+    //
+    // Wipe the old narration audio chunks: they pointed at mp3s rendered
+    // from the PREVIOUS script's paragraphs. Keeping them around makes
+    // "Generate All" silently no-op (its 'missing' selector skips chunks
+    // that already have an audio path) and the audio plays the wrong
+    // narration over the new script. Same reason, also clear any
+    // legacy-mode single audio file + subtitles + timings.
     {
-      const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
+      const narration = {
+        ...(scene.narration ?? {}),
+        script,
+        monologueScript: script,
+        chunks: undefined,
+        audio: undefined,
+        subtitles: undefined,
+        timings: undefined,
+      };
       const updated = updateScene(sb, sceneId, { narration: narration as any });
       await saveStoryboard(projectPath, updated);
     }
@@ -153,11 +168,17 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       if (sb2) {
         const scene2 = sb2.scenes.find((s) => s.id === sceneId);
         if (scene2) {
+          // Same chunk-wipe rationale as Phase 1 — the dialog variant just
+          // landed, so any previously-rendered chunks are also stale.
           const narration = {
             ...(scene2.narration ?? {}),
             script,
             monologueScript: script,
             dialogScript,
+            chunks: undefined,
+            audio: undefined,
+            subtitles: undefined,
+            timings: undefined,
           };
           const updated = updateScene(sb2, sceneId, { narration: narration as any });
           await saveStoryboard(projectPath, updated);
