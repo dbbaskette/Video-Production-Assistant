@@ -160,6 +160,20 @@ export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps
       const total = fileStat.size;
       const range = req.headers.range;
 
+      // Force a download rather than inline playback. The whole purpose of
+      // these endpoints is to hand off files to another editor, so the
+      // <a download> attribute alone isn't enough — it's ignored on
+      // cross-origin URLs (web app on :5173, API on :3000), and the
+      // browser would otherwise play the mp4/mp3 inline. The filename
+      // joins the sceneId + kind so it lands in Downloads/ as something
+      // recognisable like "scene-01-combined.mp4".
+      const ext = info.rel.split('.').pop() ?? 'bin';
+      const downloadName = `${sceneId}-${kind}.${ext}`;
+      reply.header(
+        'Content-Disposition',
+        `attachment; filename="${downloadName.replace(/"/g, '')}"`,
+      );
+
       if (range) {
         const m = /^bytes=(\d+)-(\d*)$/.exec(range);
         if (!m) {
