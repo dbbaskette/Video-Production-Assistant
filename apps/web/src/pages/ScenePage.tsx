@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi } from '../lib/api.js';
+import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi } from '../lib/api.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
@@ -72,6 +72,11 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [scriptDirty, setScriptDirty] = useState(false);
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
   const [dialogEditDirty, setDialogEditDirty] = useState(false);
+  // Whether to ground the next script generation in the actual video (Gemini
+  // Files API). Defaults to true when the active provider is Gemini and the
+  // scene has a recording — see effect below. User can untick to fall back
+  // to the (faster, cheaper) text-only path.
+  const [groundInVideo, setGroundInVideo] = useState(true);
   const queryClient = useQueryClient();
   const ui = useUi();
 
@@ -81,7 +86,16 @@ export function ScenePage(props: ScenePageProps = {}) {
     enabled: !!projectId,
   });
 
+  // Active model — used to gate the "ground in video" toggle. Only Gemini
+  // accepts video natively; everything else falls back to text-only.
+  const { data: activeModel } = useQuery({
+    queryKey: ['active-model'],
+    queryFn: () => settingsApi.getActiveModel(),
+    staleTime: 60_000,
+  });
+
   const scene = storyboard?.scenes.find((s) => s.id === sceneId);
+  const canGroundInVideo = activeModel?.provider === 'gemini' && !!scene?.recording;
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => recordingsApi.uploadForScene(projectId!, sceneId!, file),
@@ -91,7 +105,12 @@ export function ScenePage(props: ScenePageProps = {}) {
   });
 
   const generateScriptMutation = useMutation({
-    mutationFn: () => scriptApi.generate(projectId!, sceneId!),
+    mutationFn: () =>
+      scriptApi.generate(projectId!, sceneId!, {
+        // Server only honours this when active provider is Gemini + recording exists,
+        // so toggling true on a non-Gemini provider is harmless (falls back to text).
+        groundInVideo: groundInVideo && canGroundInVideo,
+      }),
     onSuccess: (data) => {
       setEditingScript(data.script);
       setEditingDialogScript(null); // refetch dialog from narrationState
@@ -618,13 +637,52 @@ export function ScenePage(props: ScenePageProps = {}) {
         <div>
           {/* Generation modal — blocks the page so the user can't navigate
               away mid-generation (which previously left the page showing
-              the pre-generation state until both halves landed). */}
+              the pre-generation state until both halves landed). Phase
+              copy adapts to the chosen mode: video-grounded does an extra
+              upload + Gemini-side analysis pass before the actual write. */}
           <GenerationModal
             open={generateScriptMutation.isPending}
             title="Generating script"
-            phase="Writing monologue, then dialog…"
-            hint="Two LLM calls run in sequence. Please don't navigate away."
+            phase={
+              groundInVideo && canGroundInVideo
+                ? 'Uploading video to Gemini → analysing → writing script → converting to dialog…'
+                : 'Writing monologue, then dialog…'
+            }
+            hint={
+              groundInVideo && canGroundInVideo
+                ? 'Video upload + Gemini analysis usually takes 30–60s on top of the LLM calls. Please don\'t navigate away.'
+                : "Two LLM calls run in sequence. Please don't navigate away."
+            }
           />
+
+          {/* Video-grounded toggle. Only shown when the active provider can
+              actually use it — otherwise the toggle would be a no-op trap
+              ("turn this on but nothing changes"). */}
+          {canGroundInVideo && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 12,
+                fontSize: 13,
+                color: 'var(--fg-muted)',
+                userSelect: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={groundInVideo}
+                onChange={(e) => setGroundInVideo(e.target.checked)}
+                disabled={generateScriptMutation.isPending}
+              />
+              <span>
+                Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'} —
+                more accurate, slower, costs more tokens)
+              </span>
+            </label>
+          )}
 
           {/* ── Top bar: Generate/Regenerate ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
