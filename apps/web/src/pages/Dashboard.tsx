@@ -56,6 +56,14 @@ export function Dashboard() {
     navigate(`/project/${id}/ideation`);
   };
 
+  // "I have recordings" → land directly on the upload screen so the user
+  // doesn't have to hunt for it from Project Overview. The RecordingsPage
+  // detects there's no storyboard yet and offers the "generate storyboard
+  // from recordings" flow that matches the entry-point's promise.
+  const handleRecordingsCreated = (id: string) => {
+    navigate(`/project/${id}/recordings`);
+  };
+
   return (
     <main className="page">
       <header style={{ marginBottom: 32 }}>
@@ -105,7 +113,7 @@ export function Dashboard() {
       <NewProjectDialog
         open={modal === 'new'}
         onClose={() => setModal('none')}
-        onCreated={handleOpen}
+        onCreated={handleRecordingsCreated}
       />
       <NewProjectDialog
         open={modal === 'new-ideation'}
