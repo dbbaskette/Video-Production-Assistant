@@ -13,7 +13,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
   const queryClient = useQueryClient();
   const defaults = useQuery({ queryKey: ['defaults'], queryFn: api.getDefaults });
   const brandsQuery = useQuery({ queryKey: ['brands'], queryFn: () => brandsApi.list() });
-  const [name, setName] = useState('');
+  const [rawName, setRawName] = useState('');
   const [parentDir, setParentDir] = useState('');
   const [objective, setObjective] = useState('');
   const [brand, setBrand] = useState<{ id: string; applied_version: number } | null>(null);
@@ -33,10 +33,21 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
     }
   }, [brandsQuery.data, brand]);
 
+  // Project names must be filesystem-safe (alphanumeric, dash, underscore)
+  // because they become a directory name. Auto-slugify so the UI is forgiving
+  // when users type with spaces / punctuation, but still show them what
+  // we'll actually save.
+  const slug = rawName
+    .trim()
+    .replace(/\s+/g, '-')        // spaces → dashes
+    .replace(/[^a-zA-Z0-9_-]/g, '') // strip anything else
+    .replace(/^-+|-+$/g, '');     // no leading/trailing dashes
+  const slugDiffers = slug !== rawName.trim() && rawName.length > 0;
+
   const create = useMutation({
     mutationFn: async () => {
       const project = await api.createProject({
-        name,
+        name: slug,
         parentDir: parentDir.trim() ? parentDir : undefined,
         objective: objective.trim() ? objective : undefined,
         brand,
@@ -57,7 +68,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       onCreated(project.id);
-      setName('');
+      setRawName('');
       setParentDir('');
       setObjective('');
       setBrand(null);
@@ -71,7 +82,13 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
   const errorMsg =
     error instanceof ApiError ? error.message : error instanceof Error ? error.message : null;
   const placeholderRoot = defaults.data?.projectsDefault ?? '~/Movies/VPA';
-  const nameValid = /^[a-zA-Z0-9_-]+$/.test(name) && name.length > 0;
+  const nameValid = slug.length > 0;
+  const nameInvalidReason =
+    rawName.length === 0
+      ? null
+      : slug.length === 0
+        ? 'Use letters, numbers, dashes, or underscores.'
+        : null;
 
   return (
     <div
@@ -84,14 +101,29 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
         <h2>New project</h2>
 
         <div className="dialog__field">
-          <label className="dialog__label">Name (alphanumeric, dash, underscore)</label>
+          <label className="dialog__label">Name</label>
           <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="my-demo"
+            value={rawName}
+            onChange={(e) => setRawName(e.target.value)}
+            placeholder="MCP Demo Test"
             autoFocus
             style={{ width: '100%' }}
           />
+          {/* Live feedback: when the typed name needed cleaning, show what
+              we'll actually save; when it strips to empty, explain why. */}
+          {nameInvalidReason ? (
+            <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>
+              {nameInvalidReason}
+            </div>
+          ) : slugDiffers ? (
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Will save as <code style={{ color: 'var(--fg)' }}>{slug}</code> (folder name).
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Becomes a folder under your projects directory.
+            </div>
+          )}
         </div>
 
         <div className="dialog__field">
@@ -200,8 +232,9 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             className="primary"
             disabled={!nameValid || create.isPending}
             onClick={() => create.mutate()}
+            title={!nameValid ? 'Enter a project name to enable Create' : undefined}
           >
-            {create.isPending ? 'Creating...' : 'Create'}
+            {create.isPending ? 'Creating…' : 'Create'}
           </button>
         </div>
       </div>
