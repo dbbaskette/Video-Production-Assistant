@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import { ProjectStore } from '../services/project/store.js';
 import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
 import { createFakeLlm } from '../services/llm/index.js';
+import { ModelRegistry } from '../services/llm/model-registry.js';
 import { registerScriptRoutes } from './scripts.js';
 import type { Storyboard } from '@vpa/shared';
 
@@ -18,10 +19,14 @@ async function buildTestServer() {
   const projects = await mkdtemp(path.join(tmpdir(), 'vpa-script-projects-'));
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
   const llm = createFakeLlm();
+  // Empty registry — tests exercise the text-only path so getActive() returns
+  // undefined and the route never tries to upload to Gemini.
+  const registry = new ModelRegistry(path.join(home, 'models.json'));
+  await registry.load({});
 
   const app = Fastify();
   await app.register(async (i) =>
-    registerScriptRoutes(i, { store, llm, workspaceRoot: workspaceRoot() }),
+    registerScriptRoutes(i, { store, llm, workspaceRoot: workspaceRoot(), registry }),
   );
   return { app, store, llm, home, projects };
 }

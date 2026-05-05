@@ -138,7 +138,7 @@ export async function buildServer() {
     registerRecordingRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
   );
   await app.register(async (instance) =>
-    registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
+    registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
   );
   await app.register(async (instance) =>
     registerNarrationRoutes(instance, { store, tts, llm, vpaHome: config.vpaHome }),

@@ -270,8 +270,24 @@ export const scriptApi = {
   async get(projectId: string, sceneId: string): Promise<ScriptState> {
     return request<ScriptState>('GET', `/api/projects/${projectId}/scenes/${sceneId}/script`);
   },
-  async generate(projectId: string, sceneId: string): Promise<{ sceneId: string; script: string }> {
-    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`);
+  /**
+   * Generate a script for a scene.
+   *
+   * Pass `groundInVideo: true` to use the video-grounded path (Gemini only) —
+   * the recording is uploaded to Gemini's Files API and the model writes a
+   * script grounded in what's actually on screen. Falls back to text-only
+   * generation when the active provider isn't Gemini or the scene has no
+   * recording, regardless of the flag.
+   *
+   * Response includes `mode: 'text' | 'video'` so the UI can confirm which
+   * path actually ran.
+   */
+  async generate(
+    projectId: string,
+    sceneId: string,
+    opts: { groundInVideo?: boolean } = {},
+  ): Promise<{ sceneId: string; script: string; dialogScript?: string; mode: 'text' | 'video' }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`, opts);
   },
   async save(projectId: string, sceneId: string, script: string): Promise<{ sceneId: string; script: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/script`, { script });
