@@ -300,10 +300,23 @@ export async function generateAllChunks(
 
   const stored = scene.narration.chunks ?? [];
   const allIndices = paragraphs.map((_, i) => i);
+  // 'missing' is the default selector and what the Generate All button uses.
+  // It originally meant "no audio file rendered yet", but that's too narrow:
+  // if the script gets regenerated and the old chunks are still in
+  // storyboard.yaml (because the wipe-on-regen path was skipped or the
+  // chunks predate that fix), every chunk has an audio path pointing at the
+  // OLD paragraph's audio. We need to detect that drift here so Generate
+  // All re-renders chunks whose stored text no longer matches the current
+  // paragraph at the same index.
   const targetIndices = allIndices.filter((i) => {
     const c = stored.find((s) => s.index === i);
     if (selector === 'all') return true;
-    if (selector === 'missing') return !c?.audio;
+    if (selector === 'missing') {
+      if (!c?.audio) return true;  // truly missing
+      // Stale: paragraph content changed since this chunk was rendered.
+      if (c.text !== paragraphs[i]) return true;
+      return false;
+    }
     if (selector === 'failed') return !!c?.failed;
     return true;
   });
