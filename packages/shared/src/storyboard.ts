@@ -89,6 +89,15 @@ export const SceneSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
   description: z.string(),
+  /**
+   * User-authored: what this scene is meant to demonstrate, in their own
+   * words. Acts as the north star for narration generation — distinct
+   * from `description` (which is auto-generated from the recording and
+   * may be re-written by Re-analyze). Optional and never auto-populated;
+   * if blank, narration falls back to using description + objective +
+   * source-docs as before.
+   */
+  intent: z.string().optional(),
   type: SceneTypeSchema.default('desktop'),
   recording: RecordingSchema.optional(),
   narration: NarrationSchema.optional(),

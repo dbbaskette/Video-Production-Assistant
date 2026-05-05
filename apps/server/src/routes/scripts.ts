@@ -84,6 +84,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             videoMimeType: 'video/mp4',
             sceneName: scene.name,
             sceneDescription: scene.description,
+            sceneIntent: scene.intent,
             durationSec: scene.recording.duration_sec ?? 30,
             projectObjective: sb.project.objective,
             projectAudience: sb.project.audience,
@@ -109,6 +110,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         {
           sceneName: scene.name,
           sceneDescription: scene.description,
+          sceneIntent: scene.intent,
           sceneType: scene.type,
           durationSec: scene.recording?.duration_sec,
           projectObjective: sb.project.objective,
@@ -187,6 +189,30 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     }
 
     return { sceneId, script, dialogScript, mode };
+  });
+
+  // PUT /api/projects/:id/scenes/:sceneId/intent — save the user-authored
+  // "what is this scene supposed to demonstrate" string. Persisted on the
+  // scene; the script generator uses it as the north star, with the video
+  // as visual/pacing anchor and source-docs as the factual reference.
+  // Empty string clears it. Never touched by Re-analyze.
+  app.put('/api/projects/:id/scenes/:sceneId/intent', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as { intent?: string };
+    if (typeof body.intent !== 'string') {
+      return reply.status(400).send({ error: 'intent must be a string', code: 'invalid_request' });
+    }
+    const projectPath = await resolveProjectPath(store, id);
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+
+    // Trim and treat empty as "cleared".
+    const trimmed = body.intent.trim();
+    const updated = updateScene(sb, sceneId, { intent: trimmed.length > 0 ? trimmed : undefined });
+    await saveStoryboard(projectPath, updated);
+    return { sceneId, intent: trimmed.length > 0 ? trimmed : null };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/script — save edited script
