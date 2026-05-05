@@ -18,7 +18,34 @@ export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<
 
   app.get('/api/projects', async (): Promise<ListProjectsResponse> => {
     const tracker = await store.readTracker();
-    return { projects: tracker.projects };
+    // Mark stale entries so the dashboard can dim them + offer a one-click
+    // prune. Doing the stat here is cheap (parallel) and avoids the UI
+    // having to fan out per-row existence checks.
+    const presence = await store.checkExistence();
+    return {
+      projects: tracker.projects.map((p) => ({
+        ...p,
+        missing: presence.get(p.id) === false,
+      })),
+    };
+  });
+
+  // POST /api/projects/prune — drop every tracker entry whose directory no
+  // longer exists. Returns the entries that were removed so the UI can
+  // confirm "Cleaned up N projects". Does not touch disk.
+  app.post('/api/projects/prune', async () => {
+    const removed = await store.pruneMissing();
+    return { removed };
+  });
+
+  // DELETE /api/projects/:id/tracker — remove a single entry from the
+  // tracker only. Distinct from any future destructive delete that would
+  // also touch disk; this is the dashboard "Remove from list" action.
+  app.delete('/api/projects/:id/tracker', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const removed = await store.removeFromTracker(id);
+    if (!removed) return reply.status(404).send({ error: 'Project not found in tracker', code: 'not_found' });
+    return { removed: true };
   });
 
   app.post('/api/projects', async (req, reply) => {

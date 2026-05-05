@@ -19,12 +19,16 @@ export const ProjectSchema = z.object({
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
-/** Tracker entry in ~/.vpa/projects.json */
+/** Tracker entry in ~/.vpa/projects.json (the on-disk shape; `missing` is
+ *  derived at list-time and only present in API responses). */
 export const ProjectTrackerEntrySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   path: z.string(),
   lastOpened: z.string().datetime().nullable(),
+  /** True when the project's directory no longer exists on disk. Set by the
+   *  server when listing; not stored in projects.json. */
+  missing: z.boolean().optional(),
 });
 export type ProjectTrackerEntry = z.infer<typeof ProjectTrackerEntrySchema>;
 

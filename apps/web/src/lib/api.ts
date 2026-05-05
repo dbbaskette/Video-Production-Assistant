@@ -67,6 +67,16 @@ export const api = {
     const data = await request<unknown>('PUT', `/api/projects/${id}/brand`, { brand });
     return ProjectSchema.parse(data);
   },
+  /** Remove every tracker entry whose directory no longer exists on disk.
+   *  Returns the entries that were pruned. Doesn't touch the filesystem. */
+  async pruneMissingProjects(): Promise<{ removed: Array<{ id: string; name: string; path: string }> }> {
+    return request('POST', '/api/projects/prune');
+  },
+  /** Remove a single tracker entry without touching its directory. The
+   *  dashboard "Remove from list" affordance. */
+  async removeProjectFromTracker(id: string): Promise<{ removed: boolean }> {
+    return request('DELETE', `/api/projects/${id}/tracker`);
+  },
 };
 
 export const brandsApi = {

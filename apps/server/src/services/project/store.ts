@@ -145,6 +145,65 @@ export class ProjectStore {
     return loadYaml(text, ProjectSchema);
   }
 
+  /**
+   * Remove a single entry from the tracker without touching the project
+   * directory on disk. Used by the dashboard "Remove from list" affordance.
+   */
+  async removeFromTracker(id: string): Promise<boolean> {
+    const tracker = await this.readTracker();
+    const next = tracker.projects.filter((p) => p.id !== id);
+    if (next.length === tracker.projects.length) return false;
+    await this.writeTracker({ version: 1, projects: next });
+    return true;
+  }
+
+  /**
+   * Drop every tracker entry whose path no longer exists on disk. Returns
+   * the entries that were pruned (so the UI can confirm what happened).
+   */
+  async pruneMissing(): Promise<ProjectTrackerEntry[]> {
+    const { stat } = await import('node:fs/promises');
+    const tracker = await this.readTracker();
+    const kept: ProjectTrackerEntry[] = [];
+    const removed: ProjectTrackerEntry[] = [];
+    for (const entry of tracker.projects) {
+      try {
+        const s = await stat(entry.path);
+        if (s.isDirectory()) {
+          kept.push(entry);
+          continue;
+        }
+      } catch { /* ENOENT / not a dir → falls through to removed */ }
+      removed.push(entry);
+    }
+    if (removed.length > 0) {
+      await this.writeTracker({ version: 1, projects: kept });
+    }
+    return removed;
+  }
+
+  /**
+   * Stat every tracker entry's path and return a map of id → exists. Used by
+   * the list endpoint to mark entries that the user has deleted on disk so
+   * the dashboard can dim them and offer a one-click prune.
+   */
+  async checkExistence(): Promise<Map<string, boolean>> {
+    const { stat } = await import('node:fs/promises');
+    const tracker = await this.readTracker();
+    const out = new Map<string, boolean>();
+    await Promise.all(
+      tracker.projects.map(async (entry) => {
+        try {
+          const s = await stat(entry.path);
+          out.set(entry.id, s.isDirectory());
+        } catch {
+          out.set(entry.id, false);
+        }
+      }),
+    );
+    return out;
+  }
+
   /** Update the brand applied to a project. Pass null to clear. */
   async setProjectBrand(
     id: string,
