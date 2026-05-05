@@ -14,6 +14,7 @@ import { registerNarrationRoutes } from './routes/narration.js';
 import { registerVoiceCloneRoutes } from './routes/voice-clone.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerRenderRoutes } from './routes/render.js';
+import { registerSceneRenderRoutes } from './routes/scene-render.js';
 import { registerMusicRoutes } from './routes/music.js';
 import { registerSourceDocsRoutes } from './routes/source-docs.js';
 import { registerLowerThirdsRoutes } from './routes/lower-thirds.js';
@@ -150,6 +151,13 @@ export async function buildServer() {
   );
   await app.register(async (instance) =>
     registerRenderRoutes(instance, { store }),
+  );
+  await app.register(async (instance) =>
+    registerSceneRenderRoutes(instance, {
+      store,
+      vpaHome: config.vpaHome,
+      workspaceRoot: wsRoot,
+    }),
   );
   await app.register(async (instance) =>
     registerMusicRoutes(instance, { store }),

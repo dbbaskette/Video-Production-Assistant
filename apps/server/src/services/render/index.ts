@@ -333,7 +333,9 @@ async function concatScenes(scenePaths: string[], outputPath: string, tmpDir: st
 
 // ── ffmpeg helpers ───────────────────────────────────────────────────
 
-async function runFfmpeg(args: string[]): Promise<void> {
+/** Re-exported for the per-scene render service so we don't duplicate the
+ *  ffmpeg invocation + RenderError mapping. */
+export async function runFfmpeg(args: string[]): Promise<void> {
   try {
     await execFileAsync('ffmpeg', args, {
       timeout: 600_000, // 10 minute cap per ffmpeg call
@@ -349,7 +351,7 @@ async function runFfmpeg(args: string[]): Promise<void> {
   }
 }
 
-async function probeDuration(path: string): Promise<number> {
+export async function probeDuration(path: string): Promise<number> {
   try {
     const { stdout } = await execFileAsync('ffprobe', [
       '-v', 'error',
@@ -381,7 +383,7 @@ function hintFromStderr(stderr: string): string | undefined {
 }
 
 /** Escape a path for use inside a `-vf` filter argument. */
-function escapeForFilter(p: string): string {
+export function escapeForFilter(p: string): string {
   // colon must be escaped, backslashes too
   return p
     .replace(/\\/g, '\\\\')

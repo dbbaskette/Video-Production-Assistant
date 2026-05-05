@@ -787,6 +787,44 @@ export const overlayApi = {
   },
 };
 
+export type SceneRenderKind = 'combined' | 'overlay' | 'narration';
+
+export interface SceneRenderStatus {
+  files: Record<SceneRenderKind, { exists: boolean; sizeBytes?: number; modifiedAt?: string }>;
+}
+
+export interface SceneRenderResult {
+  durationSec: number;
+  hasNarration: boolean;
+  hadLowerThirds: boolean;
+  combinedRel: string;
+  overlayRel: string;
+  narrationRel: string | null;
+}
+
+/**
+ * Per-scene render — produces three deliverables in
+ * <projectRoot>/renders/scenes/<sceneId>/. Independent of the project-level
+ * render (which concats into final.mp4); this gives the user a folder of
+ * grab-and-go assets to drop into another editor.
+ */
+export const sceneRenderApi = {
+  async start(
+    projectId: string,
+    sceneId: string,
+    opts: { audioMode?: 'replace' | 'mix'; burnSubtitles?: boolean } = {},
+  ): Promise<SceneRenderResult> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/render`, opts);
+  },
+  async status(projectId: string, sceneId: string): Promise<SceneRenderStatus> {
+    return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/render/status`);
+  },
+  /** Stable URL for a rendered file. Range-streamable (the <video> tag will scrub). */
+  fileUrl(projectId: string, sceneId: string, kind: SceneRenderKind): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/render/file/${kind}`;
+  },
+};
+
 export interface SceneBoundary {
   start_sec: number;
   end_sec: number;

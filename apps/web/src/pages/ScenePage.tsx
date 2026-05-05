@@ -6,6 +6,7 @@ import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInf
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import { ScenePreview } from '../components/ScenePreview.js';
+import { SceneRenderSection } from '../components/SceneRenderSection.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
@@ -1473,6 +1474,24 @@ export function ScenePage(props: ScenePageProps = {}) {
 
       {activeTab === 'Lower Thirds' && (
         <div>
+          {/* Blocking modal during overlay burn-in. ffmpeg drawtext+drawbox can
+              run for several seconds on longer scenes, and rendering is the
+              one step that's safe to navigate away from on the server side
+              but confusing on the client side because the only progress
+              indicator was the inline button label. */}
+          <GenerationModal
+            open={overlayRenderMutation.isPending}
+            title="Rendering overlay"
+            phase="Burning lower thirds into the scene video…"
+            hint="ffmpeg is drawing the LT graphics onto the recording. Usually a few seconds per scene minute."
+          />
+          <GenerationModal
+            open={recommendLTsMutation.isPending}
+            title="Recommending lower thirds"
+            phase="Asking the model for title cards…"
+            hint="One LLM call, usually 5–15 seconds."
+          />
+
           {/* Action buttons */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <button
@@ -1786,15 +1805,18 @@ export function ScenePage(props: ScenePageProps = {}) {
       )}
 
       {activeTab === 'Preview' && projectId && scene && (
-        <ScenePreview
-          projectId={projectId}
-          scene={scene}
-          chunks={(narrationState?.chunks ?? []).map((c) => ({
-            index: c.index,
-            durationSec: c.durationSec ?? null,
-            hasAudio: c.hasAudio,
-          }))}
-        />
+        <>
+          <ScenePreview
+            projectId={projectId}
+            scene={scene}
+            chunks={(narrationState?.chunks ?? []).map((c) => ({
+              index: c.index,
+              durationSec: c.durationSec ?? null,
+              hasAudio: c.hasAudio,
+            }))}
+          />
+          <SceneRenderSection projectId={projectId} sceneId={scene.id} />
+        </>
       )}
     </div>
   );
