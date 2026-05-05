@@ -104,6 +104,20 @@ export function ScenePage(props: ScenePageProps = {}) {
     },
   });
 
+  // Re-analyze the recording to refresh scene name/description/type. Used
+  // when the user has added source-docs after upload, edited the project
+  // objective, or just wants a video-grounded refresh now that we support it.
+  const [reanalyzeGroundInVideo, setReanalyzeGroundInVideo] = useState(true);
+  const reanalyzeMutation = useMutation({
+    mutationFn: () =>
+      recordingsApi.reanalyze(projectId!, sceneId!, {
+        groundInVideo: reanalyzeGroundInVideo && canGroundInVideo,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
+  });
+
   const generateScriptMutation = useMutation({
     mutationFn: () =>
       scriptApi.generate(projectId!, sceneId!, {
@@ -605,12 +619,113 @@ export function ScenePage(props: ScenePageProps = {}) {
       {/* Tab content */}
       {activeTab === 'Recording' && (
         <div>
+          {/* Re-analyze blocking modal — running this also calls Gemini Files
+              API in the video-grounded path, which adds an upload + poll
+              before the actual generateContent. */}
+          <GenerationModal
+            open={reanalyzeMutation.isPending}
+            title="Re-analyzing scene"
+            phase={
+              reanalyzeGroundInVideo && canGroundInVideo
+                ? 'Uploading video to Gemini → analysing → writing scene description…'
+                : 'Reading scene metadata + source-docs → writing description…'
+            }
+            hint={
+              reanalyzeGroundInVideo && canGroundInVideo
+                ? 'Video-grounded analysis usually takes 20–40 seconds. Please don\'t navigate away.'
+                : 'Usually a few seconds.'
+            }
+          />
+
           {scene.recording ? (
-            <RecordingInfo
-              source={scene.recording.source}
-              duration_sec={scene.recording.duration_sec}
-              ingested_at={scene.recording.ingested_at}
-            />
+            <>
+              <RecordingInfo
+                source={scene.recording.source}
+                duration_sec={scene.recording.duration_sec}
+                ingested_at={scene.recording.ingested_at}
+              />
+
+              {/* Current scene name + description so the user can see what
+                  they're about to overwrite. The model rewrites these from
+                  the recording / source-docs / objective on each re-analyze. */}
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 14,
+                  background: 'var(--bg-elev)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}
+              >
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
+                  Scene description
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                  {scene.name}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+                  {scene.description || <em>(no description)</em>}
+                </div>
+
+                {canGroundInVideo && (
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginBottom: 10,
+                      fontSize: 12,
+                      color: 'var(--fg-muted)',
+                      userSelect: 'none',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={reanalyzeGroundInVideo}
+                      onChange={(e) => setReanalyzeGroundInVideo(e.target.checked)}
+                      disabled={reanalyzeMutation.isPending}
+                    />
+                    <span>
+                      Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'})
+                    </span>
+                  </label>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button
+                    onClick={() => reanalyzeMutation.mutate()}
+                    disabled={reanalyzeMutation.isPending}
+                    style={{
+                      padding: '7px 14px',
+                      background: 'var(--surface)',
+                      color: 'var(--fg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      cursor: reanalyzeMutation.isPending ? 'wait' : 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {reanalyzeMutation.isPending ? 'Re-analyzing…' : '🔄 Re-analyze scene'}
+                  </button>
+                  {reanalyzeMutation.isSuccess && (
+                    <span style={{ fontSize: 11, color: '#5e8a3a' }}>
+                      Updated · mode: {reanalyzeMutation.data.mode}
+                    </span>
+                  )}
+                </div>
+
+                {reanalyzeMutation.isError && (
+                  <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
+                    Re-analyze failed:{' '}
+                    {reanalyzeMutation.error instanceof Error
+                      ? reanalyzeMutation.error.message
+                      : 'Unknown error'}
+                  </p>
+                )}
+              </div>
+            </>
           ) : (
             <div>
               <p style={{ color: 'var(--fg-muted)', marginBottom: 16 }}>
