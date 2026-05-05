@@ -164,9 +164,14 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             style={{ display: 'none' }}
             onChange={(e) => {
               const list = e.target.files;
-              if (!list) return;
-              setPendingDocs((prev) => [...prev, ...Array.from(list)]);
+              if (!list || list.length === 0) return;
+              // Snapshot the files BEFORE clearing the input. setPendingDocs
+              // takes a functional updater whose callback runs later — by
+              // then `e.target.files` is empty and the spread would be a
+              // no-op. (Symptom: had to pick a file twice.)
+              const picked = Array.from(list);
               e.target.value = '';
+              setPendingDocs((prev) => [...prev, ...picked]);
             }}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
