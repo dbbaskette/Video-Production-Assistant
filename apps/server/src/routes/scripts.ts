@@ -64,34 +64,50 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       workspaceRoot,
     );
 
-    // Auto-generate the dialog variant alongside the monologue so flipping
-    // modes in the Script tab is instant. Best-effort — if the conversion
-    // call fails (rate limit, prompt safety block, etc.) we still return the
-    // monologue so the primary flow isn't blocked.
+    // Phase 1: persist the monologue right now. If the user navigates away
+    // while the dialog half is still running, refreshing storyboard.yaml
+    // will at least show the monologue rather than the previous (or empty)
+    // state. Mode stays at whatever the scene already had.
+    {
+      const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
+      const updated = updateScene(sb, sceneId, { narration: narration as any });
+      await saveStoryboard(projectPath, updated);
+    }
+
+    // Phase 2: auto-generate the dialog variant alongside so flipping modes
+    // is instant. Best-effort — failures are logged; the primary flow
+    // (monologue saved above) is never blocked.
     let dialogScript: string | undefined;
     try {
       const result = await convertToDialog(script, llm, workspaceRoot, projectPath);
       dialogScript = result.dialogScript;
     } catch (err) {
       app.log.warn(
-        `Auto dialog-conversion failed for ${sceneId}; monologue saved. Reason: ${
+        `Auto dialog-conversion failed for ${sceneId}; monologue is saved. Reason: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
     }
 
-    // Save: monologue is the active version; dialogScript is persisted as a
-    // backup that switches in instantly when the user toggles to dialog mode.
-    // We deliberately do NOT change `mode` — that stays at whatever the
-    // scene already had (defaulting to monologue).
-    const narration = {
-      ...(scene.narration ?? {}),
-      script,
-      monologueScript: script,
-      ...(dialogScript ? { dialogScript } : {}),
-    };
-    const updated = updateScene(sb, sceneId, { narration: narration as any });
-    await saveStoryboard(projectPath, updated);
+    // Phase 2 save — re-load the storyboard so we don't clobber any other
+    // changes that might have landed during the LLM call. (E.g. user
+    // edited a different scene in another tab while we were waiting.)
+    if (dialogScript) {
+      const sb2 = await loadStoryboard(projectPath);
+      if (sb2) {
+        const scene2 = sb2.scenes.find((s) => s.id === sceneId);
+        if (scene2) {
+          const narration = {
+            ...(scene2.narration ?? {}),
+            script,
+            monologueScript: script,
+            dialogScript,
+          };
+          const updated = updateScene(sb2, sceneId, { narration: narration as any });
+          await saveStoryboard(projectPath, updated);
+        }
+      }
+    }
 
     return { sceneId, script, dialogScript };
   });

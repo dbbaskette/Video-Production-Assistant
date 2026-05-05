@@ -7,6 +7,7 @@ import { RecordingUpload } from '../components/RecordingUpload.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import { ScenePreview } from '../components/ScenePreview.js';
 import { useUi } from '../components/ui/UiProvider.js';
+import { GenerationModal } from '../components/ui/GenerationModal.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -92,8 +93,11 @@ export function ScenePage(props: ScenePageProps = {}) {
     mutationFn: () => scriptApi.generate(projectId!, sceneId!),
     onSuccess: (data) => {
       setEditingScript(data.script);
+      setEditingDialogScript(null); // refetch dialog from narrationState
       setScriptDirty(false);
+      setDialogEditDirty(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
     },
   });
 
@@ -611,6 +615,16 @@ export function ScenePage(props: ScenePageProps = {}) {
 
       {activeTab === 'Script' && (
         <div>
+          {/* Generation modal — blocks the page so the user can't navigate
+              away mid-generation (which previously left the page showing
+              the pre-generation state until both halves landed). */}
+          <GenerationModal
+            open={generateScriptMutation.isPending}
+            title="Generating script"
+            phase="Writing monologue, then dialog…"
+            hint="Two LLM calls run in sequence. Please don't navigate away."
+          />
+
           {/* ── Top bar: Generate/Regenerate ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
             {!editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
@@ -657,32 +671,15 @@ export function ScenePage(props: ScenePageProps = {}) {
             </p>
           )}
 
-          {/* ── Converting to Dialog modal ── */}
-          {convertingDialog && (
-            <div style={{
-              position: 'fixed', inset: 0, zIndex: 9999,
-              background: 'rgba(0,0,0,0.65)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              backdropFilter: 'blur(4px)',
-            }}>
-              <div style={{
-                background: 'var(--surface)', border: '1px solid var(--border)',
-                borderRadius: 16, padding: '40px 48px', maxWidth: 420,
-                textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-              }}>
-                <div style={{
-                  width: 48, height: 48, margin: '0 auto 20px',
-                  border: '3px solid var(--border)', borderTopColor: 'var(--accent)',
-                  borderRadius: '50%', animation: 'spin 0.8s linear infinite',
-                }} />
-                <h3 style={{ margin: '0 0 8px', fontSize: 18 }}>Converting to Dialog</h3>
-                <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 13, lineHeight: 1.6 }}>
-                  AI is rewriting your narration as a natural two-person conversation.
-                  This usually takes 10–20 seconds.
-                </p>
-              </div>
-            </div>
-          )}
+          {/* Generation modal — covers the explicit "switch to dialog mode"
+              path that triggers an on-demand conversion when no dialog
+              version exists yet. */}
+          <GenerationModal
+            open={convertingDialog}
+            title="Converting to dialog"
+            phase="Rewriting narration as a two-speaker conversation…"
+            hint="Usually 10–20 seconds. Please don't navigate away."
+          />
 
           {/* Convert error banner */}
           {convertError && (
@@ -830,19 +827,6 @@ export function ScenePage(props: ScenePageProps = {}) {
                           {restoreDialogMutation.isPending ? 'Restoring…' : 'Restore Previous'}
                         </button>
                       )}
-                      <button
-                        onClick={generateDialog}
-                        disabled={convertingDialog || scriptDirty}
-                        title={scriptDirty ? 'Save monologue changes first' : 'Regenerate dialog from current monologue'}
-                        style={{
-                          padding: '6px 14px', background: 'var(--surface)', color: 'var(--fg-muted)',
-                          border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
-                          cursor: (convertingDialog || scriptDirty) ? 'not-allowed' : 'pointer',
-                          opacity: (convertingDialog || scriptDirty) ? 0.5 : 1,
-                        }}
-                      >
-                        {convertingDialog ? 'Regenerating…' : 'Regenerate from Monologue'}
-                      </button>
                       <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
                         Use emotive tags like <code>[curious]</code>, <code>[excited]</code>,{' '}
                         <code>[thoughtful]</code> for natural speaker tone.
@@ -850,29 +834,18 @@ export function ScenePage(props: ScenePageProps = {}) {
                     </div>
                   </>
                 ) : (
+                  // Dialog version isn't materialised yet. This only shows
+                  // for legacy projects whose script was generated before
+                  // the auto-dialog change — current scripts always have
+                  // a dialog version baked at /script/generate time.
                   <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '20px 24px',
+                    padding: '16px 20px',
                     border: '1px dashed var(--border)', borderRadius: 8,
                     color: 'var(--fg-muted)',
+                    fontSize: 13,
                   }}>
-                    <p style={{ margin: 0, fontSize: 13 }}>
-                      No dialog version yet. Generate a two-speaker conversation from your monologue.
-                    </p>
-                    <button
-                      onClick={generateDialog}
-                      disabled={convertingDialog || scriptDirty}
-                      title={scriptDirty ? 'Save monologue changes first' : undefined}
-                      style={{
-                        padding: '8px 18px', background: 'var(--accent)', color: '#fff',
-                        border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 600,
-                        cursor: (convertingDialog || scriptDirty) ? 'not-allowed' : 'pointer',
-                        opacity: (convertingDialog || scriptDirty) ? 0.5 : 1,
-                        whiteSpace: 'nowrap', flexShrink: 0,
-                      }}
-                    >
-                      Generate Dialog
-                    </button>
+                    No dialog version yet. Click <strong>Generate Script</strong> above to
+                    rewrite both monologue and dialog from the scene description.
                   </div>
                 )}
               </div>
@@ -893,6 +866,30 @@ export function ScenePage(props: ScenePageProps = {}) {
 
       {activeTab === 'Narration' && (
         <div>
+          {/* Generation modal — same blocking semantics as the Script tab.
+              Shows live "X / N" + failure count from the SSE progress feed
+              so the user knows the batch is making forward progress.
+              Cancel button calls into the existing cancelGenerateAll
+              handler so the server-side loop bails at the next chunk. */}
+          <GenerationModal
+            open={!!generateAllProgress}
+            title="Generating narration"
+            phase={
+              generateAllProgress
+                ? `${generateAllProgress.message ?? 'Synthesizing chunks…'} · ${generateAllProgress.done} / ${generateAllProgress.total}${
+                    generateAllProgress.failed > 0 ? ` · ${generateAllProgress.failed} failed` : ''
+                  }`
+                : undefined
+            }
+            progress={
+              generateAllProgress && generateAllProgress.total > 0
+                ? (generateAllProgress.done + generateAllProgress.failed) / generateAllProgress.total
+                : undefined
+            }
+            hint="Each chunk is synthesised one at a time. Cancel stops at the next chunk boundary."
+            onCancel={generateAllJobId ? cancelGenerateAll : undefined}
+          />
+
           {/* No script warning */}
           {!narrationState?.hasScript && (
             <div
