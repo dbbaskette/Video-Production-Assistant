@@ -37,6 +37,13 @@ export interface VideoScriptInput {
   videoMimeType?: string;
   sceneName: string;
   sceneDescription: string;
+  /**
+   * User-authored north star — what this scene is trying to teach. The
+   * prompt frames the video as the visual/pacing anchor *for this intent*
+   * and the source-docs as the factual reference. Without an intent we
+   * fall back to the older description-led behaviour.
+   */
+  sceneIntent?: string;
   durationSec: number;
   projectObjective?: string;
   projectAudience?: string;
@@ -67,16 +74,21 @@ export async function generateVideoGroundedScript(
   const systemPrompt = await loadPrompt(workspaceRoot, 'narration-writer-video');
 
   const targetWords = Math.round((input.durationSec / 60) * 150);
-  const lines = [
-    `Scene name: ${input.sceneName}`,
-    `Description (may be inaccurate — verify against the video): ${input.sceneDescription}`,
-    `Duration: ${input.durationSec.toFixed(1)} seconds`,
-    `Target word count: ~${targetWords} words`,
-  ];
+  // Lead with the user's intent (the lens), then project context, then
+  // auto-generated description (supporting only). The prompt template is
+  // explicit about how to weight these vs. the video.
+  const lines: string[] = [];
+  if (input.sceneIntent) {
+    lines.push(`What this scene is demonstrating (north star): ${input.sceneIntent}`);
+  }
   if (input.projectObjective) lines.push(`Project objective: ${input.projectObjective}`);
   if (input.projectAudience) lines.push(`Target audience: ${input.projectAudience}`);
+  lines.push(`Scene name: ${input.sceneName}`);
+  lines.push(`Auto-generated description (supporting context): ${input.sceneDescription}`);
+  lines.push(`Duration: ${input.durationSec.toFixed(1)} seconds`);
+  lines.push(`Target word count: ~${targetWords} words`);
   lines.push('');
-  lines.push('Watch the video, then write the narration script.');
+  lines.push('Watch the video to see the visual/pacing anchor for the intent above, then write the narration.');
 
   const userPrompt = await withReferenceContext(lines.join('\n'), {
     projectPath: input.projectPath,

@@ -313,6 +313,20 @@ export const scriptApi = {
   async save(projectId: string, sceneId: string, script: string): Promise<{ sceneId: string; script: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/script`, { script });
   },
+  /**
+   * Save the user-authored "what is this scene demonstrating?" string.
+   * Empty string clears it. The script generator uses this as the north
+   * star (auth: 1), with project objective + source-docs as supporting
+   * context and the video (when in video-grounded mode) as the visual /
+   * pacing anchor.
+   */
+  async saveIntent(
+    projectId: string,
+    sceneId: string,
+    intent: string,
+  ): Promise<{ sceneId: string; intent: string | null }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/intent`, { intent });
+  },
 };
 
 export interface ReviewItem {

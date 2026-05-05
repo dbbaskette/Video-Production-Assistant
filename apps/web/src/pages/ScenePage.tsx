@@ -77,6 +77,10 @@ export function ScenePage(props: ScenePageProps = {}) {
   // scene has a recording — see effect below. User can untick to fall back
   // to the (faster, cheaper) text-only path.
   const [groundInVideo, setGroundInVideo] = useState(true);
+  // Local edit buffer for the user-authored "what is this scene
+  // demonstrating?" string. Hydrated from the storyboard scene; saved on
+  // blur via saveIntentMutation.
+  const [intentDraft, setIntentDraft] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const ui = useUi();
 
@@ -103,6 +107,22 @@ export function ScenePage(props: ScenePageProps = {}) {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
     },
   });
+
+  // Persist the user's scene-intent edit. Saved on blur from the textarea
+  // on the Script tab. Empty string clears the field server-side.
+  const saveIntentMutation = useMutation({
+    mutationFn: (intent: string) => scriptApi.saveIntent(projectId!, sceneId!, intent),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
+  });
+
+  // Hydrate the local intent draft once when the scene loads or sceneId
+  // changes. Keying off sceneId (not the scene object) avoids clobbering
+  // unsaved edits every time the storyboard query refetches.
+  useEffect(() => {
+    setIntentDraft(scene?.intent ?? '');
+  }, [sceneId, scene?.intent]);
 
   // Re-analyze the recording to refresh scene name/description/type. Used
   // when the user has added source-docs after upload, edited the project
@@ -769,6 +789,75 @@ export function ScenePage(props: ScenePageProps = {}) {
                 : "Two LLM calls run in sequence. Please don't navigate away."
             }
           />
+
+          {/* Scene intent — the user's "north star" for this scene. The
+              prompt treats it as authoritative; the video and source-docs
+              are framed as the visual anchor / factual reference for it.
+              Saved on blur so the value is captured even if the user
+              clicks Generate immediately. */}
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 12,
+              background: 'var(--bg-elev)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+            }}
+          >
+            <label
+              htmlFor="scene-intent"
+              style={{
+                display: 'block',
+                fontSize: 11,
+                color: 'var(--fg-muted)',
+                textTransform: 'uppercase',
+                letterSpacing: 1,
+                marginBottom: 6,
+              }}
+            >
+              What is this scene demonstrating?
+            </label>
+            <textarea
+              id="scene-intent"
+              value={intentDraft ?? ''}
+              onChange={(e) => setIntentDraft(e.target.value)}
+              onBlur={() => {
+                const next = (intentDraft ?? '').trim();
+                if (next !== (scene?.intent ?? '').trim()) {
+                  saveIntentMutation.mutate(next);
+                }
+              }}
+              placeholder={
+                "e.g. Show how RBAC limits Analyst users from seeing PII when querying the customers table, and how Viewer users get a further-restricted view."
+              }
+              rows={3}
+              disabled={saveIntentMutation.isPending}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                padding: '8px 10px',
+                fontSize: 13,
+                lineHeight: 1.5,
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                fontFamily: 'inherit',
+              }}
+            />
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
+              The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.
+              {saveIntentMutation.isPending && <span style={{ marginLeft: 8 }}>Saving…</span>}
+              {saveIntentMutation.isError && (
+                <span style={{ marginLeft: 8, color: 'var(--danger)' }}>
+                  Save failed:{' '}
+                  {saveIntentMutation.error instanceof Error
+                    ? saveIntentMutation.error.message
+                    : 'unknown'}
+                </span>
+              )}
+            </div>
+          </div>
 
           {/* Video-grounded toggle. Only shown when the active provider can
               actually use it — otherwise the toggle would be a no-op trap
