@@ -1,6 +1,6 @@
 import { Link, NavLink, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { storyboardApi, api, brandsApi } from '../lib/api.js';
+import { api, brandsApi } from '../lib/api.js';
 
 const linkStyle = (isActive: boolean): React.CSSProperties => ({
   display: 'block',
@@ -30,12 +30,6 @@ interface Props {
 export function ProjectSidebar({ projectName }: Props) {
   const { projectId } = useParams<{ projectId: string }>();
 
-  const { data: storyboard } = useQuery({
-    queryKey: ['storyboard', projectId],
-    queryFn: () => storyboardApi.get(projectId!),
-    enabled: !!projectId,
-  });
-
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => api.getProject(projectId!),
@@ -47,7 +41,6 @@ export function ProjectSidebar({ projectName }: Props) {
     queryFn: () => brandsApi.list(),
   });
 
-  const scenes = storyboard?.scenes ?? [];
   const appliedBrandId = project?.brand?.id ?? null;
   const appliedBrand = brandRegistry?.brands.find((b) => b.id === appliedBrandId) ?? null;
 
@@ -120,38 +113,9 @@ export function ProjectSidebar({ projectName }: Props) {
           Quality Review
         </NavLink>
 
-        {/* Scene list */}
-        {scenes.length > 0 && (
-          <>
-            <p style={sectionLabel}>Scenes</p>
-            {scenes.map((scene) => (
-              <NavLink
-                key={scene.id}
-                to={`/project/${projectId}/scene/${scene.id}`}
-                style={({ isActive }) => ({
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '4px 16px 4px 28px',
-                  fontSize: 13,
-                  color: isActive ? 'var(--accent)' : 'var(--fg-muted)',
-                  background: isActive ? 'var(--accent-bg)' : 'transparent',
-                  textDecoration: 'none',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  borderRadius: 4,
-                })}
-                title={scene.description}
-              >
-                {scene.recording && (
-                  <span style={{ fontSize: 10, opacity: 0.7 }}>📹</span>
-                )}
-                {scene.name}
-              </NavLink>
-            ))}
-          </>
-        )}
+        {/* Scene list moved into the Storyboard page (master-detail layout).
+            Scenes are clickable rows there with status badges and inline
+            editing — see pages/StoryboardView.tsx. */}
 
         {/* Library section */}
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}>

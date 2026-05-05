@@ -23,9 +23,39 @@ const typeBadgeColors: Record<string, string> = {
 const TABS = ['Recording', 'Script', 'Narration', 'Lower Thirds', 'Preview'] as const;
 type Tab = (typeof TABS)[number];
 
-export function ScenePage() {
-  const { projectId, sceneId } = useParams<{ projectId: string; sceneId: string }>();
-  const { project } = useOutletContext<WorkspaceContext>();
+/** useOutletContext that returns undefined instead of throwing when there's no Outlet. */
+function useOutletContextSafe<T>(): T | undefined {
+  try {
+    return useOutletContext<T>();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * ScenePage props. All optional — when omitted we fall back to react-router's
+ * useParams + useOutletContext (the route-mounted use). When provided, the
+ * caller controls projectId / sceneId / project, which is how StoryboardView
+ * embeds the editor in its master-detail layout.
+ */
+export interface ScenePageProps {
+  projectId?: string;
+  sceneId?: string;
+  project?: ProjectTrackerEntry;
+  /** When true, the embedded mode hides the breadcrumb-y outer chrome
+   *  (top scene name + description) since the host page already shows them. */
+  embedded?: boolean;
+}
+
+export function ScenePage(props: ScenePageProps = {}) {
+  const params = useParams<{ projectId: string; sceneId: string }>();
+  // useOutletContext throws when called outside an Outlet — guard for the
+  // embedded case where there's no parent Outlet.
+  const outletProject = useOutletContextSafe<WorkspaceContext>()?.project;
+  const projectId = props.projectId ?? params.projectId;
+  const sceneId = props.sceneId ?? params.sceneId;
+  const project = props.project ?? outletProject;
+  const embedded = props.embedded ?? false;
   // Quality Review can deep-link with ?tab=Script (etc.) so a click-to-jump
   // lands the user on the right tab. Validate against TABS to avoid setting
   // arbitrary state from a URL.
@@ -497,27 +527,34 @@ export function ScenePage() {
   }
 
   return (
-    <div style={{ padding: '32px 48px', maxWidth: 900 }}>
-      {/* Scene header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-        <span
-          style={{
-            fontSize: 10,
-            padding: '2px 8px',
-            borderRadius: 4,
-            background: typeBadgeColors[scene.type] ?? '#666',
-            color: '#fff',
-            fontWeight: 600,
-            textTransform: 'uppercase',
-          }}
-        >
-          {scene.type}
-        </span>
-        <h1 style={{ margin: 0, fontSize: 22 }}>{scene.name}</h1>
-      </div>
-      <p style={{ color: 'var(--fg-muted)', margin: '0 0 24px', fontSize: 14, lineHeight: 1.5 }}>
-        {scene.description}
-      </p>
+    <div style={embedded
+      ? { padding: '0', maxWidth: '100%' }
+      : { padding: '32px 48px', maxWidth: 900 }}
+    >
+      {/* Scene header — hidden in embedded mode (Storyboard host shows the name) */}
+      {!embedded && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <span
+              style={{
+                fontSize: 10,
+                padding: '2px 8px',
+                borderRadius: 4,
+                background: typeBadgeColors[scene.type] ?? '#666',
+                color: '#fff',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+              }}
+            >
+              {scene.type}
+            </span>
+            <h1 style={{ margin: 0, fontSize: 22 }}>{scene.name}</h1>
+          </div>
+          <p style={{ color: 'var(--fg-muted)', margin: '0 0 24px', fontSize: 14, lineHeight: 1.5 }}>
+            {scene.description}
+          </p>
+        </>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>

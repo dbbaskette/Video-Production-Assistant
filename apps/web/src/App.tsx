@@ -14,6 +14,7 @@ import { ProjectOverview } from './pages/ProjectOverview.js';
 import { StoryboardView } from './pages/StoryboardView.js';
 import { Ideation } from './pages/Ideation.js';
 import { ScenePage } from './pages/ScenePage.js';
+import { SceneRedirect } from './pages/SceneRedirect.js';
 import { ReviewPage } from './pages/ReviewPage.js';
 import { RecordingsPage } from './pages/RecordingsPage.js';
 import { Settings } from './pages/Settings.js';
@@ -37,7 +38,11 @@ export function App() {
           <Route index element={<ProjectOverview />} />
           <Route path="storyboard" element={<StoryboardView />} />
           <Route path="ideation" element={<Ideation />} />
-          <Route path="scene/:sceneId" element={<ScenePage />} />
+          {/* Legacy route kept as a redirect into the new master-detail
+              storyboard at /storyboard?scene=:sceneId. The standalone
+              ScenePage component is still importable but no longer
+              mounted directly — Storyboard embeds it. */}
+          <Route path="scene/:sceneId" element={<SceneRedirect />} />
           <Route path="recordings" element={<RecordingsPage />} />
           <Route path="review" element={<ReviewPage />} />
         </Route>

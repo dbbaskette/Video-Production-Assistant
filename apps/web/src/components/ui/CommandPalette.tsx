@@ -122,7 +122,7 @@ export function CommandPalette() {
           id: `scene:${s.id}`,
           label: s.name,
           hint: 'Scene',
-          to: `/project/${projectId}/scene/${s.id}`,
+          to: `/project/${projectId}/storyboard?scene=${encodeURIComponent(s.id)}`,
           group: 'Scenes',
         });
       }

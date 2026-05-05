@@ -190,7 +190,7 @@ export function ReviewPage() {
                 {scene?.name ?? sceneId}
               </span>
               <Link
-                to={`/project/${projectId}/scene/${sceneId}`}
+                to={`/project/${projectId}/storyboard?scene=${encodeURIComponent(sceneId)}`}
                 style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}
               >
                 Go to scene
@@ -198,9 +198,8 @@ export function ReviewPage() {
             </div>
             {items.map((item, idx) => {
               const tab = categoryToTab(item.category);
-              const target = tab
-                ? `/project/${projectId}/scene/${sceneId}?tab=${encodeURIComponent(tab)}`
-                : `/project/${projectId}/scene/${sceneId}`;
+              const base = `/project/${projectId}/storyboard?scene=${encodeURIComponent(sceneId)}`;
+              const target = tab ? `${base}&tab=${encodeURIComponent(tab)}` : base;
               return (
                 <Link
                   key={idx}
