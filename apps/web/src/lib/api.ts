@@ -227,6 +227,27 @@ export const recordingsApi = {
     return request<VideoMetadata>('GET', `/api/projects/${projectId}/scenes/${sceneId}/recording/metadata`);
   },
 
+  /**
+   * Re-run scene analysis for an already-ingested recording. Refreshes the
+   * scene's name/description/type — useful after adding source-docs or
+   * editing the project objective. Pass `groundInVideo: true` to upload
+   * the recording to Gemini's Files API for a video-aware description
+   * (Gemini-only; falls back to text-only otherwise).
+   */
+  async reanalyze(
+    projectId: string,
+    sceneId: string,
+    opts: { groundInVideo?: boolean } = {},
+  ): Promise<{
+    sceneId: string;
+    name: string;
+    description: string;
+    type: string;
+    mode: 'text' | 'video';
+  }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts);
+  },
+
   async generateStoryboard(projectId: string, files: File[]): Promise<Storyboard> {
     const form = new FormData();
     files.forEach((f, i) => form.append(`file${i}`, f));

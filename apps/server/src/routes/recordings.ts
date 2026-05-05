@@ -5,10 +5,11 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
+import type { ModelRegistry } from '../services/llm/model-registry.js';
 import { probeVideo, createFakeProbe, type VideoMetadata } from '../services/recording/metadata.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
-import { loadStoryboard, saveStoryboard, createStoryboard, addScene } from '../services/storyboard/index.js';
-import { analyzeRecording } from '../services/video-analysis/index.js';
+import { loadStoryboard, saveStoryboard, createStoryboard, addScene, updateScene } from '../services/storyboard/index.js';
+import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
 import { SceneSchema, type Scene } from '@vpa/shared';
@@ -18,6 +19,8 @@ interface Deps {
   store: ProjectStore;
   llm: LlmClient;
   workspaceRoot: string;
+  /** Used by the re-analyze route to detect Gemini for video-grounded mode. */
+  registry?: ModelRegistry;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
 }
@@ -37,7 +40,7 @@ async function resolveProjectEntry(store: ProjectStore, projectId: string) {
 }
 
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot } = deps;
+  const { store, llm, workspaceRoot, registry } = deps;
   const probe = deps.probe ?? probeVideo;
 
   // POST /api/projects/:id/scenes/:sceneId/recording — upload recording for a specific scene
@@ -235,6 +238,22 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       metadatas.push(await probe(tmpFile));
     }
 
+    // Project objective + audience live in project.yaml, NOT on the
+    // tracker entry (which is just {id, name, path, lastOpened}). Reading
+    // them once before the loop gets the high-signal context into every
+    // scene's analysis prompt — previously this passed undefined and the
+    // model had only filename + duration to work with.
+    let projectObjective: string | undefined;
+    let projectAudience: string | undefined;
+    try {
+      const project = await store.readProject(entry.id);
+      projectObjective = project.objective;
+      projectAudience = project.audience;
+    } catch {
+      // If project.yaml is missing for any reason, fall back to undefined.
+      // We don't want to fail the whole upload for a metadata read.
+    }
+
     // Analyze each recording to generate scene descriptions
     const scenes: Scene[] = [];
     for (let i = 0; i < uploadedFiles.length; i++) {
@@ -246,7 +265,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
           height: metadatas[i]!.height,
           sceneIndex: i,
           totalScenes: uploadedFiles.length,
-          projectObjective: (entry as Record<string, unknown>).objective as string | undefined,
+          projectObjective,
+          projectAudience,
           projectPath: entry.path,
         },
         llm,
@@ -378,5 +398,120 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     // Return final storyboard
     const finalSb = await loadStoryboard(entry.path);
     return finalSb ?? storyboard;
+  });
+
+  // POST /api/projects/:id/scenes/:sceneId/analyze — re-run scene analysis
+  // for an already-ingested recording. Lets the user refresh the scene's
+  // name/description/type after adding source-docs or after an objective
+  // change. Body: { groundInVideo?: boolean }.
+  //
+  // Video-grounded mode (Gemini-only) uploads the recording to the Files
+  // API so the model describes what's actually on screen. Falls back to
+  // text-only when the active provider isn't Gemini, the registry is
+  // unavailable, or the flag is false.
+  app.post('/api/projects/:id/scenes/:sceneId/analyze', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as { groundInVideo?: boolean };
+
+    const entry = await resolveProjectEntry(store, id);
+    const sb = await loadStoryboard(entry.path);
+    if (!sb) {
+      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    }
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) {
+      return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    }
+    if (!scene.recording?.source) {
+      return reply.status(400).send({
+        error: 'Scene has no recording — upload one first',
+        code: 'no_recording',
+      });
+    }
+
+    // Reuse the same metadata-loading path the upload uses so re-analyze
+    // matches first-analyze behaviour exactly.
+    let projectObjective: string | undefined;
+    let projectAudience: string | undefined;
+    try {
+      const project = await store.readProject(entry.id);
+      projectObjective = project.objective;
+      projectAudience = project.audience;
+    } catch {
+      // Missing project.yaml shouldn't block re-analyze.
+    }
+
+    const analysisInput = {
+      filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
+      duration_sec: scene.recording.duration_sec ?? 0,
+      // Re-derive width/height. Cheap (one ffprobe), but we already have
+      // duration in storyboard so we don't need to ffprobe just for that.
+      width: 0,
+      height: 0,
+      sceneIndex: sb.scenes.findIndex((s) => s.id === sceneId),
+      totalScenes: sb.scenes.length,
+      projectObjective,
+      projectAudience,
+      projectPath: entry.path,
+    };
+    try {
+      const meta = await probe(path.join(entry.path, scene.recording.source));
+      analysisInput.width = meta.width;
+      analysisInput.height = meta.height;
+    } catch {
+      // ffprobe failure isn't fatal; the analyzer just gets 0x0 which the
+      // prompt will mention but the model can ignore.
+    }
+
+    const active = registry?.getActive();
+    const canUseVideo =
+      body.groundInVideo === true && active?.provider === 'gemini' && !!active.apiKey;
+
+    let analysis;
+    let mode: 'text' | 'video' = 'text';
+    try {
+      if (canUseVideo && active) {
+        mode = 'video';
+        analysis = await analyzeRecordingWithVideo(
+          {
+            ...analysisInput,
+            videoPath: path.join(entry.path, scene.recording.source),
+            videoMimeType: 'video/mp4',
+          },
+          { apiKey: active.apiKey!, model: active.model },
+          workspaceRoot,
+          llm,
+          (phase, detail) => {
+            app.log.info({ sceneId, phase, detail }, 'video-grounded analysis phase');
+          },
+        );
+      } else {
+        analysis = await analyzeRecording(analysisInput, llm, workspaceRoot);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      app.log.error({ err: msg }, 'scene re-analysis failed');
+      return reply.status(500).send({
+        error: `Scene analysis failed: ${msg}`,
+        code: 'analyze_failed',
+      });
+    }
+
+    // Persist the new name/description/type. Don't touch other scene
+    // fields (recording, narration, lower_thirds, overlay_render, etc.).
+    const updated = updateScene(sb, sceneId, {
+      name: analysis.name,
+      description: analysis.description,
+      type: analysis.type,
+    });
+    await saveStoryboard(entry.path, updated);
+
+    return {
+      sceneId,
+      name: analysis.name,
+      description: analysis.description,
+      type: analysis.type,
+      mode,
+    };
   });
 }

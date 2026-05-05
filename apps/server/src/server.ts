@@ -135,7 +135,7 @@ export async function buildServer() {
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
   await app.register(async (instance) => registerIdeationRoutes(instance, { store, llm, ideationManager }));
   await app.register(async (instance) =>
-    registerRecordingRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
+    registerRecordingRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
   );
   await app.register(async (instance) =>
     registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
