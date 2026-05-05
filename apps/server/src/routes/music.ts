@@ -51,7 +51,9 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
   });
 
   // POST /api/projects/:id/music/generate — kick off a Lyria generation job
-  // body: { prompt, model: 'clip' | 'pro', format?: 'mp3' | 'wav' }
+  // body: { prompt, model: 'clip' | 'pro' }
+  // The output format is dictated by the API (Lyria 3 Clip ≈ mp3) — we read
+  // the returned mime type rather than asking the user.
   // Returns { jobId } immediately; the SSE stream emits 'progress' (started),
   // 'done' (with the saved track), and 'error' as appropriate.
   app.post('/api/projects/:id/music/generate', async (req, reply) => {
@@ -59,7 +61,6 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
     const body = (req.body ?? {}) as {
       prompt?: string;
       model?: LyriaModel;
-      format?: 'mp3' | 'wav';
     };
     const prompt = (body.prompt ?? '').trim();
     if (!prompt) {
@@ -69,7 +70,6 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
       return reply.status(400).send({ error: 'prompt is too long (max 1500 chars)', code: 'invalid_request' });
     }
     const model: LyriaModel = body.model === 'pro' ? 'pro' : 'clip';
-    const format: 'mp3' | 'wav' = body.format === 'wav' && model === 'pro' ? 'wav' : 'mp3';
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -89,7 +89,7 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
 
     const job = jobQueue.create('music-generate');
     jobQueue.setStatus(job.id, 'running');
-    jobQueue.emit(job.id, 'start', { projectId: id, model, format, prompt });
+    jobQueue.emit(job.id, 'start', { projectId: id, model, prompt });
     jobQueue.emit(job.id, 'progress', {
       type: 'step',
       message: `Generating with ${model === 'pro' ? 'Lyria 3 Pro' : 'Lyria 3 Clip'}…`,
@@ -97,13 +97,13 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
 
     void (async () => {
       try {
-        const result = await generateMusic({ prompt, model, format }, apiKey);
+        const result = await generateMusic({ prompt, model }, apiKey);
         const track = await saveTrack(projectPath, {
           audio: result.audio,
           prompt,
           model,
           modelId: result.modelId,
-          format,
+          format: result.ext,
           lyrics: result.lyrics,
         });
         jobQueue.complete(job.id, { track });

@@ -637,7 +637,7 @@ function BackgroundMusicSection({
     mutationFn: () =>
       // 30-second clips loop across the video. Plenty for a demo bed; faster
       // and cheaper than the Pro model.
-      musicApi.generate(projectId, { prompt: prompt.trim(), model: 'clip', format: 'mp3' }),
+      musicApi.generate(projectId, { prompt: prompt.trim(), model: 'clip' }),
     onSuccess: ({ jobId }) => {
       setError(null);
       setProgressMessage('Generating…');

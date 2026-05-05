@@ -29,13 +29,14 @@ const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 export interface LyriaRequest {
   prompt: string;
   model: LyriaModel;
-  /** 'audio/mp3' (default) or 'audio/wav' (Pro only). */
-  format?: 'mp3' | 'wav';
 }
 
 export interface LyriaResult {
   audio: Buffer;
+  /** Mime type Lyria actually returned (e.g. "audio/mp3", "audio/wav"). */
   mime: string;
+  /** Output extension derived from the mime ("mp3" / "wav"). */
+  ext: 'mp3' | 'wav';
   /** Lyrics or song-structure text returned alongside, if any. */
   lyrics?: string;
   /** The model id we actually called. */
@@ -79,17 +80,15 @@ interface GeminiResponse {
 
 export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<LyriaResult> {
   const modelId = MODEL_IDS[req.model];
-  const format = req.format ?? 'mp3';
-  if (format === 'wav' && req.model !== 'pro') {
-    throw new LyriaError('invalid_request', 400, 'WAV output is only available on the Pro model');
-  }
-  const responseMimeType = format === 'wav' ? 'audio/wav' : 'audio/mp3';
 
+  // Lyria audio output is signaled by `responseModalities` only — the
+  // generationConfig.responseMimeType field accepts text/JSON/XML/YAML mime
+  // types (not audio). The returned inline_data carries the actual audio
+  // mime, which we use to pick the saved-file extension below.
   const body = {
     contents: [{ parts: [{ text: req.prompt }] }],
     generationConfig: {
       responseModalities: ['AUDIO', 'TEXT'],
-      responseMimeType,
     },
   };
 
@@ -136,7 +135,7 @@ export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<
 
   const parts = parsed.candidates?.[0]?.content?.parts ?? [];
   let audioBuffer: Buffer | null = null;
-  let audioMime: string = responseMimeType;
+  let audioMime = '';
   let lyrics: string | undefined;
 
   for (const part of parts) {
@@ -160,5 +159,10 @@ export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<
     );
   }
 
-  return { audio: audioBuffer, mime: audioMime, lyrics, modelId };
+  // Map the returned mime to a file extension so the store knows where to
+  // write the audio. Lyria typically returns audio/mp3 for Clip and either
+  // mp3 or wav for Pro, but we don't assume — read it.
+  const ext: 'mp3' | 'wav' = /wav/i.test(audioMime) ? 'wav' : 'mp3';
+
+  return { audio: audioBuffer, mime: audioMime || 'audio/mp3', ext, lyrics, modelId };
 }

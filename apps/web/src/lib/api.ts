@@ -655,7 +655,7 @@ export const musicApi = {
   },
   async generate(
     projectId: string,
-    opts: { prompt: string; model: 'clip' | 'pro'; format?: 'mp3' | 'wav' },
+    opts: { prompt: string; model: 'clip' | 'pro' },
   ): Promise<{ jobId: string; status: 'running' }> {
     return request('POST', `/api/projects/${projectId}/music/generate`, opts);
   },
