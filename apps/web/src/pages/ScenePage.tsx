@@ -9,18 +9,15 @@ import { ScenePreview } from '../components/ScenePreview.js';
 import { SceneRenderSection } from '../components/SceneRenderSection.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
+import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
+import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
 }
 
-const typeBadgeColors: Record<string, string> = {
-  desktop: '#7aa2f7',
-  terminal: '#5e8a3a',
-  browser: '#f4a83a',
-  slide: '#c25d5d',
-};
+const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
 
 const TABS = ['Recording', 'Script', 'Narration', 'Lower Thirds', 'Preview'] as const;
 type Tab = (typeof TABS)[number];
@@ -72,6 +69,12 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [scriptDirty, setScriptDirty] = useState(false);
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
   const [dialogEditDirty, setDialogEditDirty] = useState(false);
+  // Which sub-tab of the consolidated script editor is visible. Replaces
+  // the previous design where Monologue + Dialog were stacked vertically
+  // and edited independently with their own dirty pip / Save / Discard.
+  // Now one editor is visible at a time; Regenerate (top button) checks
+  // both panes' dirty state before clobbering them.
+  const [scriptViewTab, setScriptViewTab] = useState<'monologue' | 'dialog'>('monologue');
   // Whether to ground the next script generation in the actual video (Gemini
   // Files API). Defaults to true when the active provider is Gemini and the
   // scene has a recording — see effect below. User can untick to fall back
@@ -730,7 +733,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                     {reanalyzeMutation.isPending ? 'Re-analyzing…' : '🔄 Re-analyze scene'}
                   </button>
                   {reanalyzeMutation.isSuccess && (
-                    <span style={{ fontSize: 11, color: '#5e8a3a' }}>
+                    <span style={{ fontSize: 11, color: STATUS_COLOR.success }}>
                       Updated · mode: {reanalyzeMutation.data.mode}
                     </span>
                   )}
@@ -804,19 +807,47 @@ export function ScenePage(props: ScenePageProps = {}) {
               borderRadius: 8,
             }}
           >
-            <label
-              htmlFor="scene-intent"
+            {/* Header row: label + FieldStatus pip aligned right. The pip
+                makes the autosave-on-blur semantics visible — was previously
+                a tiny "Saving…" word buried in helper text. */}
+            <div
               style={{
-                display: 'block',
-                fontSize: 11,
-                color: 'var(--fg-muted)',
-                textTransform: 'uppercase',
-                letterSpacing: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
                 marginBottom: 6,
               }}
             >
-              What is this scene demonstrating?
-            </label>
+              <label
+                htmlFor="scene-intent"
+                style={{
+                  fontSize: 11,
+                  color: 'var(--fg-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                }}
+              >
+                What is this scene demonstrating?
+              </label>
+              <FieldStatus
+                state={
+                  saveIntentMutation.isPending
+                    ? 'saving'
+                    : saveIntentMutation.isError
+                      ? 'error'
+                      : (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
+                        ? 'dirty'
+                        : saveIntentMutation.isSuccess
+                          ? 'saved'
+                          : 'idle'
+                }
+                detail={
+                  saveIntentMutation.error instanceof Error
+                    ? saveIntentMutation.error.message
+                    : undefined
+                }
+              />
+            </div>
             <textarea
               id="scene-intent"
               value={intentDraft ?? ''}
@@ -840,22 +871,18 @@ export function ScenePage(props: ScenePageProps = {}) {
                 lineHeight: 1.5,
                 background: 'var(--bg)',
                 color: 'var(--fg)',
-                border: '1px solid var(--border)',
+                // Dirty state gets a warm border so the unsaved status is
+                // visible without having to read the pip.
+                border:
+                  (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
+                    ? '1px solid var(--warn)'
+                    : '1px solid var(--border)',
                 borderRadius: 6,
                 fontFamily: 'inherit',
               }}
             />
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
               The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.
-              {saveIntentMutation.isPending && <span style={{ marginLeft: 8 }}>Saving…</span>}
-              {saveIntentMutation.isError && (
-                <span style={{ marginLeft: 8, color: 'var(--danger)' }}>
-                  Save failed:{' '}
-                  {saveIntentMutation.error instanceof Error
-                    ? saveIntentMutation.error.message
-                    : 'unknown'}
-                </span>
-              )}
             </div>
           </div>
 
@@ -888,36 +915,53 @@ export function ScenePage(props: ScenePageProps = {}) {
             </label>
           )}
 
-          {/* ── Top bar: Generate/Regenerate ── */}
+          {/* ── Top bar: Generate/Regenerate ──
+              Unified affordance — same shape and color whether this is a
+              first-time generate or a regenerate. Previously the button
+              flipped from filled accent ("✨ Generate Script") to muted
+              outline ("🔄 Regenerate") between states; users learn
+              affordances visually and that swap erased the visual
+              identity of the primary action. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-            {!editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
-              <button
-                onClick={() => generateScriptMutation.mutate()}
-                disabled={generateScriptMutation.isPending}
-                style={{
-                  padding: '8px 16px', background: 'var(--accent)', color: '#fff',
-                  border: 'none', borderRadius: 6,
-                  cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
-                  fontSize: 13, fontWeight: 600,
-                  opacity: generateScriptMutation.isPending ? 0.7 : 1,
-                }}
-              >
-                {generateScriptMutation.isPending ? 'Generating…' : '✨ Generate Script'}
-              </button>
-            ) : (
-              <button
-                onClick={() => generateScriptMutation.mutate()}
-                disabled={generateScriptMutation.isPending}
-                style={{
-                  padding: '8px 16px', background: 'var(--surface)', color: 'var(--fg)',
-                  border: '1px solid var(--border)', borderRadius: 6,
-                  cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
-                  fontSize: 13, opacity: generateScriptMutation.isPending ? 0.7 : 1,
-                }}
-              >
-                {generateScriptMutation.isPending ? 'Regenerating…' : '🔄 Regenerate'}
-              </button>
-            )}
+            <button
+              onClick={async () => {
+                // Pre-flight: if either pane has unsaved edits, regenerating
+                // would silently overwrite them. Surface the cost.
+                const isFirstTime =
+                  !editingScript &&
+                  !scriptState?.script &&
+                  !narrationState?.monologueScript;
+                const dirtyPanes: string[] = [];
+                if (scriptDirty) dirtyPanes.push('Monologue');
+                if (dialogEditDirty) dirtyPanes.push('Dialog');
+
+                if (!isFirstTime && dirtyPanes.length > 0) {
+                  const ok = await ui.confirm({
+                    title: `Regenerate will overwrite ${dirtyPanes.join(' + ')}`,
+                    body: `Your unsaved edits in the ${dirtyPanes.join(' and ')} pane${dirtyPanes.length === 1 ? '' : 's'} will be lost. Continue?`,
+                    confirmLabel: 'Discard & regenerate',
+                    destructive: true,
+                  });
+                  if (!ok) return;
+                }
+                generateScriptMutation.mutate();
+              }}
+              disabled={generateScriptMutation.isPending}
+              className="primary"
+              style={{
+                padding: '8px 16px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
+                opacity: generateScriptMutation.isPending ? 0.7 : 1,
+              }}
+            >
+              {generateScriptMutation.isPending
+                ? 'Generating…'
+                : !editingScript && !scriptState?.script && !narrationState?.monologueScript
+                  ? '✨ Generate script'
+                  : '🔄 Regenerate'}
+            </button>
           </div>
 
           {/* Error displays */}
@@ -964,155 +1008,275 @@ export function ScenePage(props: ScenePageProps = {}) {
             </div>
           )}
 
-          {/* ── Vertically stacked script editor ── */}
+          {/* ── Consolidated script editor ──
+              Replaces the previous design where Monologue + Dialog were
+              two stacked editors with separate Save / Discard / Unsaved
+              pips. The two were independently editable but the top-level
+              Regenerate would silently overwrite both — and the dirty
+              state of the pane you weren't currently looking at was
+              invisible. Now: ONE editor, internal Monologue/Dialog tabs,
+              Regenerate confirms when either pane is dirty (handled at
+              the top button above).
+              The dirty pip + active-pane-aware Save/Discard/Restore live
+              in the pane header so the user never has to scroll to see
+              save state. */}
           {(editingScript !== null || scriptState?.script || narrationState?.monologueScript) ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              {/* ─── Monologue section ─── */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <h3 style={{ margin: 0, fontSize: 14 }}>Monologue Script</h3>
-                  {scriptDirty && (
-                    <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 'auto' }}>Unsaved</span>
-                  )}
-                </div>
-                <textarea
-                  value={editingScript ?? narrationState?.monologueScript ?? ''}
-                  onChange={(e) => { setEditingScript(e.target.value); setScriptDirty(true); }}
+            (() => {
+              const monologueValue = editingScript ?? narrationState?.monologueScript ?? '';
+              const dialogValue = editingDialogScript ?? narrationState?.dialogScript ?? '';
+              const dialogExists = !!(editingDialogScript || narrationState?.dialogScript);
+              const isMono = scriptViewTab === 'monologue';
+              const activeDirty = isMono ? scriptDirty : dialogEditDirty;
+              const activeSaveMutation = isMono ? saveMonologueMutation : saveDialogMutation;
+              const activeRestoreMutation = isMono ? restoreMonologueMutation : restoreDialogMutation;
+              const hasPrevious = isMono
+                ? !!narrationState?.hasPreviousMonologue
+                : !!narrationState?.hasPreviousDialog;
+              const onSave = () => {
+                if (isMono) {
+                  if (editingScript) saveMonologueMutation.mutate(editingScript);
+                } else {
+                  if (editingDialogScript) saveDialogMutation.mutate(editingDialogScript);
+                }
+              };
+              const onDiscard = () => {
+                if (isMono) {
+                  setEditingScript(null);
+                  setScriptDirty(false);
+                } else {
+                  setEditingDialogScript(null);
+                  setDialogEditDirty(false);
+                }
+              };
+              const onRestore = () => {
+                if (isMono) restoreMonologueMutation.mutate();
+                else restoreDialogMutation.mutate();
+              };
+
+              return (
+                <div
                   style={{
-                    width: '100%', minHeight: 280, padding: 14, boxSizing: 'border-box',
-                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                    fontSize: 12, lineHeight: 1.7,
-                    background: 'var(--surface)', color: 'var(--fg)',
                     border: '1px solid var(--border)',
-                    borderRadius: 8, resize: 'vertical', outline: 'none',
+                    borderRadius: 10,
+                    background: 'var(--bg-elev)',
+                    padding: 16,
                   }}
-                  placeholder="Script content..."
-                />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                  {scriptDirty && (
-                    <>
-                      <button
-                        onClick={() => { if (editingScript) saveMonologueMutation.mutate(editingScript); }}
-                        disabled={saveMonologueMutation.isPending}
-                        style={{
-                          padding: '6px 14px', background: 'var(--accent)', color: '#fff',
-                          border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                        }}
-                      >
-                        {saveMonologueMutation.isPending ? 'Saving…' : 'Save'}
-                      </button>
-                      <button
-                        onClick={() => { setEditingScript(null); setScriptDirty(false); }}
-                        style={{
-                          padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
-                          border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-                        }}
-                      >
-                        Discard
-                      </button>
-                    </>
-                  )}
-                  {!scriptDirty && narrationState?.hasPreviousMonologue && (
-                    <button
-                      onClick={() => restoreMonologueMutation.mutate()}
-                      disabled={restoreMonologueMutation.isPending}
+                >
+                  {/* Pane header: Monologue / Dialog tabs + dirty pip */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div
+                      role="tablist"
+                      aria-label="Script version"
                       style={{
-                        padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
-                        border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                        display: 'flex',
+                        gap: 2,
+                        padding: 2,
+                        background: 'var(--surface)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
                       }}
                     >
-                      {restoreMonologueMutation.isPending ? 'Restoring…' : 'Restore Previous'}
-                    </button>
-                  )}
-                  <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
-                    Use emotive tags like <code>[warm]</code>, <code>[confident]</code>,{' '}
-                    <code>[thoughtful]</code> to guide narration tone.
-                  </p>
-                </div>
-              </div>
+                      {(['monologue', 'dialog'] as const).map((tab) => {
+                        const active = scriptViewTab === tab;
+                        const tabDirty = tab === 'monologue' ? scriptDirty : dialogEditDirty;
+                        return (
+                          <button
+                            key={tab}
+                            role="tab"
+                            aria-selected={active}
+                            onClick={() => setScriptViewTab(tab)}
+                            disabled={tab === 'dialog' && !dialogExists}
+                            title={
+                              tab === 'dialog' && !dialogExists
+                                ? 'No dialog version yet — Regenerate to create one'
+                                : undefined
+                            }
+                            style={{
+                              padding: '5px 14px',
+                              fontSize: 12,
+                              fontWeight: active ? 600 : 500,
+                              background: active ? 'var(--bg)' : 'transparent',
+                              color: active ? 'var(--fg)' : 'var(--fg-muted)',
+                              border: 'none',
+                              borderRadius: 4,
+                              cursor: tab === 'dialog' && !dialogExists ? 'not-allowed' : 'pointer',
+                              opacity: tab === 'dialog' && !dialogExists ? 0.5 : 1,
+                              textTransform: 'capitalize',
+                            }}
+                          >
+                            {tab}
+                            {tabDirty && (
+                              <span
+                                aria-label="unsaved"
+                                style={{
+                                  display: 'inline-block',
+                                  width: 6,
+                                  height: 6,
+                                  borderRadius: '50%',
+                                  background: 'var(--warn)',
+                                  marginLeft: 6,
+                                  verticalAlign: 'middle',
+                                }}
+                              />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ marginLeft: 'auto' }}>
+                      <FieldStatus
+                        state={
+                          activeSaveMutation.isPending
+                            ? 'saving'
+                            : activeSaveMutation.isError
+                              ? 'error'
+                              : activeDirty
+                                ? 'dirty'
+                                : activeSaveMutation.isSuccess
+                                  ? 'saved'
+                                  : 'idle'
+                        }
+                        detail={
+                          activeSaveMutation.error instanceof Error
+                            ? activeSaveMutation.error.message
+                            : undefined
+                        }
+                      />
+                    </div>
+                  </div>
 
-              {/* ─── Dialog section ─── */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <h3 style={{ margin: 0, fontSize: 14 }}>Dialog Script</h3>
-                  {dialogEditDirty && (
-                    <span style={{ fontSize: 10, color: 'var(--accent)' }}>Unsaved</span>
-                  )}
-                </div>
-
-                {(editingDialogScript || narrationState?.dialogScript) ? (
-                  <>
+                  {/* Editor — single textarea, content depends on active tab */}
+                  {isMono || dialogExists ? (
                     <textarea
-                      value={editingDialogScript ?? narrationState?.dialogScript ?? ''}
-                      onChange={(e) => { setEditingDialogScript(e.target.value); setDialogEditDirty(true); }}
-                      style={{
-                        width: '100%', minHeight: 280, padding: 14, boxSizing: 'border-box',
-                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                        fontSize: 12, lineHeight: 1.7,
-                        background: 'var(--surface)', color: 'var(--fg)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 8, resize: 'vertical', outline: 'none',
+                      key={scriptViewTab /* force remount so cursor doesn't leak across tabs */}
+                      value={isMono ? monologueValue : dialogValue}
+                      onChange={(e) => {
+                        if (isMono) {
+                          setEditingScript(e.target.value);
+                          setScriptDirty(true);
+                        } else {
+                          setEditingDialogScript(e.target.value);
+                          setDialogEditDirty(true);
+                        }
                       }}
+                      style={{
+                        width: '100%',
+                        minHeight: 320,
+                        padding: 14,
+                        boxSizing: 'border-box',
+                        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                        fontSize: 12,
+                        lineHeight: 1.7,
+                        background: 'var(--surface)',
+                        color: 'var(--fg)',
+                        border: activeDirty ? '1px solid var(--warn)' : '1px solid var(--border)',
+                        borderRadius: 8,
+                        resize: 'vertical',
+                        outline: 'none',
+                      }}
+                      placeholder={isMono ? 'Monologue script…' : 'Dialog script…'}
                     />
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                      {dialogEditDirty && (
-                        <>
-                          <button
-                            onClick={() => { if (editingDialogScript) saveDialogMutation.mutate(editingDialogScript); }}
-                            disabled={saveDialogMutation.isPending}
-                            style={{
-                              padding: '6px 14px', background: 'var(--accent)', color: '#fff',
-                              border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                            }}
-                          >
-                            {saveDialogMutation.isPending ? 'Saving…' : 'Save'}
-                          </button>
-                          <button
-                            onClick={() => { setEditingDialogScript(null); setDialogEditDirty(false); }}
-                            style={{
-                              padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
-                              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
-                            }}
-                          >
-                            Discard
-                          </button>
-                        </>
-                      )}
-                      {!dialogEditDirty && narrationState?.hasPreviousDialog && (
+                  ) : (
+                    <div
+                      style={{
+                        padding: '16px 20px',
+                        border: '1px dashed var(--border)',
+                        borderRadius: 8,
+                        color: 'var(--fg-muted)',
+                        fontSize: 13,
+                      }}
+                    >
+                      No dialog version yet. Click <strong>Regenerate</strong> at the top to
+                      rewrite both monologue and dialog from the scene description.
+                    </div>
+                  )}
+
+                  {/* Footer — Save / Discard / Restore + emotive-tag hint.
+                      Only one set of buttons total; what they act on is the
+                      active tab. */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      marginTop: 10,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    {activeDirty && (
+                      <>
                         <button
-                          onClick={() => restoreDialogMutation.mutate()}
-                          disabled={restoreDialogMutation.isPending}
+                          onClick={onSave}
+                          disabled={activeSaveMutation.isPending}
+                          className="primary"
                           style={{
-                            padding: '6px 14px', background: 'transparent', color: 'var(--fg-muted)',
-                            border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                            padding: '6px 14px',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: 'pointer',
                           }}
                         >
-                          {restoreDialogMutation.isPending ? 'Restoring…' : 'Restore Previous'}
+                          {activeSaveMutation.isPending ? 'Saving…' : 'Save'}
                         </button>
-                      )}
-                      <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
-                        Use emotive tags like <code>[curious]</code>, <code>[excited]</code>,{' '}
-                        <code>[thoughtful]</code> for natural speaker tone.
-                      </p>
-                    </div>
-                  </>
-                ) : (
-                  // Dialog version isn't materialised yet. This only shows
-                  // for legacy projects whose script was generated before
-                  // the auto-dialog change — current scripts always have
-                  // a dialog version baked at /script/generate time.
-                  <div style={{
-                    padding: '16px 20px',
-                    border: '1px dashed var(--border)', borderRadius: 8,
-                    color: 'var(--fg-muted)',
-                    fontSize: 13,
-                  }}>
-                    No dialog version yet. Click <strong>Generate Script</strong> above to
-                    rewrite both monologue and dialog from the scene description.
+                        <button
+                          onClick={onDiscard}
+                          style={{
+                            padding: '6px 14px',
+                            background: 'transparent',
+                            color: 'var(--fg-muted)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 6,
+                            fontSize: 12,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Discard
+                        </button>
+                      </>
+                    )}
+                    {!activeDirty && hasPrevious && (
+                      <button
+                        onClick={onRestore}
+                        disabled={activeRestoreMutation.isPending}
+                        style={{
+                          padding: '6px 14px',
+                          background: 'transparent',
+                          color: 'var(--fg-muted)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                          fontSize: 12,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {activeRestoreMutation.isPending ? 'Restoring…' : 'Restore Previous'}
+                      </button>
+                    )}
+                    <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
+                      Use emotive tags like{' '}
+                      <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
+                        [warm]
+                      </code>
+                      ,{' '}
+                      <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
+                        [confident]
+                      </code>
+                      ,{' '}
+                      <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
+                        [thoughtful]
+                      </code>{' '}
+                      to guide narration tone.
+                    </p>
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
+              );
+            })()
           ) : (
             <div style={{
               padding: 48, textAlign: 'center', color: 'var(--fg-muted)',
@@ -1673,7 +1837,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                             {isDialog ? `¶${chunk.index + 1}` : `Paragraph ${chunk.index + 1}`}
                           </span>
                           {chunk.hasAudio && (
-                            <span style={{ fontSize: 10, color: '#5e8a3a', fontWeight: 600 }}>
+                            <span style={{ fontSize: 10, color: STATUS_COLOR.success, fontWeight: 600 }}>
                               {chunk.durationSec != null ? `${chunk.durationSec.toFixed(1)}s` : 'Done'}
                             </span>
                           )}
@@ -1824,7 +1988,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                     disabled={overlayRenderMutation.isPending}
                     style={{
                       padding: '8px 16px',
-                      background: overlayRenderMutation.isPending ? 'var(--surface)' : '#5e8a3a',
+                      background: overlayRenderMutation.isPending ? 'var(--surface)' : STATUS_COLOR.success,
                       color: '#fff',
                       border: 'none',
                       borderRadius: 6,
@@ -1843,7 +2007,7 @@ export function ScenePage(props: ScenePageProps = {}) {
 
           {/* Overlay render result */}
           {overlayRenderMutation.isSuccess && (
-            <p style={{ color: '#5e8a3a', fontSize: 12, marginBottom: 12 }}>
+            <p style={{ color: STATUS_COLOR.success, fontSize: 12, marginBottom: 12 }}>
               Overlay rendered successfully ({overlayRenderMutation.data.durationSec.toFixed(1)}s)
             </p>
           )}

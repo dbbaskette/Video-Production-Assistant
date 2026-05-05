@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { api, ApiError, brandsApi, sourceDocsApi } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
+import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
 
 interface Props {
   open: boolean;
@@ -77,6 +78,20 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
     },
   });
 
+  // Guard against losing typed input on overlay-click or Cancel. Considers
+  // any of (name, objective, parent dir, queued docs) as "unsaved".
+  const hasUnsavedChanges =
+    rawName.trim().length > 0 ||
+    objective.trim().length > 0 ||
+    parentDir.trim().length > 0 ||
+    pendingDocs.length > 0;
+  const guardedClose = useUnsavedGuard({
+    hasUnsavedChanges,
+    message:
+      'Discard the project info you typed? Your name, objective, parent directory, and queued reference docs will be lost.',
+    onConfirmDiscard: onClose,
+  });
+
   if (!open) return null;
   const error = create.error;
   const errorMsg =
@@ -95,7 +110,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={onClose}
+      onClick={guardedClose}
     >
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <h2>New project</h2>
@@ -232,7 +247,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
         )}
 
         <div className="dialog__actions">
-          <button onClick={onClose} disabled={create.isPending}>Cancel</button>
+          <button onClick={guardedClose} disabled={create.isPending}>Cancel</button>
           <button
             className="primary"
             disabled={!nameValid || create.isPending}

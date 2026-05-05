@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api.js';
+import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
 
 interface Props {
   open: boolean;
@@ -22,6 +23,13 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
     },
   });
 
+  // Protect typed-but-not-imported path from a misclick.
+  const guardedClose = useUnsavedGuard({
+    hasUnsavedChanges: path.trim().length > 0,
+    message: 'Discard the path you typed?',
+    onConfirmDiscard: onClose,
+  });
+
   if (!open) return null;
   const error = importMutation.error;
   const errorMsg =
@@ -32,7 +40,7 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={onClose}
+      onClick={guardedClose}
     >
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <h2>Open existing project</h2>
@@ -56,7 +64,7 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
         )}
 
         <div className="dialog__actions">
-          <button onClick={onClose} disabled={importMutation.isPending}>Cancel</button>
+          <button onClick={guardedClose} disabled={importMutation.isPending}>Cancel</button>
           <button
             className="primary"
             disabled={!path.trim() || importMutation.isPending}
