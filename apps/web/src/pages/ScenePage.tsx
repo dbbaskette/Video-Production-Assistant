@@ -56,15 +56,43 @@ export function ScenePage(props: ScenePageProps = {}) {
   const project = props.project ?? outletProject;
   const embedded = props.embedded ?? false;
   // Quality Review can deep-link with ?tab=Script (etc.) so a click-to-jump
-  // lands the user on the right tab. Validate against TABS to avoid setting
-  // arbitrary state from a URL.
-  const [searchParams] = useSearchParams();
-  const initialTab = ((): Tab => {
+  // Tab state is mirrored to ?tab= in the URL so it survives:
+  //   • a refresh
+  //   • switching to a different scene in StoryboardView (the user
+  //     reviewing chunks across scenes shouldn't be bounced back to
+  //     Recording on every click)
+  //   • being deep-linked from Quality Review's click-to-jump
+  // Validate against TABS to avoid setting arbitrary state from a URL.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = ((): Tab => {
     const fromUrl = searchParams.get('tab');
     if (fromUrl && (TABS as readonly string[]).includes(fromUrl)) return fromUrl as Tab;
     return 'Recording';
   })();
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl);
+
+  // Keep the URL in sync when the user clicks a different tab pill.
+  // Effect on activeTab change rather than wrapping setActiveTab so we
+  // don't break the existing render-derived initial value or any other
+  // setActiveTab callers that might land later.
+  useEffect(() => {
+    if (searchParams.get('tab') === activeTab) return;
+    const next = new URLSearchParams(searchParams);
+    if (activeTab === 'Recording') {
+      // Recording is the default; drop the param to keep URLs short.
+      next.delete('tab');
+    } else {
+      next.set('tab', activeTab);
+    }
+    setSearchParams(next, { replace: true });
+  }, [activeTab, searchParams, setSearchParams]);
+
+  // Pull tab from URL when it changes externally (StoryboardView changes
+  // ?scene= without touching ?tab=, deep links, browser back/forward).
+  useEffect(() => {
+    if (tabFromUrl !== activeTab) setActiveTab(tabFromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabFromUrl]);
   const [editingScript, setEditingScript] = useState<string | null>(null);
   const [scriptDirty, setScriptDirty] = useState(false);
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
@@ -127,16 +155,42 @@ export function ScenePage(props: ScenePageProps = {}) {
     setIntentDraft(scene?.intent ?? '');
   }, [sceneId, scene?.intent]);
 
-  // Re-analyze the recording to refresh scene name/description/type. Used
-  // when the user has added source-docs after upload, edited the project
-  // objective, or just wants a video-grounded refresh now that we support it.
+  // Re-analyze the recording. Two-step UX:
+  //   1. Click "Re-analyze" → server runs the analysis with dryRun:true,
+  //      returns proposed + current values without saving.
+  //   2. Diff panel shows old vs new; user clicks Apply or Cancel.
+  // This replaces the previous immediate-overwrite behaviour (which
+  // silently destroyed any manual edits the user had typed).
   const [reanalyzeGroundInVideo, setReanalyzeGroundInVideo] = useState(true);
+  const [analyzePreview, setAnalyzePreview] = useState<
+    | null
+    | {
+        proposed: { name: string; description: string; type: string };
+        current: { name: string; description: string; type: string };
+        mode: 'text' | 'video';
+      }
+  >(null);
   const reanalyzeMutation = useMutation({
     mutationFn: () =>
       recordingsApi.reanalyze(projectId!, sceneId!, {
         groundInVideo: reanalyzeGroundInVideo && canGroundInVideo,
+        dryRun: true,
       }),
+    onSuccess: (data) => {
+      if ('dryRun' in data && data.dryRun) {
+        setAnalyzePreview({
+          proposed: data.proposed,
+          current: data.current,
+          mode: data.mode,
+        });
+      }
+    },
+  });
+  const applyAnalyzeMutation = useMutation({
+    mutationFn: (proposed: { name: string; description: string; type: string }) =>
+      recordingsApi.saveSceneMetadata(projectId!, sceneId!, proposed),
     onSuccess: () => {
+      setAnalyzePreview(null);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
     },
   });
@@ -200,10 +254,16 @@ export function ScenePage(props: ScenePageProps = {}) {
     },
   });
 
+  // Tab queries pre-fetch on scene load instead of gating on activeTab.
+  // The previous behavior caused a 200–500ms "Loading…" flash on every
+  // tab switch because the query didn't fire until the tab was active.
+  // Now everything is requested in parallel as soon as the user lands
+  // on a scene, so switching tabs is instant. Cost is small (4 cheap
+  // requests on mount) compared to the felt slowness on every click.
   const { data: scriptState } = useQuery({
     queryKey: ['script', projectId, sceneId],
     queryFn: () => scriptApi.get(projectId!, sceneId!),
-    enabled: !!projectId && !!sceneId && activeTab === 'Script',
+    enabled: !!projectId && !!sceneId,
   });
 
   // NOTE: monologue script sync moved after narrationState declaration
@@ -227,22 +287,25 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [convertingDialog, setConvertingDialog] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
 
+  // TTS engine + voice lists are tiny and stable — fetch once at app
+  // level (not gated to activeTab) so opening the Narration tab never
+  // shows a loading state.
   const { data: engines } = useQuery({
     queryKey: ['tts-engines'],
     queryFn: () => ttsApi.listEngines(),
-    enabled: activeTab === 'Narration',
+    staleTime: 5 * 60_000,
   });
-
   const { data: voiceProfiles } = useQuery({
     queryKey: ['voice-profiles'],
     queryFn: () => voiceApi.list(),
-    enabled: activeTab === 'Narration',
+    staleTime: 60_000,
   });
-
+  // Narration state is per-scene; pre-fetch on scene mount so all
+  // tabs that use it (Narration, Script, Preview) render immediately.
   const { data: narrationState } = useQuery({
     queryKey: ['narration', projectId, sceneId],
     queryFn: () => narrationApi.get(projectId!, sceneId!),
-    enabled: !!projectId && !!sceneId && (activeTab === 'Narration' || activeTab === 'Script' || activeTab === 'Preview'),
+    enabled: !!projectId && !!sceneId,
   });
 
   // Sync engine/voice from narration state when it loads
@@ -541,10 +604,12 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [editingLTs, setEditingLTs] = useState<LowerThirdItem[] | null>(null);
   const [ltDirty, setLtDirty] = useState(false);
 
+  // Pre-fetched on scene mount (not gated to activeTab) so the LT tab
+  // never flashes "Loading…" on first open. See pre-fetch note above.
   const { data: ltData } = useQuery({
     queryKey: ['lower-thirds', projectId, sceneId],
     queryFn: () => lowerThirdsApi.get(projectId!, sceneId!),
-    enabled: !!projectId && !!sceneId && activeTab === 'Lower Thirds',
+    enabled: !!projectId && !!sceneId,
   });
 
   useEffect(() => {
@@ -718,7 +783,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <button
                     onClick={() => reanalyzeMutation.mutate()}
-                    disabled={reanalyzeMutation.isPending}
+                    disabled={reanalyzeMutation.isPending || !!analyzePreview}
                     style={{
                       padding: '7px 14px',
                       background: 'var(--surface)',
@@ -728,16 +793,107 @@ export function ScenePage(props: ScenePageProps = {}) {
                       cursor: reanalyzeMutation.isPending ? 'wait' : 'pointer',
                       fontSize: 12,
                       fontWeight: 600,
+                      opacity: analyzePreview ? 0.5 : 1,
                     }}
                   >
                     {reanalyzeMutation.isPending ? 'Re-analyzing…' : '🔄 Re-analyze scene'}
                   </button>
-                  {reanalyzeMutation.isSuccess && (
-                    <span style={{ fontSize: 11, color: STATUS_COLOR.success }}>
-                      Updated · mode: {reanalyzeMutation.data.mode}
+                  {analyzePreview && (
+                    <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                      Preview ready below — review then Apply or Cancel
                     </span>
                   )}
                 </div>
+
+                {/* Diff preview — old vs new. Shown after a dry-run analysis.
+                    The user explicitly Applies before any storyboard write
+                    happens. Replaces the previous "fire and update" behaviour
+                    that silently overwrote any manual edits. */}
+                {analyzePreview && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      padding: 14,
+                      background: 'var(--surface)',
+                      border: `1px solid var(--accent)`,
+                      borderRadius: 8,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        textTransform: 'uppercase',
+                        letterSpacing: 1,
+                        color: 'var(--fg-muted)',
+                        marginBottom: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span style={{ fontWeight: 700, color: 'var(--accent)' }}>
+                        Proposed update
+                      </span>
+                      <span>mode: {analyzePreview.mode}</span>
+                    </div>
+                    <DiffRow
+                      label="Name"
+                      current={analyzePreview.current.name}
+                      proposed={analyzePreview.proposed.name}
+                    />
+                    <DiffRow
+                      label="Description"
+                      current={analyzePreview.current.description}
+                      proposed={analyzePreview.proposed.description}
+                      multiline
+                    />
+                    <DiffRow
+                      label="Type"
+                      current={analyzePreview.current.type}
+                      proposed={analyzePreview.proposed.type}
+                    />
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        marginTop: 12,
+                        alignItems: 'center',
+                      }}
+                    >
+                      <button
+                        onClick={() => applyAnalyzeMutation.mutate(analyzePreview.proposed)}
+                        disabled={applyAnalyzeMutation.isPending}
+                        className="primary"
+                        style={{ padding: '7px 16px', fontSize: 12, fontWeight: 600 }}
+                      >
+                        {applyAnalyzeMutation.isPending ? 'Applying…' : 'Apply'}
+                      </button>
+                      <button
+                        onClick={() => setAnalyzePreview(null)}
+                        disabled={applyAnalyzeMutation.isPending}
+                        style={{
+                          padding: '7px 16px',
+                          background: 'transparent',
+                          color: 'var(--fg-muted)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                          cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      {applyAnalyzeMutation.isError && (
+                        <span style={{ fontSize: 11, color: 'var(--danger)' }}>
+                          Apply failed:{' '}
+                          {applyAnalyzeMutation.error instanceof Error
+                            ? applyAnalyzeMutation.error.message
+                            : 'unknown'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {reanalyzeMutation.isError && (
                   <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
@@ -2045,6 +2201,14 @@ export function ScenePage(props: ScenePageProps = {}) {
 
           {/* Lower thirds list */}
           {editingLTs && editingLTs.length > 0 ? (
+            // Each LT renders as a card with a clear header (number + Remove)
+            // and the form fields stacked below as one visual unit. The
+            // previous layout split the row into "Title / Subtitle / Remove"
+            // and a separate "Style / In / Out" line, with Remove sitting
+            // visually attached to Title/Subtitle while actually deleting
+            // the whole thing including the line below — mental model
+            // mismatch. Now Remove lives in the card header where its
+            // scope is unambiguous.
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {editingLTs.map((lt, idx) => (
                 <div
@@ -2053,87 +2217,144 @@ export function ScenePage(props: ScenePageProps = {}) {
                     background: 'var(--surface)',
                     border: '1px solid var(--border)',
                     borderRadius: 8,
-                    padding: 16,
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr auto',
-                    gap: 12,
-                    alignItems: 'end',
+                    padding: 14,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
                   }}
                 >
-                  {/* Title */}
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
-                      Title
-                    </label>
-                    <input
-                      value={lt.title}
-                      onChange={(e) => {
-                        const updated = [...editingLTs];
-                        updated[idx] = { ...lt, title: e.target.value };
-                        setEditingLTs(updated);
-                        setLtDirty(true);
-                      }}
-                      style={{
-                        width: '100%',
-                        padding: '6px 8px',
-                        border: '1px solid var(--border)',
-                        borderRadius: 4,
-                        background: 'var(--bg)',
-                        color: 'var(--fg)',
-                        fontSize: 13,
-                      }}
-                    />
-                  </div>
-
-                  {/* Subtitle */}
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
-                      Subtitle
-                    </label>
-                    <input
-                      value={lt.subtitle ?? ''}
-                      onChange={(e) => {
-                        const updated = [...editingLTs];
-                        updated[idx] = { ...lt, subtitle: e.target.value || undefined };
-                        setEditingLTs(updated);
-                        setLtDirty(true);
-                      }}
-                      placeholder="Optional"
-                      style={{
-                        width: '100%',
-                        padding: '6px 8px',
-                        border: '1px solid var(--border)',
-                        borderRadius: 4,
-                        background: 'var(--bg)',
-                        color: 'var(--fg)',
-                        fontSize: 13,
-                      }}
-                    />
-                  </div>
-
-                  {/* Delete button */}
-                  <button
-                    onClick={() => {
-                      setEditingLTs(editingLTs.filter((_, i) => i !== idx));
-                      setLtDirty(true);
-                    }}
+                  {/* Card header — number + Remove. Remove's position here
+                      reads as "delete this card", not "delete title". */}
+                  <div
                     style={{
-                      padding: '6px 10px',
-                      background: 'none',
-                      border: '1px solid var(--border)',
-                      borderRadius: 4,
-                      color: 'var(--danger, #c25d5d)',
-                      cursor: 'pointer',
-                      fontSize: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingBottom: 8,
+                      borderBottom: '1px solid var(--border)',
                     }}
                   >
-                    Remove
-                  </button>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        textTransform: 'uppercase',
+                        letterSpacing: 1,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Lower third {idx + 1}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setEditingLTs(editingLTs.filter((_, i) => i !== idx));
+                        setLtDirty(true);
+                      }}
+                      title="Remove this lower third"
+                      style={{
+                        padding: '4px 10px',
+                        background: 'transparent',
+                        border: '1px solid var(--border)',
+                        borderRadius: 4,
+                        color: 'var(--danger)',
+                        cursor: 'pointer',
+                        fontSize: 11,
+                      }}
+                    >
+                      ✕ Remove
+                    </button>
+                  </div>
 
-                  {/* Style + timing row */}
-                  <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 16, alignItems: 'center' }}>
+                  {/* Title + Subtitle on one row */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div>
-                      <label style={{ fontSize: 11, color: 'var(--fg-muted)', marginRight: 4 }}>Style</label>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                          marginBottom: 4,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Title
+                      </label>
+                      <input
+                        value={lt.title}
+                        onChange={(e) => {
+                          const updated = [...editingLTs];
+                          updated[idx] = { ...lt, title: e.target.value };
+                          setEditingLTs(updated);
+                          setLtDirty(true);
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          border: '1px solid var(--border)',
+                          borderRadius: 4,
+                          background: 'var(--bg)',
+                          color: 'var(--fg)',
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                          marginBottom: 4,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Subtitle <span style={{ textTransform: 'none', letterSpacing: 0, opacity: 0.7 }}>(optional)</span>
+                      </label>
+                      <input
+                        value={lt.subtitle ?? ''}
+                        onChange={(e) => {
+                          const updated = [...editingLTs];
+                          updated[idx] = { ...lt, subtitle: e.target.value || undefined };
+                          setEditingLTs(updated);
+                          setLtDirty(true);
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '6px 8px',
+                          border: '1px solid var(--border)',
+                          borderRadius: 4,
+                          background: 'var(--bg)',
+                          color: 'var(--fg)',
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Style + timing on the next row, visually grouped */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 14,
+                      alignItems: 'flex-end',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ minWidth: 110 }}>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                          marginBottom: 4,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Style
+                      </label>
                       <select
                         value={lt.style}
                         onChange={(e) => {
@@ -2143,12 +2364,13 @@ export function ScenePage(props: ScenePageProps = {}) {
                           setLtDirty(true);
                         }}
                         style={{
-                          padding: '4px 8px',
+                          width: '100%',
+                          padding: '6px 8px',
                           border: '1px solid var(--border)',
                           borderRadius: 4,
                           background: 'var(--bg)',
                           color: 'var(--fg)',
-                          fontSize: 12,
+                          fontSize: 13,
                         }}
                       >
                         <option value="frosted">Frosted</option>
@@ -2157,7 +2379,18 @@ export function ScenePage(props: ScenePageProps = {}) {
                       </select>
                     </div>
                     <div>
-                      <label style={{ fontSize: 11, color: 'var(--fg-muted)', marginRight: 4 }}>In (s)</label>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                          marginBottom: 4,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        In (s)
+                      </label>
                       <input
                         type="number"
                         min={0}
@@ -2170,18 +2403,29 @@ export function ScenePage(props: ScenePageProps = {}) {
                           setLtDirty(true);
                         }}
                         style={{
-                          width: 70,
-                          padding: '4px 8px',
+                          width: 80,
+                          padding: '6px 8px',
                           border: '1px solid var(--border)',
                           borderRadius: 4,
                           background: 'var(--bg)',
                           color: 'var(--fg)',
-                          fontSize: 12,
+                          fontSize: 13,
                         }}
                       />
                     </div>
                     <div>
-                      <label style={{ fontSize: 11, color: 'var(--fg-muted)', marginRight: 4 }}>Out (s)</label>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 11,
+                          color: 'var(--fg-muted)',
+                          marginBottom: 4,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        Out (s)
+                      </label>
                       <input
                         type="number"
                         min={0}
@@ -2194,21 +2438,31 @@ export function ScenePage(props: ScenePageProps = {}) {
                           setLtDirty(true);
                         }}
                         style={{
-                          width: 70,
-                          padding: '4px 8px',
+                          width: 80,
+                          padding: '6px 8px',
                           border: '1px solid var(--border)',
                           borderRadius: 4,
                           background: 'var(--bg)',
                           color: 'var(--fg)',
-                          fontSize: 12,
+                          fontSize: 13,
                         }}
                       />
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        marginLeft: 'auto',
+                        paddingBottom: 6,
+                      }}
+                    >
+                      duration {Math.max(0, lt.out_sec - lt.in_sec).toFixed(1)}s
                     </div>
                   </div>
                 </div>
               ))}
               {ltDirty && (
-                <p style={{ color: 'var(--accent)', fontSize: 12 }}>Unsaved changes</p>
+                <p style={{ color: 'var(--warn)', fontSize: 12 }}>Unsaved changes</p>
               )}
             </div>
           ) : (
@@ -2243,6 +2497,100 @@ export function ScenePage(props: ScenePageProps = {}) {
           />
           <SceneRenderSection projectId={projectId} sceneId={scene.id} />
         </>
+      )}
+    </div>
+  );
+}
+
+// ── DiffRow ─────────────────────────────────────────────────────────
+//
+// Shows current vs proposed values side-by-side. Used by the Re-analyze
+// diff preview so the user sees exactly what's about to be overwritten.
+// Equal values render as a single line with a muted "(unchanged)" tag
+// to keep the panel concise when only one field actually changed.
+
+function DiffRow({
+  label,
+  current,
+  proposed,
+  multiline,
+}: {
+  label: string;
+  current: string;
+  proposed: string;
+  multiline?: boolean;
+}) {
+  const unchanged = current === proposed;
+  return (
+    <div style={{ marginBottom: 10, fontSize: 12 }}>
+      <div
+        style={{
+          fontSize: 10,
+          color: 'var(--fg-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: 1,
+          marginBottom: 4,
+          fontWeight: 600,
+        }}
+      >
+        {label}
+        {unchanged && (
+          <span style={{ marginLeft: 8, opacity: 0.7, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
+            (unchanged)
+          </span>
+        )}
+      </div>
+      {unchanged ? (
+        <div
+          style={{
+            color: 'var(--fg-muted)',
+            whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
+            overflow: multiline ? 'visible' : 'hidden',
+            textOverflow: multiline ? 'clip' : 'ellipsis',
+            lineHeight: 1.5,
+          }}
+        >
+          {current || <em>(empty)</em>}
+        </div>
+      ) : (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 8,
+          }}
+        >
+          <div
+            style={{
+              padding: 8,
+              background: 'var(--bg)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              opacity: 0.7,
+              textDecoration: 'line-through',
+              whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
+              overflow: multiline ? 'visible' : 'hidden',
+              textOverflow: 'ellipsis',
+              lineHeight: 1.5,
+            }}
+          >
+            {current || <em>(empty)</em>}
+          </div>
+          <div
+            style={{
+              padding: 8,
+              background: 'var(--accent-bg)',
+              border: '1px solid var(--accent)',
+              borderRadius: 4,
+              whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
+              overflow: multiline ? 'visible' : 'hidden',
+              textOverflow: 'ellipsis',
+              lineHeight: 1.5,
+            }}
+          >
+            {proposed || <em>(empty)</em>}
+          </div>
+        </div>
       )}
     </div>
   );

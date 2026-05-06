@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, qualityReviewApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
+import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
-import { STATUS_COLOR, reviewSummaryColor, reviewSummaryLabel, type ReviewStatus } from '../lib/palette.js';
+import { STATUS_COLOR } from '../lib/palette.js';
+import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -16,30 +17,15 @@ export function ProjectOverview() {
   const { project } = useOutletContext<WorkspaceContext>();
   const { projectId } = useParams<{ projectId: string }>();
 
+  // Pipeline steps come from the shared lib/pipeline so the sidebar
+  // and this view are always in sync.
+  const { steps, next: nextStep } = usePipelineSteps(projectId);
   const { data: storyboard } = useQuery({
     queryKey: ['storyboard', projectId],
     queryFn: () => storyboardApi.get(projectId!),
     enabled: !!projectId,
   });
-
-  const { data: review } = useQuery({
-    queryKey: ['review', projectId],
-    queryFn: () => qualityReviewApi.get(projectId!),
-    enabled: !!projectId,
-  });
-
-  const sceneCount = storyboard?.scenes?.length ?? 0;
-  const hasStoryboard = storyboard !== null && storyboard !== undefined && sceneCount > 0;
-  const recordingCount = storyboard?.scenes?.filter((s) => s.recording).length ?? 0;
-  const narrationCount = storyboard?.scenes?.filter((s) => s.narration?.audio).length ?? 0;
-  const lowerThirdCount = storyboard?.scenes?.filter((s) => (s.lower_thirds?.length ?? 0) > 0).length ?? 0;
-
-  // Render presence — drives the last pipeline step.
-  const { data: renderStatus } = useQuery({
-    queryKey: ['render-status', project.id],
-    queryFn: () => renderApi.status(project.id),
-  });
-  const finalRendered = !!renderStatus?.exists;
+  const hasStoryboard = !!storyboard && (storyboard.scenes?.length ?? 0) > 0;
 
   return (
     <div style={{ padding: '40px 48px', maxWidth: 800 }}>
@@ -48,22 +34,11 @@ export function ProjectOverview() {
         {project.path}
       </p>
 
-      {/* Pipeline — replaces the old "status grid + Action Buttons" combo.
-          One linear lane shows the workflow as a sequence with a clear
-          "next step" highlight. The previous design had four equally-
-          sized status tiles that LOOKED like buttons (and made the
-          actual primary CTA compete for attention with passive readouts).
-          Now the active step is the only filled element and reads as a
-          call to action. */}
       <Pipeline
+        steps={steps}
+        nextStep={nextStep}
         projectId={project.id}
         hasStoryboard={hasStoryboard}
-        sceneCount={sceneCount}
-        recordingCount={recordingCount}
-        narrationCount={narrationCount}
-        lowerThirdCount={lowerThirdCount}
-        finalRendered={finalRendered}
-        review={review}
       />
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
@@ -131,119 +106,20 @@ export function ProjectOverview() {
  */
 // ── Pipeline ──────────────────────────────────────────────────────
 //
-// One horizontal lane that shows the workflow as a sequence:
-//   Storyboard → Recordings → Narration → Lower Thirds → Render → Review
-//
-// Each step has a status (`done` / `next` / `todo`) computed from the
-// project state. The single `next` step renders as the primary CTA;
-// done steps collapse to a check + label; todo steps render muted.
-// Replaces the old 2×2 status grid that had four equally-sized tiles
-// looking like buttons and an above-the-fold "next action" pill that
-// competed with them for attention.
-
-interface PipelineStep {
-  key: string;
-  label: string;
-  to: string;
-  status: 'done' | 'next' | 'todo';
-  detail?: string;
-}
+// Horizontal step lane. Step computation lives in lib/pipeline so the
+// sidebar can render a compact version against the same source of truth.
 
 function Pipeline({
+  steps,
+  nextStep,
   projectId,
   hasStoryboard,
-  sceneCount,
-  recordingCount,
-  narrationCount,
-  lowerThirdCount,
-  finalRendered,
-  review,
 }: {
+  steps: PipelineStep[];
+  nextStep?: PipelineStep;
   projectId: string;
   hasStoryboard: boolean;
-  sceneCount: number;
-  recordingCount: number;
-  narrationCount: number;
-  lowerThirdCount: number;
-  finalRendered: boolean;
-  review:
-    | undefined
-    | {
-        status?: ReviewStatus | 'ok' | null;
-        summary: { info: number; warn: number; issue: number; total: number };
-      };
 }) {
-  const reviewStatus: ReviewStatus = !review?.status
-    ? 'unrun'
-    : review.status === 'ok'
-      ? 'ready'
-      : (review.status as ReviewStatus);
-
-  // Compute each step's done-ness in workflow order; the first non-done
-  // becomes the "next" step.
-  const raw: Array<Omit<PipelineStep, 'status'> & { done: boolean }> = [
-    {
-      key: 'storyboard',
-      label: 'Storyboard',
-      to: `/project/${projectId}/storyboard`,
-      detail: hasStoryboard ? `${sceneCount} scenes` : 'Generate or upload',
-      done: hasStoryboard,
-    },
-    {
-      key: 'recordings',
-      label: 'Recordings',
-      to: `/project/${projectId}/recordings`,
-      detail: hasStoryboard ? `${recordingCount}/${sceneCount}` : '—',
-      done: hasStoryboard && recordingCount === sceneCount,
-    },
-    {
-      key: 'narration',
-      label: 'Narration',
-      to: `/project/${projectId}/storyboard`,
-      detail: hasStoryboard ? `${narrationCount}/${sceneCount}` : '—',
-      done: hasStoryboard && narrationCount === sceneCount,
-    },
-    {
-      key: 'lower-thirds',
-      label: 'Lower Thirds',
-      to: `/project/${projectId}/storyboard`,
-      // LTs are optional per scene — "done" means at least one scene has
-      // them OR the user has explicitly skipped (we can't tell, so we
-      // mark this step done as soon as narration is finished). Pragmatic.
-      detail: lowerThirdCount > 0 ? `${lowerThirdCount}/${sceneCount}` : 'Optional',
-      done: hasStoryboard && narrationCount === sceneCount,
-    },
-    {
-      key: 'render',
-      label: 'Render',
-      to: `/project/${projectId}`, // the Render section sits inside Output below
-      detail: finalRendered ? 'Done' : 'final.mp4',
-      done: finalRendered,
-    },
-    {
-      key: 'review',
-      label: 'Quality Review',
-      to: `/project/${projectId}/review`,
-      detail: reviewSummaryLabel(reviewStatus, {
-        warnings: review?.summary.warn ?? 0,
-        issues: review?.summary.issue ?? 0,
-      }),
-      done: reviewStatus === 'ready',
-    },
-  ];
-
-  let foundNext = false;
-  const steps: PipelineStep[] = raw.map((s) => {
-    if (s.done) return { ...s, status: 'done' };
-    if (!foundNext) {
-      foundNext = true;
-      return { ...s, status: 'next' };
-    }
-    return { ...s, status: 'todo' };
-  });
-
-  const nextStep = steps.find((s) => s.status === 'next');
-
   return (
     <section
       style={{
