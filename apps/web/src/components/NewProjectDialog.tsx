@@ -4,13 +4,43 @@ import { api, ApiError, brandsApi, sourceDocsApi } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
 
+/**
+ * The Dashboard has two hero cards that both end up here:
+ *   - "Ideate a new demo"   → mode 'ideate'  → routed to /ideation
+ *   - "I have recordings"   → mode 'recordings' → routed to /recordings
+ *
+ * The form fields are identical across modes, but the user reasonably
+ * expects to know which path they're on. The `mode` prop drives the
+ * dialog's heading + lead paragraph + Create button label so there's
+ * no ambiguity inside the modal itself.
+ */
+export type NewProjectMode = 'ideate' | 'recordings';
+
 interface Props {
   open: boolean;
   onClose: () => void;
   onCreated: (id: string) => void;
+  mode?: NewProjectMode;
 }
 
-export function NewProjectDialog({ open, onClose, onCreated }: Props) {
+const COPY_BY_MODE: Record<
+  NewProjectMode,
+  { heading: string; lead: string; createLabel: string }
+> = {
+  ideate: {
+    heading: '💡 Ideate a new demo',
+    lead: 'Describe what you want to demo and (optionally) drop reference docs. After you create the project, the AI will propose a storyboard you can refine.',
+    createLabel: 'Create & start ideating',
+  },
+  recordings: {
+    heading: '📹 New project from recordings',
+    lead: 'Create the project shell first; you\'ll upload your existing MP4s on the next screen and we\'ll auto-build a storyboard with one scene per file.',
+    createLabel: 'Create & upload recordings',
+  },
+};
+
+export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: Props) {
+  const copy = COPY_BY_MODE[mode];
   const queryClient = useQueryClient();
   const defaults = useQuery({ queryKey: ['defaults'], queryFn: api.getDefaults });
   const brandsQuery = useQuery({ queryKey: ['brands'], queryFn: () => brandsApi.list() });
@@ -113,7 +143,10 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
       onClick={guardedClose}
     >
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h2>New project</h2>
+        <h2 style={{ marginBottom: 6 }}>{copy.heading}</h2>
+        <p style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+          {copy.lead}
+        </p>
 
         <div className="dialog__field">
           <label className="dialog__label">Name</label>
@@ -254,7 +287,7 @@ export function NewProjectDialog({ open, onClose, onCreated }: Props) {
             onClick={() => create.mutate()}
             title={!nameValid ? 'Enter a project name to enable Create' : undefined}
           >
-            {create.isPending ? 'Creating…' : 'Create'}
+            {create.isPending ? 'Creating…' : copy.createLabel}
           </button>
         </div>
       </div>

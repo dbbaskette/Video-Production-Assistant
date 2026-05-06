@@ -669,17 +669,27 @@ export function Settings() {
         )}
       </section>
 
-      {/* Voice Profiles section */}
+      {/* TTS section — voice profiles, plus a clear pointer to the
+          separate /voices library. Previously this surface had two
+          sections ("TTS Voice Profiles" + "Voice Cloning") with cross
+          links and overlapping vocabulary. Now it's one section that
+          explains the difference upfront and lets the link out be the
+          only mention of voice clones. */}
       <section style={{ marginTop: 48 }}>
-        <div className="section-header" style={{ marginBottom: 18 }}>
-          <span className="section-label">TTS Voice Profiles</span>
+        <div className="section-header" style={{ marginBottom: 12 }}>
+          <span className="section-label">Text-to-Speech</span>
         </div>
-        <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 16px' }}>
-          Saved presets that pair a TTS engine + voice + speed. Different from voice clones —
-          for those go to <a href="/voices" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Voices</a>.
+        <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 8px', lineHeight: 1.5 }}>
+          A <strong style={{ color: 'var(--fg)' }}>voice profile</strong> is a saved preset
+          (engine + voice + speed) you pick when generating narration for a scene.
+        </p>
+        <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 18px', lineHeight: 1.5 }}>
+          Looking for <strong style={{ color: 'var(--fg)' }}>voice cloning</strong>? That's a
+          separate library of your own cloned voices —{' '}
+          <a href="/voices" style={{ color: 'var(--accent)', textDecoration: 'none' }}>open Voices →</a>
         </p>
 
-        {voicesLoading && <p className="hint">Loading voice profiles...</p>}
+        {voicesLoading && <p className="hint">Loading voice profiles…</p>}
         {voicesError && <p style={{ color: 'var(--danger)' }}>Failed to load voice profiles.</p>}
 
         {voices && (
@@ -700,17 +710,6 @@ export function Settings() {
             <AddVoiceProfileForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'voices'] })} />
           </>
         )}
-      </section>
-
-      {/* Voice Cloning has its own dedicated section */}
-      <section style={{ marginTop: 48 }}>
-        <div className="section-header" style={{ marginBottom: 12 }}>
-          <span className="section-label">Voice Cloning</span>
-        </div>
-        <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: 0 }}>
-          Voice clones now live in their own section.{' '}
-          <a href="/voices" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Open Voices →</a>
-        </p>
       </section>
     </main>
   );
