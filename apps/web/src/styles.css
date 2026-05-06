@@ -397,6 +397,50 @@ a:hover { text-decoration: underline; }
   50% { opacity: 1; }
 }
 
+/* ── Form scale ────────────────────────────────────────
+   Mirrors FORM_SIZE in lib/palette.ts. Use these classes instead of
+   inline `fontSize: …` for new form bits so the scale stays consistent
+   across screens. Three sizes only: 11px label, 13px input, 12px
+   helper. */
+.form-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+.form-input {
+  font-size: 13px;
+  font-family: inherit;
+}
+.form-helper {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+/* ── Inline <code> chip ────────────────────────────────
+   Default styling so emotive-tag mentions in helper text (e.g.
+   "Use [warm], [confident]") render as visually-distinct chips
+   everywhere instead of looking like prose. Block-level <pre> /
+   .code-block etc. should opt out of this. */
+code {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  color: var(--fg);
+  white-space: nowrap;
+}
+pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 1em;
+}
+
 .pipeline { max-width: 480px; margin: 32px auto 0; }
 .pipeline__step {
   display: flex; align-items: flex-start; gap: 14px;

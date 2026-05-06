@@ -7,6 +7,9 @@ import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
+// Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
+// the file's call sites reading the same as before.
+import { relativeTime as timeAgo } from '../lib/format.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -396,7 +399,7 @@ function RenderSection({
           className="btn--accent"
           style={{ padding: '10px 20px', fontSize: 14 }}
         >
-          {isRunning ? 'Rendering…' : exists ? 'Re-render Finished Video' : 'Render Finished Video'}
+          {isRunning ? 'Rendering full project…' : exists ? '🎞️ Re-render full project' : '🎞️ Render full project'}
         </button>
         {exists && (
           <>
@@ -468,17 +471,6 @@ function RenderSection({
   );
 }
 
-function timeAgo(iso?: string | null): string {
-  if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(ms / 60_000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const d = Math.floor(hr / 24);
-  return `${d}d ago`;
-}
 
 /**
  * Holds the shared music selection state so the BackgroundMusicSection (where
@@ -495,12 +487,21 @@ function ProjectMusicAndRender({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [musicVolumeDb, setMusicVolumeDb] = useState(-20);
+  // Order: BackgroundMusic (with the mix-into-render controls embedded
+  // as its footer) → RenderSection. Previously the mix controls floated
+  // between the two cards with `marginTop: -16` overlapping into the
+  // gap, which made the volume slider look like it belonged to neither
+  // card. Now it's clearly part of the music card it actually controls.
   return (
     <>
       <BackgroundMusicSection
         projectId={projectId}
         selectedTrackId={selectedTrackId}
         onSelect={setSelectedTrackId}
+        musicEnabled={musicEnabled}
+        onEnabledChange={setMusicEnabled}
+        musicVolumeDb={musicVolumeDb}
+        onVolumeChange={setMusicVolumeDb}
       />
       <RenderSection
         projectId={projectId}
@@ -509,47 +510,6 @@ function ProjectMusicAndRender({
         musicEnabled={musicEnabled && !!selectedTrackId}
         musicVolumeDb={musicVolumeDb}
       />
-      {selectedTrackId && (
-        <div
-          style={{
-            marginTop: -16,
-            padding: '12px 20px',
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            display: 'flex',
-            gap: 16,
-            alignItems: 'center',
-            flexWrap: 'wrap',
-          }}
-        >
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={musicEnabled}
-              onChange={(e) => setMusicEnabled(e.target.checked)}
-            />
-            Mix selected music into the next render
-          </label>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, opacity: musicEnabled ? 1 : 0.5 }}>
-            Volume:
-            <input
-              type="range"
-              min={-30}
-              max={0}
-              step={1}
-              value={musicVolumeDb}
-              disabled={!musicEnabled}
-              onChange={(e) => setMusicVolumeDb(Number.parseInt(e.target.value, 10))}
-              style={{ width: 160 }}
-            />
-            <span style={{ fontFamily: 'monospace', minWidth: 48 }}>{musicVolumeDb} dB</span>
-          </label>
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-            -20 dB sits comfortably under narration; 0 dB is full volume.
-          </span>
-        </div>
-      )}
     </>
   );
 }
@@ -558,10 +518,18 @@ function BackgroundMusicSection({
   projectId,
   selectedTrackId,
   onSelect,
+  musicEnabled,
+  onEnabledChange,
+  musicVolumeDb,
+  onVolumeChange,
 }: {
   projectId: string;
   selectedTrackId: string | null;
   onSelect: (trackId: string | null) => void;
+  musicEnabled: boolean;
+  onEnabledChange: (next: boolean) => void;
+  musicVolumeDb: number;
+  onVolumeChange: (next: number) => void;
 }) {
   const queryClient = useQueryClient();
   const ui = useUi();
@@ -687,6 +655,13 @@ function BackgroundMusicSection({
         <p style={{ fontSize: 12, color: 'var(--danger)', margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>{error}</p>
       )}
 
+      {/* Mix-into-render controls — these used to float between this card
+          and the Render card with a negative margin overlap that made the
+          volume slider look orphaned. Now they sit inside this card,
+          where the user can clearly see they belong to the music
+          selection above. They're only useful when a track is selected,
+          so we conditionally render below the track list. */}
+
       {tracks.length > 0 && (
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {tracks.map((t) => {
@@ -764,6 +739,57 @@ function BackgroundMusicSection({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Mix controls (only when a track is selected). Sits within the
+          card border, so the volume slider visibly belongs to the music
+          it controls — no more orphan negative-margin layout. */}
+      {selectedTrackId && (
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: '1px dashed var(--border)',
+            display: 'flex',
+            gap: 16,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={musicEnabled}
+              onChange={(e) => onEnabledChange(e.target.checked)}
+            />
+            Mix into the next render
+          </label>
+          <label
+            style={{
+              display: 'flex',
+              gap: 6,
+              alignItems: 'center',
+              fontSize: 13,
+              opacity: musicEnabled ? 1 : 0.5,
+            }}
+          >
+            Volume:
+            <input
+              type="range"
+              min={-30}
+              max={0}
+              step={1}
+              value={musicVolumeDb}
+              disabled={!musicEnabled}
+              onChange={(e) => onVolumeChange(Number.parseInt(e.target.value, 10))}
+              style={{ width: 160 }}
+            />
+            <span style={{ fontFamily: 'monospace', minWidth: 48 }}>{musicVolumeDb} dB</span>
+          </label>
+          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+            -20 dB sits comfortably under narration; 0 dB is full volume.
+          </span>
         </div>
       )}
     </div>

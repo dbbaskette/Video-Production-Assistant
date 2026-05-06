@@ -112,11 +112,13 @@ export function Dashboard() {
 
       <NewProjectDialog
         open={modal === 'new'}
+        mode="recordings"
         onClose={() => setModal('none')}
         onCreated={handleRecordingsCreated}
       />
       <NewProjectDialog
         open={modal === 'new-ideation'}
+        mode="ideate"
         onClose={() => setModal('none')}
         onCreated={handleIdeationCreated}
       />

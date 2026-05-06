@@ -94,22 +94,30 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
         </label>
       </div>
 
+      {/* Visual distinction from the project-level "Render Finished Video"
+          button: this one is a secondary outlined button labelled "Render
+          this scene" so the user can tell at a glance they're acting on a
+          single scene, not the whole project. */}
       <button
         onClick={() => renderMutation.mutate()}
         disabled={renderMutation.isPending}
-        className="primary"
         style={{
-          padding: '8px 18px',
+          padding: '7px 16px',
           fontSize: 13,
-          fontWeight: 600,
+          fontWeight: 500,
           marginBottom: 12,
+          background: 'var(--surface)',
+          color: 'var(--fg)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          cursor: renderMutation.isPending ? 'wait' : 'pointer',
         }}
       >
         {renderMutation.isPending
-          ? 'Rendering…'
+          ? 'Rendering this scene…'
           : anyExists
-            ? 'Re-render scene'
-            : 'Render scene'}
+            ? '🎬 Re-render this scene'
+            : '🎬 Render this scene'}
       </button>
 
       {renderMutation.isError && (

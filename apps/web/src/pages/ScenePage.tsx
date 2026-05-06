@@ -733,9 +733,13 @@ export function ScenePage(props: ScenePageProps = {}) {
                 ingested_at={scene.recording.ingested_at}
               />
 
-              {/* Current scene name + description so the user can see what
-                  they're about to overwrite. The model rewrites these from
-                  the recording / source-docs / objective on each re-analyze. */}
+              {/* Two-card layout. The previous design crammed scene
+                  metadata + the Re-analyze action into a single card
+                  titled "Scene description", which buried the action.
+                  Now metadata sits in its own static card and re-analysis
+                  has a dedicated card with a clearer heading.
+
+                  Card 1 — current name + description (read-only). */}
               <div
                 style={{
                   marginTop: 16,
@@ -751,9 +755,47 @@ export function ScenePage(props: ScenePageProps = {}) {
                 <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
                   {scene.name}
                 </div>
-                <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+                <div style={{ fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
                   {scene.description || <em>(no description)</em>}
                 </div>
+              </div>
+
+              {/* Card 2 — re-analysis action. Prominent heading + dedicated
+                  card make it discoverable; toggle and Apply/Cancel diff
+                  panel live here too. */}
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 14,
+                  background: 'var(--bg-elev)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--fg-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: 1,
+                    marginBottom: 6,
+                    fontWeight: 600,
+                  }}
+                >
+                  🔄 Refresh from docs / video
+                </div>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--fg-muted)',
+                    margin: '0 0 10px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Re-runs scene analysis using the current objective + source-docs (and the actual
+                  video, when grounded). Useful after adding documentation or editing the
+                  project objective. You'll get a diff to review before anything is saved.
+                </p>
 
                 {canGroundInVideo && (
                   <label
@@ -1831,7 +1873,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                     >
                       {generateAllProgress
                         ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}…`
-                        : 'Generate Missing Chunks'}
+                        : 'Generate All'}
                     </button>
                   </div>
                 </div>

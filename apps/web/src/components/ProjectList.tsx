@@ -17,23 +17,8 @@ import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { useUi } from './ui/UiProvider.js';
+import { relativeTime } from '../lib/format.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
-
-function relativeTime(iso: string | null): string {
-  if (!iso) return '—';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '—';
-  const diffMs = Date.now() - t;
-  const min = Math.round(diffMs / 60_000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const d = Math.round(hr / 24);
-  if (d < 7) return `${d}d ago`;
-  const w = Math.round(d / 7);
-  return `${w}w ago`;
-}
 
 interface Props {
   onOpen: (project: ProjectTrackerEntry) => void;
