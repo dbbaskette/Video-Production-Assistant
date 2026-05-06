@@ -488,9 +488,35 @@ export interface ChunkNarrationResult {
   unsupportedEmotives: string[];
 }
 
+export interface TtsScratchClip {
+  id: string;
+  createdAt: string;
+  engine: string;
+  voice: string;
+  speed: number;
+  text: string;
+  durationSec: number;
+  format: 'mp3' | 'wav';
+  bytes: number;
+}
+
 export const ttsApi = {
   async listEngines(): Promise<TtsEngineInfo[]> {
     return request<TtsEngineInfo[]>('GET', '/api/tts/engines');
+  },
+  scratch: {
+    async list(): Promise<TtsScratchClip[]> {
+      return request<TtsScratchClip[]>('GET', '/api/tts/scratch');
+    },
+    async generate(input: { engine: string; voice: string; text: string; speed?: number }): Promise<TtsScratchClip> {
+      return request<TtsScratchClip>('POST', '/api/tts/scratch', input);
+    },
+    async remove(id: string): Promise<void> {
+      await request('DELETE', `/api/tts/scratch/${encodeURIComponent(id)}`);
+    },
+    audioUrl(id: string): string {
+      return `${BASE}/api/tts/scratch/${encodeURIComponent(id)}/audio`;
+    },
   },
 };
 

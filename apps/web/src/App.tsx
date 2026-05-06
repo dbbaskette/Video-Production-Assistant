@@ -8,6 +8,7 @@ import { BrandsList } from './pages/BrandsList.js';
 import { VoicesList } from './pages/VoicesList.js';
 import { VoiceNew } from './pages/VoiceNew.js';
 import { VoiceDetail } from './pages/VoiceDetail.js';
+import { VoicesTts } from './pages/VoicesTts.js';
 import { SetupHealth } from './pages/SetupHealth.js';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.js';
 import { ProjectOverview } from './pages/ProjectOverview.js';
@@ -31,6 +32,7 @@ export function App() {
         <Route path="/brands/new" element={<BrandNew />} />
         <Route path="/brands/:slug" element={<BrandDetail />} />
         <Route path="/voices" element={<VoicesList />} />
+        <Route path="/voices/tts" element={<VoicesTts />} />
         <Route path="/voices/new" element={<VoiceNew />} />
         <Route path="/voices/:id" element={<VoiceDetail />} />
         <Route path="/setup" element={<SetupHealth />} />

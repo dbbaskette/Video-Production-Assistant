@@ -22,6 +22,14 @@ export function VoicesList() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <Link to="/voices/tts">
+            <button
+              style={{ padding: '8px 16px', fontSize: 13, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--fg)' }}
+              title="Generate one-off TTS clips with any voice"
+            >
+              Quick TTS
+            </button>
+          </Link>
           <button
             onClick={() => setShowImport(true)}
             style={{ padding: '8px 16px', fontSize: 13, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--fg)' }}
