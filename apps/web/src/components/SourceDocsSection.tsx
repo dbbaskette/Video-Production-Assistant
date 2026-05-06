@@ -12,6 +12,7 @@
 
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link2, FileText, FileCode } from 'lucide-react';
 import { sourceDocsApi, type SourceDoc } from '../lib/api.js';
 import { useUi } from './ui/UiProvider.js';
 
@@ -256,8 +257,20 @@ function DocRow({ doc, onRemove }: { doc: SourceDoc; onRemove: () => void }) {
         borderRadius: 6,
       }}
     >
-      <span aria-hidden style={{ fontSize: 16 }}>
-        {doc.kind === 'url' ? '🔗' : doc.kind === 'text' ? '📝' : '📄'}
+      <span
+        aria-hidden
+        style={{
+          display: 'inline-flex',
+          color: 'var(--fg-muted)',
+        }}
+      >
+        {doc.kind === 'url' ? (
+          <Link2 size={16} strokeWidth={1.6} />
+        ) : doc.kind === 'text' ? (
+          <FileText size={16} strokeWidth={1.6} />
+        ) : (
+          <FileCode size={16} strokeWidth={1.6} />
+        )}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

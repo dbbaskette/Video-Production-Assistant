@@ -10,6 +10,7 @@ import { SceneRenderSection } from '../components/SceneRenderSection.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
 import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
+import { RefreshCcw, Sparkles } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
@@ -782,7 +783,13 @@ export function ScenePage(props: ScenePageProps = {}) {
                     fontWeight: 600,
                   }}
                 >
-                  🔄 Refresh from docs / video
+                  <RefreshCcw
+                    size={11}
+                    strokeWidth={1.8}
+                    style={{ marginRight: 5, marginBottom: -1 }}
+                    aria-hidden
+                  />
+                  Refresh from docs / video
                 </div>
                 <p
                   style={{
@@ -838,7 +845,14 @@ export function ScenePage(props: ScenePageProps = {}) {
                       opacity: analyzePreview ? 0.5 : 1,
                     }}
                   >
-                    {reanalyzeMutation.isPending ? 'Re-analyzing…' : '🔄 Re-analyze scene'}
+                    {reanalyzeMutation.isPending ? (
+                      'Re-analyzing…'
+                    ) : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <RefreshCcw size={13} strokeWidth={1.8} aria-hidden />
+                        Re-analyze scene
+                      </span>
+                    )}
                   </button>
                   {analyzePreview && (
                     <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
@@ -852,12 +866,15 @@ export function ScenePage(props: ScenePageProps = {}) {
                     happens. Replaces the previous "fire and update" behaviour
                     that silently overwrote any manual edits. */}
                 {analyzePreview && (
+                  // Violet (--accent-2) signals "AI-generated content";
+                  // primary blue is reserved for human-driven actions. The
+                  // diff panel is literally model output awaiting Apply.
                   <div
                     style={{
                       marginTop: 14,
                       padding: 14,
                       background: 'var(--surface)',
-                      border: `1px solid var(--accent)`,
+                      border: `1px solid var(--accent-2)`,
                       borderRadius: 8,
                     }}
                   >
@@ -873,7 +890,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                         justifyContent: 'space-between',
                       }}
                     >
-                      <span style={{ fontWeight: 700, color: 'var(--accent)' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--accent-2)' }}>
                         Proposed update
                       </span>
                       <span>mode: {analyzePreview.mode}</span>
@@ -1154,11 +1171,19 @@ export function ScenePage(props: ScenePageProps = {}) {
                 opacity: generateScriptMutation.isPending ? 0.7 : 1,
               }}
             >
-              {generateScriptMutation.isPending
-                ? 'Generating…'
-                : !editingScript && !scriptState?.script && !narrationState?.monologueScript
-                  ? '✨ Generate script'
-                  : '🔄 Regenerate'}
+              {generateScriptMutation.isPending ? (
+                'Generating…'
+              ) : !editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Sparkles size={14} strokeWidth={1.8} aria-hidden />
+                  Generate script
+                </span>
+              ) : (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <RefreshCcw size={14} strokeWidth={1.8} aria-hidden />
+                  Regenerate
+                </span>
+              )}
             </button>
           </div>
 
@@ -2621,8 +2646,8 @@ function DiffRow({
           <div
             style={{
               padding: 8,
-              background: 'var(--accent-bg)',
-              border: '1px solid var(--accent)',
+              background: 'var(--accent-2-bg)',
+              border: '1px solid var(--accent-2)',
               borderRadius: 4,
               whiteSpace: multiline ? 'pre-wrap' : 'nowrap',
               overflow: multiline ? 'visible' : 'hidden',

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
+import { Lightbulb, Video } from 'lucide-react';
 import { ProjectList } from '../components/ProjectList.js';
 import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
@@ -79,7 +80,7 @@ export function Dashboard() {
           aria-label="Ideate a new demo"
           onClick={() => setModal('new-ideation')}
         >
-          <span className="hero-card__icon">💡</span>
+          <span className="hero-card__icon"><Lightbulb size={28} strokeWidth={1.5} /></span>
           <div className="hero-card__title">Ideate a new demo</div>
           <div className="hero-card__desc">
             Drop docs and describe what to demo. AI proposes a storyboard.
@@ -90,7 +91,7 @@ export function Dashboard() {
           aria-label="I have recordings"
           onClick={() => setModal('new')}
         >
-          <span className="hero-card__icon">📹</span>
+          <span className="hero-card__icon"><Video size={28} strokeWidth={1.5} /></span>
           <div className="hero-card__title">I have recordings</div>
           <div className="hero-card__desc">
             Upload mp4(s); we'll script and narrate.

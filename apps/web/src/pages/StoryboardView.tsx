@@ -19,7 +19,9 @@ import { storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
+import { Video, FileText, Volume2, Tag, Clapperboard } from 'lucide-react';
 import type { Scene, ProjectTrackerEntry } from '@vpa/shared';
+import type { LucideIcon } from 'lucide-react';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -368,16 +370,19 @@ function SceneRow({
         />
       </div>
 
-      {/* Status badges row */}
+      {/* Status badges row — Lucide icons + tiny labels render as a
+          uniform glyph row across operating systems (was emoji which
+          shifted in size + colour per platform). */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <Badge ok={hasRecording} label="📹 Rec" />
-        <Badge ok={hasScript} label="📝 Script" />
+        <Badge ok={hasRecording} icon={Video} label="Rec" />
+        <Badge ok={hasScript} icon={FileText} label="Script" />
         <Badge
           ok={totalChunks > 0 && narratedChunks === totalChunks}
           partial={narratedChunks > 0 && narratedChunks < totalChunks}
-          label={totalChunks > 0 ? `🔊 ${narratedChunks}/${totalChunks}` : '🔊'}
+          icon={Volume2}
+          label={totalChunks > 0 ? `${narratedChunks}/${totalChunks}` : ''}
         />
-        <Badge ok={hasLowerThirds} label="🏷️" />
+        <Badge ok={hasLowerThirds} icon={Tag} />
       </div>
     </button>
   );
@@ -443,23 +448,39 @@ function miniBtnStyle(disabled: boolean): React.CSSProperties {
   };
 }
 
-function Badge({ ok, partial, label }: { ok: boolean; partial?: boolean; label: string }) {
-  const tone =
-    ok ? { color: 'var(--success)', border: 'var(--success)', bg: 'rgba(94,138,58,0.15)' } :
-    partial ? { color: 'var(--warn)', border: 'var(--warn)', bg: 'rgba(244,168,58,0.12)' } :
-    { color: 'var(--fg-muted)', border: 'var(--border)', bg: 'transparent' };
+function Badge({
+  ok,
+  partial,
+  icon: Icon,
+  label,
+}: {
+  ok: boolean;
+  partial?: boolean;
+  icon: LucideIcon;
+  label?: string;
+}) {
+  const tone = ok
+    ? { color: 'var(--success)', border: 'var(--success)', bg: 'rgba(115,192,90,0.12)' }
+    : partial
+      ? { color: 'var(--warn)', border: 'var(--warn)', bg: 'rgba(244,168,58,0.12)' }
+      : { color: 'var(--fg-muted)', border: 'var(--border)', bg: 'transparent' };
   return (
     <span
       style={{
         fontSize: 10,
-        padding: '1px 6px',
+        padding: '2px 6px',
         borderRadius: 8,
         border: `1px solid ${tone.border}`,
         background: tone.bg,
         color: tone.color,
         whiteSpace: 'nowrap',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        lineHeight: 1.2,
       }}
     >
+      <Icon size={11} strokeWidth={1.8} aria-hidden />
       {label}
     </span>
   );
@@ -468,7 +489,13 @@ function Badge({ ok, partial, label }: { ok: boolean; partial?: boolean; label: 
 function EmptyStoryboard({ projectId }: { projectId: string }) {
   return (
     <div style={{ padding: '60px 48px', textAlign: 'center' }}>
-      <div style={{ fontSize: 40, marginBottom: 16 }}>📋</div>
+      <Clapperboard
+        size={44}
+        strokeWidth={1.2}
+        color="var(--fg-dim)"
+        style={{ marginBottom: 16 }}
+        aria-hidden
+      />
       <h2 style={{ margin: 0 }}>No storyboard yet</h2>
       <p style={{ color: 'var(--fg-muted)', marginTop: 8, maxWidth: 400, margin: '8px auto 0' }}>
         Start an ideation session to build your storyboard with AI assistance.
