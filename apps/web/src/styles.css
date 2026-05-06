@@ -920,18 +920,18 @@ pre code {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
   width: 100%;
-  min-height: 56px;
+  min-height: 70px;
 }
 
 .pipeline__node-num {
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: var(--fg-dim);
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -940,10 +940,10 @@ pre code {
   opacity: 0.45;
 }
 .pipeline__node-label {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--fg);
-  line-height: 1.25;
+  line-height: 1.3;
   /* Allow wrap to 2 lines so "Lower Thirds" / "Quality Review" don't
      spill past their column. The reserved meta min-height keeps the
      overall row balanced whether labels wrap or not. */
@@ -955,11 +955,11 @@ pre code {
   hyphens: auto;
 }
 .pipeline__node-detail {
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--fg-muted);
   letter-spacing: 0.1px;
-  line-height: 1.2;
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
