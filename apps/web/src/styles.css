@@ -1,18 +1,34 @@
 :root {
   color-scheme: dark;
-  --bg: #0a0a0c;
-  --bg-elev: #141418;
-  --bg-elev2: #1c1c22;
-  --surface: #18181e;
-  --border: #262630;
+  /* Surfaces — softened from `#0a0a0c` (harsh) to `#0e0e12`. The four-stop
+     elevation scale stays; everything else just lifts a hair, which makes
+     the UI feel less "terminal black" and more "ink". */
+  --bg: #0e0e12;
+  --bg-elev: #16161c;
+  --bg-elev2: #1e1e26;
+  --surface: #1a1a22;
+  --border: #2a2a34;
   --border-hover: #3a3a48;
-  --fg: #e4e4ec;
+  --fg: #e8e8f0;
   --fg-muted: #8888a0;
   --fg-dim: #55556a;
+
+  /* Primary accent — Tokyo-Night blue. Reserved for: human-driven primary
+     CTAs, active route, focused border, hyperlinks. */
   --accent: #7aa2f7;
   --accent-hover: #8db4ff;
   --accent-bg: #151a2e;
   --accent-bg-hover: #1a2040;
+
+  /* Secondary accent — quiet violet. Reserved for AI-generated content
+     and "Next step" callouts. The product's whole pitch is AI-generated
+     content; giving the model its own colour stops the primary blue from
+     having to mean five different things at once. */
+  --accent-2: #a78bfa;
+  --accent-2-hover: #b8a0ff;
+  --accent-2-bg: #1a1530;
+  --accent-2-bg-hover: #221a40;
+
   --success: #73c05a;
   --success-bg: #0e1a0b;
   --warn: #f4a83a;
@@ -22,8 +38,17 @@
   --radius-md: 10px;
   --radius-lg: 14px;
   --transition: 150ms ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', sans-serif;
+
+  /* Type system (Direction C): Inter for UI, Newsreader for editorial
+     headings, JetBrains Mono for code chips. Inter is the default; the
+     `.serif` class opts in to Newsreader for h1 / project names. */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --font-serif: 'Newsreader', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', monospace;
+
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -114,11 +139,33 @@ body {
 .navbar__link:hover { color: var(--fg); background: var(--bg-elev2); text-decoration: none; }
 .navbar__link--active { color: var(--accent); background: var(--accent-bg); }
 
-/* ── Typography ──────────────────────────────────────── */
-
-h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.3px; margin: 0 0 4px; }
-h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.2px; margin: 0 0 4px; }
-h3 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+/* ── Typography ────────────────────────────────────────
+   Tightened scale — four sizes do all the work, weight + colour carry
+   the rest. Was creeping into 10/11/12/13/14/15/16 territory; the new
+   scale is 11 (label) / 13 (body, default) / 16 (h3) / 24 (h1).
+   h1 + .display use the editorial serif (Newsreader); the rest stays
+   in the Inter sans for clarity. */
+h1, .display {
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.4px;
+  line-height: 1.15;
+  margin: 0 0 4px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0 0 4px;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  letter-spacing: -0.1px;
+}
+body { font-size: 13px; line-height: 1.5; }
 
 /* ── Buttons ─────────────────────────────────────────── */
 
@@ -709,4 +756,222 @@ pre code {
   .hero-grid { grid-template-columns: 1fr; }
   .brand-new__panes { grid-template-columns: 1fr; }
   .brand-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Pipeline (Direction B — pipeline as the brand) ────
+   The signature element of Project Overview. A horizontal stepper
+   that shows the project moving through stages as a single connected
+   visual. Numbered Lucide-glyph nodes sit on a filament that fills as
+   steps complete; the next-up node breathes in violet (--accent-2)
+   because it's the AI-driven moment. */
+
+.pipeline {
+  margin-top: 28px;
+  padding: 24px 28px 28px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-bg) 60%, var(--bg-elev)) 0%,
+    var(--bg-elev) 70%
+  );
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  position: relative;
+  overflow: hidden;
+}
+
+.pipeline__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+.pipeline__eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--fg-dim);
+}
+.pipeline__title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.3px;
+  margin: 4px 0 4px;
+  color: var(--fg);
+}
+.pipeline__sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+.pipeline__cta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pipeline__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+}
+.pipeline__complete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--success);
+}
+
+/* Step rail — flex row of nodes, with a horizontal filament behind
+   them tracking progress. The filament is one absolutely-positioned
+   element so it can animate width independently of layout. */
+.pipeline__rail {
+  list-style: none;
+  padding: 0 0 4px;
+  margin: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  position: relative;
+}
+.pipeline__rail::before {
+  /* Background track — sits behind the nodes. */
+  content: '';
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  top: 22px;
+  height: 2px;
+  background: var(--border);
+  border-radius: 2px;
+  z-index: 0;
+}
+.pipeline__filament {
+  position: absolute;
+  left: 22px;
+  top: 22px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--success) 0%, var(--accent-2) 100%);
+  border-radius: 2px;
+  z-index: 0;
+  transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pipeline__step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+}
+
+.pipeline__node {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  padding: 0 6px 8px;
+  text-decoration: none;
+  color: var(--fg);
+  position: relative;
+  z-index: 1;
+  transition: transform var(--transition);
+}
+.pipeline__node:hover { transform: translateY(-1px); }
+
+.pipeline__node-disc {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elev);
+  border: 2px solid var(--border);
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  transition: background var(--transition), border-color var(--transition), color var(--transition), transform var(--transition);
+}
+
+.pipeline__node-num {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--fg-dim);
+}
+.pipeline__node-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.pipeline__node-detail {
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Done — green disc with a check, full opacity. */
+.pipeline__step--done .pipeline__node-disc {
+  background: var(--success);
+  border-color: var(--success);
+  color: #0a0a0c;
+}
+.pipeline__step--done .pipeline__node-num { color: var(--success); }
+
+/* Next — violet ring + breathing glow. AI-led moments get the
+   --accent-2 violet so the user's eye learns "this is where the
+   product wants me to go next, AI is involved". */
+.pipeline__step--next .pipeline__node-disc {
+  background: var(--accent-2-bg);
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+  animation: pipelineNextBreathe 2.4s ease-in-out infinite;
+}
+.pipeline__step--next .pipeline__node-num { color: var(--accent-2); }
+.pipeline__step--next .pipeline__node-label { color: var(--fg); }
+
+@keyframes pipelineNextBreathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-2) 50%, transparent); }
+  50%     { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-2) 0%, transparent); }
+}
+
+/* Todo — muted, no fill. */
+.pipeline__step--todo .pipeline__node-disc { opacity: 0.6; }
+.pipeline__step--todo .pipeline__node-label,
+.pipeline__step--todo .pipeline__node-detail { opacity: 0.6; }
+
+@media (max-width: 720px) {
+  .pipeline { padding: 20px 16px 24px; }
+  .pipeline__rail { flex-direction: column; gap: 0; }
+  .pipeline__rail::before, .pipeline__filament {
+    /* Vertical filament on narrow screens so the nodes stack. */
+    left: 22px; top: 22px; bottom: 22px; right: auto;
+    width: 2px; height: auto;
+  }
+  .pipeline__filament { background: linear-gradient(180deg, var(--success) 0%, var(--accent-2) 100%); }
+  .pipeline__node {
+    flex-direction: row;
+    text-align: left;
+    gap: 12px;
+    padding: 8px 4px;
+  }
+  .pipeline__node-disc { margin-bottom: 0; }
 }

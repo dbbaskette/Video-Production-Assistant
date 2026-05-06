@@ -10,6 +10,11 @@ import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 // Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
 // the file's call sites reading the same as before.
 import { relativeTime as timeAgo } from '../lib/format.js';
+import {
+  Video, FileText, Volume2, Tag, Film, Check, ArrowRight, Layers,
+  CircleCheck, ListChecks,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
 interface WorkspaceContext {
@@ -74,13 +79,13 @@ export function ProjectOverview() {
         >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             {[
-              { icon: '📹', title: 'Recording', desc: 'Upload screen recording' },
-              { icon: '📝', title: 'Script', desc: 'Write or AI-generate narration script' },
-              { icon: '🔊', title: 'Narration', desc: 'Select TTS engine, voice & speed' },
-              { icon: '🏷️', title: 'Lower Thirds', desc: 'Add title/subtitle overlays' },
-            ].map((step) => (
+              { Icon: Video, title: 'Recording', desc: 'Upload screen recording' },
+              { Icon: FileText, title: 'Script', desc: 'Write or AI-generate narration script' },
+              { Icon: Volume2, title: 'Narration', desc: 'Select TTS engine, voice & speed' },
+              { Icon: Tag, title: 'Lower Thirds', desc: 'Add title/subtitle overlays' },
+            ].map(({ Icon, title, desc }) => (
               <div
-                key={step.title}
+                key={title}
                 style={{
                   background: 'var(--bg-elev)',
                   border: '1px solid var(--border)',
@@ -89,9 +94,15 @@ export function ProjectOverview() {
                   textAlign: 'center',
                 }}
               >
-                <div style={{ fontSize: 22, marginBottom: 6 }}>{step.icon}</div>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{step.title}</div>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>{step.desc}</div>
+                <Icon
+                  size={22}
+                  strokeWidth={1.5}
+                  color="var(--fg-muted)"
+                  style={{ marginBottom: 8 }}
+                  aria-hidden
+                />
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{title}</div>
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>{desc}</div>
               </div>
             ))}
           </div>
@@ -109,8 +120,23 @@ export function ProjectOverview() {
  */
 // ── Pipeline ──────────────────────────────────────────────────────
 //
-// Horizontal step lane. Step computation lives in lib/pipeline so the
-// sidebar can render a compact version against the same source of truth.
+// The signature element of the product. A horizontal stepper that
+// shows the workflow as a connected sequence: numbered nodes with
+// Lucide glyphs, a filament behind them that fills as steps complete,
+// per-step labels + counts, and the next-up step pulsing in violet to
+// declare itself as the call to action.
+//
+// Step computation lives in lib/pipeline so the sidebar renders a
+// compact version against the same source of truth.
+
+const STEP_ICONS: Record<string, LucideIcon> = {
+  storyboard: ListChecks,
+  recordings: Video,
+  narration: Volume2,
+  'lower-thirds': Tag,
+  render: Film,
+  review: CircleCheck,
+};
 
 function Pipeline({
   steps,
@@ -123,134 +149,83 @@ function Pipeline({
   projectId: string;
   hasStoryboard: boolean;
 }) {
-  return (
-    <section
-      style={{
-        marginTop: 32,
-        padding: 20,
-        background: 'var(--bg-elev)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-      }}
-      aria-label="Project pipeline"
-    >
-      {/* Step row */}
-      <ol
-        style={{
-          listStyle: 'none',
-          padding: 0,
-          margin: 0,
-          display: 'flex',
-          gap: 4,
-          alignItems: 'stretch',
-          flexWrap: 'wrap',
-        }}
-      >
-        {steps.map((step, i) => (
-          <li key={step.key} style={{ flex: '1 1 0', minWidth: 0, display: 'flex' }}>
-            <Link
-              to={step.to}
-              style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                padding: '12px 14px',
-                textDecoration: 'none',
-                borderRadius: 8,
-                border:
-                  step.status === 'next'
-                    ? `2px solid var(--accent)`
-                    : `1px solid var(--border)`,
-                background:
-                  step.status === 'next'
-                    ? 'var(--accent-bg)'
-                    : step.status === 'done'
-                      ? 'var(--surface)'
-                      : 'transparent',
-                opacity: step.status === 'todo' ? 0.55 : 1,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 11,
-                  color:
-                    step.status === 'done'
-                      ? STATUS_COLOR.success
-                      : step.status === 'next'
-                        ? 'var(--accent)'
-                        : 'var(--fg-muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: 1,
-                  fontWeight: 700,
-                }}
-              >
-                {step.status === 'done'
-                  ? '✓ Done'
-                  : step.status === 'next'
-                    ? `Step ${i + 1} · Next`
-                    : `Step ${i + 1}`}
-              </span>
-              <span
-                style={{
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: 'var(--fg)',
-                }}
-              >
-                {step.label}
-              </span>
-              {step.detail && (
-                <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{step.detail}</span>
-              )}
-            </Link>
-          </li>
-        ))}
-      </ol>
+  // The filament behind the row needs to know how far to fill. We
+  // count completed steps + half-credit for the "next" step so the
+  // user feels progress as soon as they engage with each step.
+  const doneIndex = steps.findIndex((s) => s.status !== 'done');
+  // doneIndex === -1 means everything's done.
+  const completedCount = doneIndex === -1 ? steps.length : doneIndex;
+  const total = steps.length;
+  const fillRatio =
+    total <= 1 ? 1 : Math.min(1, (completedCount + (nextStep ? 0.5 : 0)) / (total - 1));
 
-      {/* Primary CTA — points to the same destination as the highlighted
-          step, surfaced as a real button so it reads as a call to action
-          rather than just a card link. Plus the export button alongside
-          when there's something to export. */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 12,
-          marginTop: 16,
-          flexWrap: 'wrap',
-        }}
-      >
-        {nextStep ? (
-          <Link
-            to={nextStep.to}
-            className="primary"
-            style={{
-              display: 'inline-block',
-              padding: '10px 20px',
-              borderRadius: 8,
-              textDecoration: 'none',
-              fontSize: 14,
-              fontWeight: 600,
-            }}
-          >
-            → {nextStep.label}
-            {nextStep.detail ? ` (${nextStep.detail})` : ''}
-          </Link>
-        ) : (
-          <span
-            style={{
-              fontSize: 13,
-              color: STATUS_COLOR.success,
-              fontWeight: 600,
-            }}
-          >
-            ✓ All steps complete
-          </span>
-        )}
-        {hasStoryboard && <ExportButton projectId={projectId} />}
+  return (
+    <section className="pipeline" aria-label="Project pipeline">
+      {/* Header — section label + next-up CTA. Pulled into the same
+          line so the user's eye lands on "where am I → what's next"
+          without scrolling between two visual hits. */}
+      <div className="pipeline__header">
+        <div>
+          <span className="pipeline__eyebrow">Workflow</span>
+          <h3 className="pipeline__title">{nextStep ? nextStep.label : 'All steps complete'}</h3>
+          <p className="pipeline__sub">
+            {nextStep
+              ? nextStep.detail
+                ? `${completedCount} of ${total} done · ${nextStep.detail} remaining`
+                : `${completedCount} of ${total} done`
+              : 'Ready to ship.'}
+          </p>
+        </div>
+        <div className="pipeline__cta-row">
+          {nextStep ? (
+            <Link
+              to={nextStep.to}
+              className="primary pipeline__cta"
+              aria-label={`Go to ${nextStep.label}`}
+            >
+              <span>Continue</span>
+              <ArrowRight size={16} strokeWidth={2} aria-hidden />
+            </Link>
+          ) : (
+            <span className="pipeline__complete">
+              <Check size={14} strokeWidth={2.5} aria-hidden />
+              All steps complete
+            </span>
+          )}
+          {hasStoryboard && <ExportButton projectId={projectId} />}
+        </div>
       </div>
+
+      {/* Stepper rail — the filament is a static border that becomes a
+          progress fill via the inline width. Steps sit on top of it. */}
+      <ol className="pipeline__rail" role="list">
+        <div
+          aria-hidden
+          className="pipeline__filament"
+          style={{ width: `calc(${fillRatio * 100}% )` }}
+        />
+        {steps.map((step, i) => {
+          const Icon = STEP_ICONS[step.key] ?? Layers;
+          return (
+            <li key={step.key} className={`pipeline__step pipeline__step--${step.status}`}>
+              <Link to={step.to} className="pipeline__node" title={step.detail ?? step.label}>
+                <span className="pipeline__node-disc">
+                  {step.status === 'done' ? (
+                    <Check size={16} strokeWidth={2.5} aria-hidden />
+                  ) : (
+                    <Icon size={16} strokeWidth={1.8} aria-hidden />
+                  )}
+                </span>
+                <span className="pipeline__node-num">{`Step ${i + 1}`}</span>
+                <span className="pipeline__node-label">{step.label}</span>
+                {step.detail && (
+                  <span className="pipeline__node-detail">{step.detail}</span>
+                )}
+              </Link>
+            </li>
+          );
+        })}
+      </ol>
     </section>
   );
 }
@@ -399,7 +374,13 @@ function RenderSection({
           className="btn--accent"
           style={{ padding: '10px 20px', fontSize: 14 }}
         >
-          {isRunning ? 'Rendering full project…' : exists ? '🎞️ Re-render full project' : '🎞️ Render full project'}
+          <Film
+            size={16}
+            strokeWidth={1.6}
+            style={{ marginRight: 8, marginBottom: -3, marginTop: -2 }}
+            aria-hidden
+          />
+          {isRunning ? 'Rendering full project…' : exists ? 'Re-render full project' : 'Render full project'}
         </button>
         {exists && (
           <>

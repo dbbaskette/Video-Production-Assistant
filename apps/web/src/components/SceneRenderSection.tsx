@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { sceneRenderApi, type SceneRenderKind } from '../lib/api.js';
 import { GenerationModal } from './ui/GenerationModal.js';
 import { STATUS_COLOR } from '../lib/palette.js';
+import { Clapperboard } from 'lucide-react';
 
 interface Props {
   projectId: string;
@@ -113,11 +114,14 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
           cursor: renderMutation.isPending ? 'wait' : 'pointer',
         }}
       >
-        {renderMutation.isPending
-          ? 'Rendering this scene…'
-          : anyExists
-            ? '🎬 Re-render this scene'
-            : '🎬 Render this scene'}
+        {renderMutation.isPending ? (
+          'Rendering this scene…'
+        ) : (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Clapperboard size={14} strokeWidth={1.8} aria-hidden />
+            {anyExists ? 'Re-render this scene' : 'Render this scene'}
+          </span>
+        )}
       </button>
 
       {renderMutation.isError && (

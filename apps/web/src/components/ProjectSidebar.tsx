@@ -200,7 +200,9 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
           aria-label="next step"
           style={{
             fontSize: 9,
-            color: 'var(--accent)',
+            // Violet to match the main Pipeline — "next" is an
+            // AI-driven moment, distinct from human-driven actions.
+            color: 'var(--accent-2)',
             textTransform: 'uppercase',
             letterSpacing: 1,
             fontWeight: 700,
@@ -215,7 +217,7 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
 
 function stepBadgeBg(status: PipelineStepStatus): string {
   if (status === 'done') return STATUS_COLOR.success;
-  if (status === 'next') return 'var(--accent)';
+  if (status === 'next') return 'var(--accent-2)';
   return 'transparent';
 }
 function stepBadgeFg(status: PipelineStepStatus): string {

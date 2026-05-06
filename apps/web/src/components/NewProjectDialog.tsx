@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
+import { Lightbulb, Video } from 'lucide-react';
 import { api, ApiError, brandsApi, sourceDocsApi } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
@@ -28,12 +29,12 @@ const COPY_BY_MODE: Record<
   { heading: string; lead: string; createLabel: string }
 > = {
   ideate: {
-    heading: '💡 Ideate a new demo',
+    heading: 'Ideate a new demo',
     lead: 'Describe what you want to demo and (optionally) drop reference docs. After you create the project, the AI will propose a storyboard you can refine.',
     createLabel: 'Create & start ideating',
   },
   recordings: {
-    heading: '📹 New project from recordings',
+    heading: 'New project from recordings',
     lead: 'Create the project shell first; you\'ll upload your existing MP4s on the next screen and we\'ll auto-build a storyboard with one scene per file.',
     createLabel: 'Create & upload recordings',
   },
@@ -143,7 +144,17 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       onClick={guardedClose}
     >
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h2 style={{ marginBottom: 6 }}>{copy.heading}</h2>
+        {/* Heading row — Lucide icon + serif h2 reads as editorial without
+            leaning on emoji. Mode-coloured (accent for ideate / fg-muted
+            for recordings) so the user can tell visually which path. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          {mode === 'ideate' ? (
+            <Lightbulb size={20} strokeWidth={1.6} color="var(--accent)" aria-hidden />
+          ) : (
+            <Video size={20} strokeWidth={1.6} color="var(--accent)" aria-hidden />
+          )}
+          <h2 style={{ margin: 0 }}>{copy.heading}</h2>
+        </div>
         <p style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
           {copy.lead}
         </p>

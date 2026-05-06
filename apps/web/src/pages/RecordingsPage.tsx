@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { CheckCircle2, Circle, ChevronDown, ChevronRight } from 'lucide-react';
 import { storyboardApi, recordingsApi } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { STATUS_COLOR } from '../lib/palette.js';
@@ -213,10 +214,12 @@ export function RecordingsPage() {
               }}
               aria-expanded={bulkExpanded}
             >
-              <span>
-                <span style={{ color: 'var(--fg-muted)' }}>
-                  {bulkExpanded ? '▾' : '▸'}{' '}
-                </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {bulkExpanded ? (
+                  <ChevronDown size={14} strokeWidth={2} color="var(--fg-muted)" aria-hidden />
+                ) : (
+                  <ChevronRight size={14} strokeWidth={2} color="var(--fg-muted)" aria-hidden />
+                )}
                 Upload many at once (assigns to scenes by file order)
               </span>
               <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>secondary</span>
@@ -500,8 +503,20 @@ function SceneList({ scenes, projectId }: { scenes: Scene[]; projectId: string }
               border: '1px solid var(--border)',
             }}
           >
-            <span style={{ fontSize: 16, width: 24, textAlign: 'center' }}>
-              {scene.recording ? '✅' : '⬜'}
+            <span
+              style={{
+                width: 24,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: scene.recording ? STATUS_COLOR.success : 'var(--fg-dim)',
+              }}
+            >
+              {scene.recording ? (
+                <CheckCircle2 size={18} strokeWidth={1.8} aria-hidden />
+              ) : (
+                <Circle size={18} strokeWidth={1.5} aria-hidden />
+              )}
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div
