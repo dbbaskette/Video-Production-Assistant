@@ -5,7 +5,6 @@ import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi } from '.
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
-import { STATUS_COLOR } from '../lib/palette.js';
 import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 // Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
 // the file's call sites reading the same as before.
@@ -206,9 +205,15 @@ function Pipeline({
         />
         {steps.map((step, i) => {
           const Icon = STEP_ICONS[step.key] ?? Layers;
+          const index = String(i + 1).padStart(2, '0');
+          const total = String(steps.length).padStart(2, '0');
           return (
             <li key={step.key} className={`pipeline__step pipeline__step--${step.status}`}>
-              <Link to={step.to} className="pipeline__node" title={step.detail ?? step.label}>
+              <Link
+                to={step.to}
+                className="pipeline__node"
+                aria-label={`Step ${i + 1} of ${steps.length}: ${step.label}${step.detail ? ` — ${step.detail}` : ''}`}
+              >
                 <span className="pipeline__node-disc">
                   {step.status === 'done' ? (
                     <Check size={16} strokeWidth={2.5} aria-hidden />
@@ -216,11 +221,17 @@ function Pipeline({
                     <Icon size={16} strokeWidth={1.8} aria-hidden />
                   )}
                 </span>
-                <span className="pipeline__node-num">{`Step ${i + 1}`}</span>
-                <span className="pipeline__node-label">{step.label}</span>
-                {step.detail && (
-                  <span className="pipeline__node-detail">{step.detail}</span>
-                )}
+                <span className="pipeline__node-meta">
+                  <span className="pipeline__node-num" aria-hidden>
+                    {index}
+                    <span className="pipeline__node-num-sep">/</span>
+                    {total}
+                  </span>
+                  <span className="pipeline__node-label">{step.label}</span>
+                  {step.detail && (
+                    <span className="pipeline__node-detail">{step.detail}</span>
+                  )}
+                </span>
               </Link>
             </li>
           );

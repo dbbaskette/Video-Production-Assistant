@@ -777,6 +777,11 @@ pre code {
   border-radius: var(--radius-lg);
   position: relative;
   overflow: hidden;
+  /* Container queries — the rail responds to its own width, not the
+     viewport. Means the workspace sidebar can compress this column
+     without breaking the horizontal layout. */
+  container-type: inline-size;
+  container-name: pipeline;
 }
 
 .pipeline__header {
@@ -834,23 +839,27 @@ pre code {
 
 /* Step rail — flex row of nodes, with a horizontal filament behind
    them tracking progress. The filament is one absolutely-positioned
-   element so it can animate width independently of layout. */
+   element so it can animate width independently of layout. Disc geometry
+   (--disc-size, --disc-axis) is centralized as custom properties so the
+   filament's offsets stay in sync if the disc resizes. */
 .pipeline__rail {
+  --disc-size: 40px;
+  --disc-axis: calc(var(--disc-size) / 2);
   list-style: none;
   padding: 0 0 4px;
   margin: 0;
   display: flex;
   align-items: stretch;
-  gap: 4px;
+  gap: 12px;
   position: relative;
 }
 .pipeline__rail::before {
   /* Background track — sits behind the nodes. */
   content: '';
   position: absolute;
-  left: 22px;
-  right: 22px;
-  top: 22px;
+  left: var(--disc-axis);
+  right: var(--disc-axis);
+  top: var(--disc-axis);
   height: 2px;
   background: var(--border);
   border-radius: 2px;
@@ -858,8 +867,8 @@ pre code {
 }
 .pipeline__filament {
   position: absolute;
-  left: 22px;
-  top: 22px;
+  left: var(--disc-axis);
+  top: var(--disc-axis);
   height: 2px;
   background: linear-gradient(90deg, var(--success) 0%, var(--accent-2) 100%);
   border-radius: 2px;
@@ -879,8 +888,8 @@ pre code {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 4px;
-  padding: 0 6px 8px;
+  gap: 8px;
+  padding: 0 4px 8px;
   text-decoration: none;
   color: var(--fg);
   position: relative;
@@ -890,8 +899,8 @@ pre code {
 .pipeline__node:hover { transform: translateY(-1px); }
 
 .pipeline__node-disc {
-  width: 44px;
-  height: 44px;
+  width: var(--disc-size);
+  height: var(--disc-size);
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -899,33 +908,63 @@ pre code {
   background: var(--bg-elev);
   border: 2px solid var(--border);
   color: var(--fg-muted);
-  margin-bottom: 6px;
+  flex-shrink: 0;
   transition: background var(--transition), border-color var(--transition), color var(--transition), transform var(--transition);
 }
 
+/* Meta column — index, label, detail. Reserved minimum height keeps
+   baselines aligned across nodes even when one label wraps to two
+   lines and another doesn't. */
+.pipeline__node-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
+  min-height: 56px;
+}
+
 .pipeline__node-num {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
   color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.pipeline__node-num-sep {
+  margin: 0 2px;
+  opacity: 0.45;
 }
 .pipeline__node-label {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--fg);
-  white-space: nowrap;
+  line-height: 1.25;
+  /* Allow wrap to 2 lines so "Lower Thirds" / "Quality Review" don't
+     spill past their column. The reserved meta min-height keeps the
+     overall row balanced whether labels wrap or not. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
+  word-break: break-word;
+  hyphens: auto;
 }
 .pipeline__node-detail {
-  font-size: 11px;
+  font-size: 10.5px;
+  font-weight: 500;
   color: var(--fg-muted);
+  letter-spacing: 0.1px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+  margin-top: 2px;
 }
 
 /* Done — green disc with a check, full opacity. */
@@ -954,24 +993,73 @@ pre code {
 }
 
 /* Todo — muted, no fill. */
-.pipeline__step--todo .pipeline__node-disc { opacity: 0.6; }
+.pipeline__step--todo .pipeline__node-disc { opacity: 0.55; }
 .pipeline__step--todo .pipeline__node-label,
-.pipeline__step--todo .pipeline__node-detail { opacity: 0.6; }
+.pipeline__step--todo .pipeline__node-detail { opacity: 0.55; }
 
-@media (max-width: 720px) {
-  .pipeline { padding: 20px 16px 24px; }
-  .pipeline__rail { flex-direction: column; gap: 0; }
-  .pipeline__rail::before, .pipeline__filament {
-    /* Vertical filament on narrow screens so the nodes stack. */
-    left: 22px; top: 22px; bottom: 22px; right: auto;
-    width: 2px; height: auto;
+/* Compact / vertical mode — triggered by container width so the rail
+   responds to its own column even when the viewport is wide. The
+   workspace sidebar can compress the main column below the threshold
+   that 6 horizontal labels can comfortably fit, and we flip to a
+   stacked rail with a vertical filament. */
+@container pipeline (max-width: 720px) {
+  .pipeline__rail {
+    flex-direction: column;
+    gap: 0;
   }
-  .pipeline__filament { background: linear-gradient(180deg, var(--success) 0%, var(--accent-2) 100%); }
+  .pipeline__rail::before,
+  .pipeline__filament {
+    left: var(--disc-axis);
+    top: var(--disc-axis);
+    bottom: var(--disc-axis);
+    right: auto;
+    width: 2px;
+    height: auto;
+  }
+  .pipeline__filament {
+    background: linear-gradient(180deg, var(--success) 0%, var(--accent-2) 100%);
+  }
+  .pipeline__step + .pipeline__step .pipeline__node {
+    border-top: 1px solid var(--border);
+  }
   .pipeline__node {
     flex-direction: row;
+    align-items: center;
     text-align: left;
-    gap: 12px;
-    padding: 8px 4px;
+    gap: 14px;
+    padding: 12px 6px 12px 4px;
+    border-radius: 6px;
   }
-  .pipeline__node-disc { margin-bottom: 0; }
+  .pipeline__node-meta {
+    flex-direction: row;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    min-height: 0;
+    width: auto;
+    flex: 1;
+  }
+  .pipeline__node-num { order: 0; }
+  .pipeline__node-label { order: 1; -webkit-line-clamp: unset; }
+  .pipeline__node-detail {
+    order: 2;
+    margin-top: 0;
+    margin-left: auto;
+  }
+  /* Soft accent wash on the next-up row so it reads as "this is where
+     the work is right now" without the disc-only emphasis. */
+  .pipeline__step--next .pipeline__node {
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent-2-bg) 60%, transparent) 0%,
+      transparent 80%
+    );
+  }
+}
+
+/* Fallback for browsers without container query support — viewport
+   media query mirrors the @container rule. Modern browsers honor the
+   @container rule and ignore this. */
+@media (max-width: 720px) {
+  .pipeline { padding: 20px 16px 24px; }
 }
