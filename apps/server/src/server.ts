@@ -166,7 +166,7 @@ export async function buildServer() {
     registerSourceDocsRoutes(instance, { store }),
   );
   await app.register(async (instance) =>
-    registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
+    registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
   );
   await app.register(async (instance) =>
     registerQualityReviewRoutes(instance, { store, llm, workspaceRoot: wsRoot }),

@@ -7,7 +7,15 @@ export interface LowerThirdInput {
   sceneName: string;
   sceneDescription: string;
   sceneType: string;
+  /**
+   * User-authored "what is this scene demonstrating?" — the north star.
+   * When provided, the prompt leads with this so LT titles reinforce
+   * the intent rather than the auto-generated description.
+   */
+  sceneIntent?: string;
   durationSec?: number;
+  projectObjective?: string;
+  projectAudience?: string;
   /** When provided, the project's source-docs are prepended to the prompt. */
   projectPath?: string;
 }
@@ -19,11 +27,16 @@ export async function recommendLowerThirds(
 ): Promise<LowerThird[]> {
   const systemPrompt = await loadPrompt(workspaceRoot, 'lower-third-recommender');
 
-  const parts = [
-    `Scene: ${input.sceneName}`,
-    `Description: ${input.sceneDescription}`,
-    `Type: ${input.sceneType}`,
-  ];
+  // Same order-of-authority as the video-grounded variant.
+  const parts: string[] = [];
+  if (input.sceneIntent) {
+    parts.push(`What this scene is demonstrating (north star): ${input.sceneIntent}`);
+  }
+  if (input.projectObjective) parts.push(`Project objective: ${input.projectObjective}`);
+  if (input.projectAudience) parts.push(`Target audience: ${input.projectAudience}`);
+  parts.push(`Scene name: ${input.sceneName}`);
+  parts.push(`Auto-generated description (supporting context): ${input.sceneDescription}`);
+  parts.push(`Type: ${input.sceneType}`);
   if (input.durationSec !== undefined) {
     parts.push(`Recording duration: ${input.durationSec}s`);
   }

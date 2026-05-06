@@ -390,8 +390,23 @@ export const lowerThirdsApi = {
   async get(projectId: string, sceneId: string): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
     return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`);
   },
-  async recommend(projectId: string, sceneId: string): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
-    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds/recommend`);
+  /**
+   * AI-recommend lower-thirds for a scene. Pass `groundInVideo: true` to
+   * upload the recording to Gemini's Files API and have the model anchor
+   * each LT to a real on-screen moment (Gemini-only; falls back to
+   * text-only when the active provider isn't Gemini, the scene has no
+   * recording, or the flag is false).
+   */
+  async recommend(
+    projectId: string,
+    sceneId: string,
+    opts: { groundInVideo?: boolean } = {},
+  ): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[]; mode: 'text' | 'video' }> {
+    return request(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds/recommend`,
+      opts,
+    );
   },
   async save(projectId: string, sceneId: string, lowerThirds: LowerThirdItem[]): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[] }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`, { lowerThirds });
