@@ -1,18 +1,8 @@
 import { Link, NavLink, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, brandsApi } from '../lib/api.js';
-
-const linkStyle = (isActive: boolean): React.CSSProperties => ({
-  display: 'block',
-  padding: '8px 16px',
-  borderRadius: 6,
-  color: isActive ? 'var(--accent)' : 'var(--fg)',
-  background: isActive ? 'var(--accent-bg)' : 'transparent',
-  textDecoration: 'none',
-  fontSize: 14,
-  fontWeight: isActive ? 600 : 400,
-  marginBottom: 2,
-});
+import { usePipelineSteps, type PipelineStep, type PipelineStepStatus } from '../lib/pipeline.js';
+import { STATUS_COLOR } from '../lib/palette.js';
 
 const sectionLabel: React.CSSProperties = {
   fontSize: 11,
@@ -40,6 +30,13 @@ export function ProjectSidebar({ projectName }: Props) {
     queryKey: ['brands'],
     queryFn: () => brandsApi.list(),
   });
+
+  // Pipeline steps from the same source as the Project Overview's Pipeline
+  // — the sidebar renders a compact version (number + status dot + label)
+  // so the user can see workflow ordering and progress regardless of
+  // which page they're on. Replaces the previous flat link list which
+  // gave no hint about which step was next or which were done.
+  const { steps } = usePipelineSteps(projectId);
 
   const appliedBrandId = project?.brand?.id ?? null;
   const appliedBrand = brandRegistry?.brands.find((b) => b.id === appliedBrandId) ?? null;
@@ -97,30 +94,25 @@ export function ProjectSidebar({ projectName }: Props) {
 
       {/* Main nav */}
       <div style={{ flex: 1, overflow: 'auto', paddingTop: 8 }}>
-        <NavLink to={`/project/${projectId}`} end style={({ isActive }) => linkStyle(isActive)}>
+        {/* Overview lives outside the pipeline (it's the meta-view) */}
+        <NavLink
+          to={`/project/${projectId}`}
+          end
+          style={({ isActive }) => flatLinkStyle(isActive)}
+        >
           Overview
         </NavLink>
-        <NavLink to={`/project/${projectId}/ideation`} style={({ isActive }) => linkStyle(isActive)}>
-          Ideation
-        </NavLink>
-        <NavLink to={`/project/${projectId}/storyboard`} style={({ isActive }) => linkStyle(isActive)}>
-          Storyboard
-        </NavLink>
-        <NavLink to={`/project/${projectId}/recordings`} style={({ isActive }) => linkStyle(isActive)}>
-          Recordings
-        </NavLink>
-        <NavLink to={`/project/${projectId}/review`} style={({ isActive }) => linkStyle(isActive)}>
-          Quality Review
-        </NavLink>
 
-        {/* Scene list moved into the Storyboard page (master-detail layout).
-            Scenes are clickable rows there with status badges and inline
-            editing — see pages/StoryboardView.tsx. */}
+        {/* Pipeline: numbered workflow steps with status dots */}
+        <p style={sectionLabel}>Workflow</p>
+        {steps.map((step, i) => (
+          <SidebarStep key={step.key} step={step} number={i + 1} />
+        ))}
 
         {/* Library section */}
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}>
           <p style={sectionLabel}>Library</p>
-          <NavLink to="/brands" style={({ isActive }) => linkStyle(isActive)}>
+          <NavLink to="/brands" style={({ isActive }) => flatLinkStyle(isActive)}>
             Brands
           </NavLink>
         </div>
@@ -143,4 +135,108 @@ export function ProjectSidebar({ projectName }: Props) {
       </div>
     </nav>
   );
+}
+
+// ── Sidebar step row ─────────────────────────────────────────────────
+//
+// Compact: number-or-check badge + label + optional "NEXT" pill.
+// Active route highlights via the same accent treatment NavLink uses
+// elsewhere; the status badge reflects pipeline progress regardless of
+// which route is active.
+
+function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
+  return (
+    <NavLink
+      to={step.to}
+      end={step.key === 'review'}
+      style={({ isActive }) => ({
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 16px',
+        borderRadius: 6,
+        textDecoration: 'none',
+        color: isActive ? 'var(--accent)' : 'var(--fg)',
+        background: isActive ? 'var(--accent-bg)' : 'transparent',
+        fontSize: 13,
+        fontWeight: isActive ? 600 : 400,
+        marginBottom: 2,
+      })}
+      title={step.detail}
+    >
+      <span
+        aria-hidden
+        style={{
+          flexShrink: 0,
+          width: 18,
+          height: 18,
+          borderRadius: '50%',
+          fontSize: 10,
+          fontWeight: 700,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: stepBadgeBg(step.status),
+          color: stepBadgeFg(step.status),
+          border: stepBadgeBorder(step.status),
+        }}
+      >
+        {step.status === 'done' ? '✓' : number}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          opacity: step.status === 'todo' ? 0.55 : 1,
+        }}
+      >
+        {step.label}
+      </span>
+      {step.status === 'next' && (
+        <span
+          aria-label="next step"
+          style={{
+            fontSize: 9,
+            color: 'var(--accent)',
+            textTransform: 'uppercase',
+            letterSpacing: 1,
+            fontWeight: 700,
+          }}
+        >
+          Next
+        </span>
+      )}
+    </NavLink>
+  );
+}
+
+function stepBadgeBg(status: PipelineStepStatus): string {
+  if (status === 'done') return STATUS_COLOR.success;
+  if (status === 'next') return 'var(--accent)';
+  return 'transparent';
+}
+function stepBadgeFg(status: PipelineStepStatus): string {
+  if (status === 'done' || status === 'next') return '#fff';
+  return 'var(--fg-muted)';
+}
+function stepBadgeBorder(status: PipelineStepStatus): string {
+  if (status === 'todo') return '1px solid var(--border)';
+  return 'none';
+}
+
+function flatLinkStyle(isActive: boolean): React.CSSProperties {
+  return {
+    display: 'block',
+    padding: '8px 16px',
+    borderRadius: 6,
+    color: isActive ? 'var(--accent)' : 'var(--fg)',
+    background: isActive ? 'var(--accent-bg)' : 'transparent',
+    textDecoration: 'none',
+    fontSize: 14,
+    fontWeight: isActive ? 600 : 400,
+    marginBottom: 2,
+  };
 }

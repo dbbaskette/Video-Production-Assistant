@@ -403,7 +403,12 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/scenes/:sceneId/analyze — re-run scene analysis
   // for an already-ingested recording. Lets the user refresh the scene's
   // name/description/type after adding source-docs or after an objective
-  // change. Body: { groundInVideo?: boolean }.
+  // change. Body: { groundInVideo?: boolean, dryRun?: boolean }.
+  //
+  // dryRun=true returns the proposed values without saving — used by the
+  // UI to show a before/after diff and require explicit Apply before
+  // overwriting whatever the user might have manually edited. Default
+  // false preserves the prior behaviour.
   //
   // Video-grounded mode (Gemini-only) uploads the recording to the Files
   // API so the model describes what's actually on screen. Falls back to
@@ -411,7 +416,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // unavailable, or the flag is false.
   app.post('/api/projects/:id/scenes/:sceneId/analyze', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean };
+    const body = (req.body ?? {}) as { groundInVideo?: boolean; dryRun?: boolean };
 
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -497,6 +502,26 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
+    // dryRun: return proposed values + a snapshot of the current scene's
+    // values so the UI can show a diff and require explicit Apply.
+    if (body.dryRun) {
+      return {
+        sceneId,
+        dryRun: true,
+        proposed: {
+          name: analysis.name,
+          description: analysis.description,
+          type: analysis.type,
+        },
+        current: {
+          name: scene.name,
+          description: scene.description,
+          type: scene.type,
+        },
+        mode,
+      };
+    }
+
     // Persist the new name/description/type. Don't touch other scene
     // fields (recording, narration, lower_thirds, overlay_render, etc.).
     const updated = updateScene(sb, sceneId, {
@@ -512,6 +537,51 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       description: analysis.description,
       type: analysis.type,
       mode,
+    };
+  });
+
+  // PUT /api/projects/:id/scenes/:sceneId/metadata — apply a proposed
+  // {name, description, type} to a scene. Used by the Re-analyze diff
+  // UI to commit the LLM's suggestion only after the user has reviewed
+  // it. Independent of the analyze route so the user can also use this
+  // to manually edit the scene's metadata in the future.
+  app.put('/api/projects/:id/scenes/:sceneId/metadata', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as {
+      name?: string;
+      description?: string;
+      type?: 'desktop' | 'terminal' | 'browser' | 'slide';
+    };
+    const entry = await resolveProjectEntry(store, id);
+    const sb = await loadStoryboard(entry.path);
+    if (!sb) {
+      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    }
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) {
+      return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    }
+
+    // Only update fields actually provided. Empty strings are honoured
+    // for description (user might want to clear it); name has a min(1)
+    // validation in SceneSchema so reject empty.
+    const patch: Partial<typeof scene> = {};
+    if (typeof body.name === 'string') {
+      if (body.name.trim().length === 0) {
+        return reply.status(400).send({ error: 'name cannot be empty', code: 'invalid_request' });
+      }
+      patch.name = body.name.trim();
+    }
+    if (typeof body.description === 'string') patch.description = body.description;
+    if (body.type) patch.type = body.type;
+
+    const updated = updateScene(sb, sceneId, patch);
+    await saveStoryboard(entry.path, updated);
+    return {
+      sceneId,
+      name: updated.scenes.find((s) => s.id === sceneId)?.name,
+      description: updated.scenes.find((s) => s.id === sceneId)?.description,
+      type: updated.scenes.find((s) => s.id === sceneId)?.type,
     };
   });
 }

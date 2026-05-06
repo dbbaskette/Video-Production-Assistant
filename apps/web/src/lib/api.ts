@@ -233,19 +233,45 @@ export const recordingsApi = {
    * editing the project objective. Pass `groundInVideo: true` to upload
    * the recording to Gemini's Files API for a video-aware description
    * (Gemini-only; falls back to text-only otherwise).
+   *
+   * `dryRun: true` returns the proposed values + a snapshot of what's
+   * currently saved so the UI can show a diff and require explicit
+   * Apply before overwriting any user edits.
    */
   async reanalyze(
     projectId: string,
     sceneId: string,
-    opts: { groundInVideo?: boolean } = {},
-  ): Promise<{
-    sceneId: string;
-    name: string;
-    description: string;
-    type: string;
-    mode: 'text' | 'video';
-  }> {
+    opts: { groundInVideo?: boolean; dryRun?: boolean } = {},
+  ): Promise<
+    | {
+        sceneId: string;
+        name: string;
+        description: string;
+        type: string;
+        mode: 'text' | 'video';
+        dryRun?: false;
+      }
+    | {
+        sceneId: string;
+        dryRun: true;
+        proposed: { name: string; description: string; type: string };
+        current: { name: string; description: string; type: string };
+        mode: 'text' | 'video';
+      }
+  > {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts);
+  },
+
+  /**
+   * Save scene metadata (name / description / type) — pairs with the
+   * Re-analyze dry-run flow's Apply step.
+   */
+  async saveSceneMetadata(
+    projectId: string,
+    sceneId: string,
+    patch: { name?: string; description?: string; type?: string },
+  ): Promise<{ sceneId: string; name?: string; description?: string; type?: string }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/metadata`, patch);
   },
 
   async generateStoryboard(projectId: string, files: File[]): Promise<Storyboard> {

@@ -137,9 +137,13 @@ export function StoryboardView() {
               projectId={projectId!}
               selected={scene.id === selectedSceneId}
               onSelect={() => {
+                // Preserve ?tab= when switching scenes — the typical
+                // workflow is reviewing the same tab (Narration chunks,
+                // Lower Thirds, etc.) across multiple scenes. Resetting
+                // to Recording on each click made multi-scene review
+                // tedious.
                 const next = new URLSearchParams(searchParams);
                 next.set('scene', scene.id);
-                next.delete('tab'); // reset tab when switching scenes
                 setSearchParams(next);
               }}
               onMoveUp={() => moveScene(idx, idx - 1)}
