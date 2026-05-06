@@ -619,8 +619,15 @@ export function ScenePage(props: ScenePageProps = {}) {
     }
   }, [ltData, editingLTs]);
 
+  // Whether to ground the next LT recommendation in the actual video.
+  // Defaults to true; falls back to text-only on the server when the
+  // active provider isn't Gemini or the scene lacks a recording.
+  const [ltGroundInVideo, setLtGroundInVideo] = useState(true);
   const recommendLTsMutation = useMutation({
-    mutationFn: () => lowerThirdsApi.recommend(projectId!, sceneId!),
+    mutationFn: () =>
+      lowerThirdsApi.recommend(projectId!, sceneId!, {
+        groundInVideo: ltGroundInVideo && canGroundInVideo,
+      }),
     onSuccess: (data) => {
       setEditingLTs(data.lowerThirds);
       setLtDirty(false);
@@ -2137,9 +2144,46 @@ export function ScenePage(props: ScenePageProps = {}) {
           <GenerationModal
             open={recommendLTsMutation.isPending}
             title="Recommending lower thirds"
-            phase="Asking the model for title cards…"
-            hint="One LLM call, usually 5–15 seconds."
+            phase={
+              ltGroundInVideo && canGroundInVideo
+                ? 'Uploading video to Gemini → analysing → picking moments to label…'
+                : 'Asking the model for title cards…'
+            }
+            hint={
+              ltGroundInVideo && canGroundInVideo
+                ? 'Video upload + Gemini analysis usually takes 30–60s. The model anchors each LT to a real on-screen moment.'
+                : 'One LLM call, usually 5–15 seconds.'
+            }
           />
+
+          {/* Video-grounded toggle. Same pattern as the Script tab —
+              only shown when toggling would actually change behaviour
+              (Gemini active + recording present). */}
+          {canGroundInVideo && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 12,
+                fontSize: 13,
+                color: 'var(--fg-muted)',
+                userSelect: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={ltGroundInVideo}
+                onChange={(e) => setLtGroundInVideo(e.target.checked)}
+                disabled={recommendLTsMutation.isPending}
+              />
+              <span>
+                Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'} — anchors
+                each LT to a real on-screen moment)
+              </span>
+            </label>
+          )}
 
           {/* Action buttons */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>

@@ -160,9 +160,11 @@ export function createFakeLlm(): LlmClient {
         };
       }
 
-      // Lower-third recommender
+      // Lower-third recommender. Prompt label changed from `Scene:` to
+      // `Scene name:` when LT input gained intent + objective + audience;
+      // accept both forms so legacy fixture cases keep working.
       if (isLowerThirdPrompt(opts)) {
-        const nameMatch = opts.userPrompt.match(/Scene:\s*(.+)/);
+        const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/) ?? opts.userPrompt.match(/Scene:\s*(.+)/);
         const sceneName = nameMatch?.[1]?.trim() ?? 'Demo Scene';
         return {
           text: JSON.stringify([
@@ -172,9 +174,9 @@ export function createFakeLlm(): LlmClient {
         };
       }
 
-      // Narration script generation
+      // Narration script generation. Same prompt-label evolution as LT.
       if (isNarrationWriterPrompt(opts)) {
-        const nameMatch = opts.userPrompt.match(/Scene:\s*(.+)/);
+        const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/) ?? opts.userPrompt.match(/Scene:\s*(.+)/);
         const sceneName = nameMatch?.[1]?.trim() ?? 'this scene';
         return {
           text: `[warm] Let's take a look at ${sceneName}. This is where things really come together.\n\n[confident] Notice how we walk through each step carefully. Every action here builds on what we set up earlier.\n\n[thoughtful] The key thing to understand is why this matters — it's not just about the configuration, it's about establishing a pattern you can reuse.\n\n[calm] And that's it for this section. Let's move on to what comes next.`,
