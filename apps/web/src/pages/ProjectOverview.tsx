@@ -195,14 +195,16 @@ function Pipeline({
         </div>
       </div>
 
-      {/* Stepper rail — the filament is a static border that becomes a
-          progress fill via the inline width. Steps sit on top of it. */}
-      <ol className="pipeline__rail" role="list">
-        <div
-          aria-hidden
-          className="pipeline__filament"
-          style={{ width: `calc(${fillRatio * 100}% )` }}
-        />
+      {/* Stepper rail — the filament is the progress fill behind the
+          nodes. Its length is set via the --fill custom property so CSS
+          can map it to width (horizontal) or height (vertical) without
+          fighting an inline width style. */}
+      <ol
+        className="pipeline__rail"
+        role="list"
+        style={{ ['--fill' as string]: `${fillRatio * 100}%` }}
+      >
+        <div aria-hidden className="pipeline__filament" />
         {steps.map((step, i) => {
           const Icon = STEP_ICONS[step.key] ?? Layers;
           const index = String(i + 1).padStart(2, '0');
