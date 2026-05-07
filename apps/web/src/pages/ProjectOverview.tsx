@@ -617,7 +617,13 @@ function BackgroundMusicSection({
         rows={2}
         value={prompt}
         onChange={(e) => setPrompt(e.target.value.slice(0, 1500))}
-        placeholder="e.g. calm low-key tech demo loop, soft piano and pads, no vocals, consistent feel — a 30-second bed that loops cleanly"
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !isBusy && prompt.trim().length > 0) {
+            e.preventDefault();
+            generate.mutate();
+          }
+        }}
+        placeholder="e.g. calm low-key tech demo loop, soft piano and pads, no vocals, consistent feel — a 30-second bed that loops cleanly  (⌘↵ to generate)"
         disabled={isBusy}
         style={{
           width: '100%',
@@ -930,6 +936,14 @@ function ExportButton({ projectId }: { projectId: string }) {
     mutationFn: () => exportApi.run(projectId),
     onSuccess: (data) => setExportDir(data.exportDir),
   });
+
+  // Auto-dismiss the success line after a few seconds so it doesn't
+  // linger across navigations and look like a fresh result.
+  useEffect(() => {
+    if (!exportDir) return;
+    const t = window.setTimeout(() => setExportDir(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [exportDir]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

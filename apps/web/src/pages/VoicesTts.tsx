@@ -212,7 +212,13 @@ export function VoicesTts() {
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="Type or paste anything you want spoken aloud."
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && canGenerate) {
+                  e.preventDefault();
+                  generateMutation.mutate();
+                }
+              }}
+              placeholder="Type or paste anything you want spoken aloud.  (⌘↵ to generate)"
               rows={8}
               style={{
                 width: '100%',

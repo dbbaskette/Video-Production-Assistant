@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
+import { useUi } from '../components/ui/UiProvider.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -595,6 +596,7 @@ function AddVoiceProfileForm({ onAdded }: { onAdded: () => void }) {
 
 export function Settings() {
   const qc = useQueryClient();
+  const ui = useUi();
 
   // Models
   const { data: models, isLoading, error } = useQuery({
@@ -660,7 +662,15 @@ export function Settings() {
                 key={m.id}
                 entry={m}
                 onActivate={() => activateMutation.mutate(m.id)}
-                onDelete={() => deleteMutation.mutate(m.id)}
+                onDelete={async () => {
+                  const ok = await ui.confirm({
+                    title: 'Delete this model configuration?',
+                    body: `"${m.name}" (${m.provider}${m.model ? ` / ${m.model}` : ''}) will be removed. This can't be undone.`,
+                    confirmLabel: 'Delete',
+                    destructive: true,
+                  });
+                  if (ok) deleteMutation.mutate(m.id);
+                }}
                 activating={activateMutation.isPending && activateMutation.variables === m.id}
               />
             ))}
@@ -704,7 +714,15 @@ export function Settings() {
                 key={v.id}
                 profile={v}
                 engineName={engineNameMap.get(v.engine) ?? v.engine}
-                onDelete={() => deleteVoiceMutation.mutate(v.id)}
+                onDelete={async () => {
+                  const ok = await ui.confirm({
+                    title: 'Delete voice profile?',
+                    body: `"${v.name}" (${v.engine} / ${v.voice}) will be removed. Scenes already configured with this profile will keep their settings, but you'll need to recreate it to use it again.`,
+                    confirmLabel: 'Delete',
+                    destructive: true,
+                  });
+                  if (ok) deleteVoiceMutation.mutate(v.id);
+                }}
               />
             ))}
             <AddVoiceProfileForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'voices'] })} />

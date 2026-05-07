@@ -16,6 +16,13 @@
 
 import type { ReactNode } from 'react';
 
+export type GenerationStepStatus = 'done' | 'failed' | 'active' | 'queued';
+export interface GenerationStep {
+  status: GenerationStepStatus;
+  /** Short label shown inside / under the dot. Defaults to 1-based index. */
+  label?: string;
+}
+
 interface Props {
   open: boolean;
   title: string;
@@ -25,11 +32,15 @@ interface Props {
   hint?: ReactNode;
   /** Optional progress fraction 0..1 to render a determinate bar. */
   progress?: number;
+  /** Optional per-step grid (e.g. one dot per narration chunk). When
+   *  present, renders a small row of color-coded chips below the bar
+   *  that tick over from queued → active → done as work lands. */
+  steps?: GenerationStep[];
   /** When provided, renders a Cancel button that calls this. */
   onCancel?: () => void;
 }
 
-export function GenerationModal({ open, title, phase, hint, progress, onCancel }: Props) {
+export function GenerationModal({ open, title, phase, hint, progress, steps, onCancel }: Props) {
   if (!open) return null;
   return (
     <div
@@ -82,6 +93,25 @@ export function GenerationModal({ open, title, phase, hint, progress, onCancel }
             />
           </div>
         )}
+        {steps && steps.length > 0 && (
+          <div
+            aria-hidden
+            style={{
+              margin: '12px auto 0',
+              maxWidth: 320,
+              display: 'flex',
+              gap: 4,
+              flexWrap: 'wrap',
+              justifyContent: 'center',
+            }}
+          >
+            {steps.map((step, i) => (
+              <span key={i} style={stepDotStyle(step.status)} title={`${step.label ?? i + 1} — ${step.status}`}>
+                {step.status === 'done' ? '✓' : step.status === 'failed' ? '×' : (step.label ?? i + 1)}
+              </span>
+            ))}
+          </div>
+        )}
         {hint && (
           <p style={{ margin: '14px 0 0', fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
             {hint}
@@ -108,6 +138,41 @@ export function GenerationModal({ open, title, phase, hint, progress, onCancel }
       </div>
     </div>
   );
+}
+
+function stepDotStyle(status: GenerationStepStatus): React.CSSProperties {
+  const base: React.CSSProperties = {
+    minWidth: 22,
+    height: 22,
+    padding: '0 6px',
+    borderRadius: 11,
+    fontSize: 10,
+    fontWeight: 600,
+    fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
+    fontVariantNumeric: 'tabular-nums',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid var(--border)',
+    transition: 'background 240ms, color 240ms, border-color 240ms, transform 240ms',
+  };
+  switch (status) {
+    case 'done':
+      return { ...base, background: 'var(--success)', color: '#0a0a0c', borderColor: 'var(--success)' };
+    case 'failed':
+      return { ...base, background: 'transparent', color: 'var(--danger)', borderColor: 'var(--danger)' };
+    case 'active':
+      return {
+        ...base,
+        background: 'var(--accent-bg)',
+        color: 'var(--accent)',
+        borderColor: 'var(--accent)',
+        animation: 'pulse-glow 1.4s ease-in-out infinite',
+      };
+    case 'queued':
+    default:
+      return { ...base, background: 'transparent', color: 'var(--fg-muted)', opacity: 0.55 };
+  }
 }
 
 function Spinner() {

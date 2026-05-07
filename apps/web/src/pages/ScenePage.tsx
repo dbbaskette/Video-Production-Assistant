@@ -1543,6 +1543,20 @@ export function ScenePage(props: ScenePageProps = {}) {
                 ? (generateAllProgress.done + generateAllProgress.failed) / generateAllProgress.total
                 : undefined
             }
+            steps={(() => {
+              if (!generateAllProgress || !narrationState?.chunks?.length) return undefined;
+              // First chunk that's neither done nor failed is the one
+              // currently in flight — the server processes sequentially.
+              const activeIdx = narrationState.chunks.findIndex(
+                (c) => !c.audio && !c.failed,
+              );
+              return narrationState.chunks.map((chunk, i) => {
+                if (chunk.audio) return { status: 'done' as const };
+                if (chunk.failed) return { status: 'failed' as const };
+                if (i === activeIdx) return { status: 'active' as const };
+                return { status: 'queued' as const };
+              });
+            })()}
             hint="Each chunk is synthesised one at a time. Cancel stops at the next chunk boundary."
             onCancel={generateAllJobId ? cancelGenerateAll : undefined}
           />
