@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ttsApi, type TtsEngineInfo, type TtsScratchClip } from '../lib/api.js';
+import { estimateTtsCost, formatCostLabel, formatUsd } from '../lib/tts-pricing.js';
 
 const PREFS_KEY = 'vpa.tts-scratch.prefs.v1';
 const MAX_TEXT_CHARS = 5000;
@@ -235,16 +236,17 @@ export function VoicesTts() {
             />
           </Field>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {engineId && <CostBadge engine={engineId} chars={text.trim().length} />}
               {currentEngine && currentEngine.supportedEmotives.length > 0 && (
-                <>
+                <span>
                   Supports tags:{' '}
                   <code style={{ fontSize: 11 }}>
                     {currentEngine.supportedEmotives.slice(0, 6).map((t) => `[${t}]`).join(' ')}
                     {currentEngine.supportedEmotives.length > 6 ? ' …' : ''}
                   </code>
-                </>
+                </span>
               )}
             </div>
             <button
@@ -404,5 +406,44 @@ function ClipCard({
         style={{ width: '100%', height: 36 }}
       />
     </div>
+  );
+}
+
+/** Inline cost badge — shows the live spend estimate for a paid engine,
+ *  or "free · local"-style hint for the free providers. Tooltip surfaces
+ *  the per-character rate so users can sanity-check the number. */
+function CostBadge({ engine, chars }: { engine: string; chars: number }) {
+  const est = estimateTtsCost(engine, chars);
+  if (est.costUsd === undefined) {
+    return (
+      <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+        Cost: pricing unknown for {engine}
+      </span>
+    );
+  }
+  const label = formatCostLabel(est);
+  const isPaid = !est.free && est.costUsd > 0;
+  return (
+    <span
+      title={est.rate ? `${est.rate} · ${chars.toLocaleString()} chars${isPaid ? ` = ${formatUsd(est.costUsd)}` : ''}` : undefined}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontSize: 11,
+        fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
+        fontVariantNumeric: 'tabular-nums',
+        padding: '3px 8px',
+        borderRadius: 999,
+        background: isPaid ? 'var(--accent-bg)' : 'transparent',
+        color: isPaid ? 'var(--accent)' : 'var(--fg-muted)',
+        border: `1px solid ${isPaid ? 'var(--accent)' : 'var(--border)'}`,
+        width: 'fit-content',
+      }}
+    >
+      <span aria-hidden>{isPaid ? '$' : '○'}</span>
+      <span>{label}</span>
+      {est.rate && <span style={{ opacity: 0.6 }}>· {est.rate}</span>}
+    </span>
   );
 }
