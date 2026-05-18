@@ -293,14 +293,14 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           <FileRow
             kind="combined"
-            label="Combined (video + LT + narration)"
+            label="Combined — frame + LT + narration (the finished cut)"
             file={files.combined}
             projectId={projectId}
             sceneId={sceneId}
           />
           <FileRow
             kind="overlay"
-            label="Overlay only (video + LT)"
+            label="Overlay only — raw recording + LT (no frame, no narration)"
             file={files.overlay}
             projectId={projectId}
             sceneId={sceneId}
