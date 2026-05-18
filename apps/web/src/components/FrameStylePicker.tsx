@@ -122,10 +122,13 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
   );
 
   // Sync customHex when the parent passes a new external custom value.
+  // Also reset to clean default when parent transitions from custom to brand/transparent.
   useEffect(() => {
     const bg = value.frameBackground;
     if (bg && bg !== 'brand' && bg !== 'transparent') {
       setCustomHex(bg);
+    } else {
+      setCustomHex('#000000');
     }
   }, [value.frameBackground]);
 
@@ -154,10 +157,10 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
 
   function handleRadioChange(mode: 'brand' | 'transparent' | 'custom') {
     if (mode === 'brand') {
-      setCustomHex(initialCustomHex(value.frameBackground));
+      setCustomHex('#000000');
       onChange({ ...value, frameBackground: 'brand' });
     } else if (mode === 'transparent') {
-      setCustomHex(initialCustomHex(value.frameBackground));
+      setCustomHex('#000000');
       onChange({ ...value, frameBackground: 'transparent' });
     }
     // For 'custom', don't fire onChange yet — wait for valid hex input.
