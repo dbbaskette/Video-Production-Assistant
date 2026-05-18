@@ -79,6 +79,24 @@ export const api = {
   },
 };
 
+export interface FrameInfo {
+  id: string;
+  family: string;
+  variant: string;
+  displayName: string;
+  type: 'flat' | 'perspective';
+  thumbnailUrl: string;
+}
+
+export const framesApi = {
+  async list(): Promise<FrameInfo[]> {
+    return request<FrameInfo[]>('GET', '/api/frames');
+  },
+  thumbnailUrl(id: string): string {
+    return `${BASE}/api/frames/${encodeURIComponent(id)}/thumbnail`;
+  },
+};
+
 export const brandsApi = {
   async list(): Promise<BrandRegistry> {
     return request<BrandRegistry>('GET', '/api/brands');
@@ -161,6 +179,19 @@ export const storyboardApi = {
   },
   async reorderScenes(projectId: string, orderedIds: string[]): Promise<Storyboard> {
     return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/reorder`, { orderedIds });
+  },
+  async updateDefaults(
+    projectId: string,
+    defaults: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null },
+  ): Promise<Storyboard> {
+    return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/defaults`, defaults);
+  },
+  async setSceneFrame(
+    projectId: string,
+    sceneId: string,
+    frame: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null },
+  ): Promise<Scene> {
+    return request<Scene>('PATCH', `/api/projects/${projectId}/scenes/${sceneId}/frame`, frame);
   },
 };
 
@@ -811,6 +842,10 @@ export interface RenderOptions {
   musicTrackId?: string | null;
   /** Music gain offset in dB (negative = ducked under narration). Default -20. */
   musicVolumeDb?: number;
+  /** Device frame style to apply. null explicitly clears frame at render time. */
+  frameStyle?: string | null;
+  /** Device frame background: 'brand', 'transparent', or custom color. null explicitly clears. */
+  frameBackground?: 'brand' | 'transparent' | string | null;
 }
 
 export interface MusicTrack {
@@ -930,7 +965,14 @@ export const sceneRenderApi = {
   async start(
     projectId: string,
     sceneId: string,
-    opts: { audioMode?: 'replace' | 'mix'; burnSubtitles?: boolean } = {},
+    opts: {
+      audioMode?: 'replace' | 'mix';
+      burnSubtitles?: boolean;
+      /** Device frame style to apply. null explicitly clears frame at render time. */
+      frameStyle?: string | null;
+      /** Device frame background: 'brand', 'transparent', or custom color. null explicitly clears. */
+      frameBackground?: 'brand' | 'transparent' | string | null;
+    } = {},
   ): Promise<SceneRenderResult> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/render`, opts);
   },
