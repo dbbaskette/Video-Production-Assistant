@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtemp, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildFlatFilter, buildPerspectiveFilter, createFrameRenderer } from './render.js';
@@ -365,54 +365,58 @@ describe('createFrameRenderer', () => {
     'end-to-end perspective smoke test (gated by VPA_RUN_FFMPEG_TESTS=1)',
     async () => {
       const dir = await mkdtemp(join(tmpdir(), 'vpa-perspective-'));
-      const videoPath = join(dir, 'in.mp4');
-      const framePngPath = join(dir, 'frame.png');
-      const outPath = join(dir, 'out.mp4');
+      try {
+        const videoPath = join(dir, 'in.mp4');
+        const framePngPath = join(dir, 'frame.png');
+        const outPath = join(dir, 'out.mp4');
 
-      // 3-second test pattern at 640x360.
-      await runFfmpeg([
-        '-y',
-        '-f', 'lavfi',
-        '-i', 'testsrc=duration=3:size=640x360:rate=24',
-        videoPath,
-      ]);
+        // 3-second test pattern at 640x360.
+        await runFfmpeg([
+          '-y',
+          '-f', 'lavfi',
+          '-i', 'testsrc=duration=3:size=640x360:rate=24',
+          videoPath,
+        ]);
 
-      // Generate a transparent PNG sized to the perspective frameSize. We use
-      // `geq` to explicitly set alpha=0 because `color=...@0.0` gets clobbered
-      // to opaque black when encoded as a single PNG.
-      await runFfmpeg([
-        '-y',
-        '-f', 'lavfi',
-        '-i', `nullsrc=s=${samplePerspective.frameSize.w}x${samplePerspective.frameSize.h}:d=1`,
-        '-vf', 'format=rgba,geq=r=0:g=0:b=0:a=0',
-        '-frames:v', '1',
-        '-update', '1',
-        framePngPath,
-      ]);
+        // Generate a transparent PNG sized to the perspective frameSize. We use
+        // `geq` to explicitly set alpha=0 because `color=...@0.0` gets clobbered
+        // to opaque black when encoded as a single PNG.
+        await runFfmpeg([
+          '-y',
+          '-f', 'lavfi',
+          '-i', `nullsrc=s=${samplePerspective.frameSize.w}x${samplePerspective.frameSize.h}:d=1`,
+          '-vf', 'format=rgba,geq=r=0:g=0:b=0:a=0',
+          '-frames:v', '1',
+          '-update', '1',
+          framePngPath,
+        ]);
 
-      // The renderer reads the frame PNG at <assetsDir>/<frameEntry.frame>.
-      // Use the temp dir as assetsDir and set the entry's `frame` to the bare
-      // PNG filename so the join lands on our fake PNG.
-      const entry: PerspectiveFrame = {
-        ...samplePerspective,
-        frame: 'frame.png',
-      };
+        // The renderer reads the frame PNG at <assetsDir>/<frameEntry.frame>.
+        // Use the temp dir as assetsDir and set the entry's `frame` to the bare
+        // PNG filename so the join lands on our fake PNG.
+        const entry: PerspectiveFrame = {
+          ...samplePerspective,
+          frame: 'frame.png',
+        };
 
-      const render = createFrameRenderer();
-      await render({
-        inputVideo: videoPath,
-        frameEntry: entry,
-        assetsDir: dir,
-        backgroundColor: BG_HEX,
-        outputPath: outPath,
-      });
+        const render = createFrameRenderer();
+        await render({
+          inputVideo: videoPath,
+          frameEntry: entry,
+          assetsDir: dir,
+          backgroundColor: BG_HEX,
+          outputPath: outPath,
+        });
 
-      const s = await stat(outPath);
-      expect(s.size).toBeGreaterThan(0);
-      const dur = await probeDuration(outPath);
-      // Output should be roughly 3s — allow some encoder slack.
-      expect(dur).toBeGreaterThan(2.5);
-      expect(dur).toBeLessThan(3.5);
+        const s = await stat(outPath);
+        expect(s.size).toBeGreaterThan(0);
+        const dur = await probeDuration(outPath);
+        // Output should be roughly 3s — allow some encoder slack.
+        expect(dur).toBeGreaterThan(2.5);
+        expect(dur).toBeLessThan(3.5);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     },
     60_000,
   );

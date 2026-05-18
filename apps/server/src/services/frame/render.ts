@@ -105,7 +105,7 @@ export function buildFlatFilter(entry: FlatFrame, bgColor: string): string {
   // 4. Overlay the padded video onto the background at the inset position.
   //    `shortest=1` makes the overlay output end with the (finite) video, so
   //    the looped 86400s `color=` source doesn't drive the output duration.
-  const underStep = `${bg}${padded}overlay=${inset.x}:${inset.y}:shortest=1${under}`;
+  const underStep = `${bg}${padded}overlay=${inset.x}:${inset.y}:shortest=1:format=auto${under}`;
 
   // 5. Overlay the frame PNG on top (device chrome over the video).
   const outStep = `${under}[1:v]overlay=0:0:format=auto${out}`;
