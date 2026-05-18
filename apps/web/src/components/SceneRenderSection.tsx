@@ -12,8 +12,9 @@
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { sceneRenderApi, type SceneRenderKind } from '../lib/api.js';
+import { sceneRenderApi, storyboardApi, framesApi, type SceneRenderKind } from '../lib/api.js';
 import { GenerationModal } from './ui/GenerationModal.js';
+import { FrameStylePicker } from './FrameStylePicker.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import { Clapperboard } from 'lucide-react';
 
@@ -25,10 +26,39 @@ interface Props {
 export function SceneRenderSection({ projectId, sceneId }: Props) {
   const qc = useQueryClient();
   const [audioMode, setAudioMode] = useState<'replace' | 'mix'>('replace');
+  // Controls whether the user has expanded the per-scene frame override editor.
+  const [frameOverrideOpen, setFrameOverrideOpen] = useState(false);
 
   const status = useQuery({
     queryKey: ['scene-render-status', projectId, sceneId],
     queryFn: () => sceneRenderApi.status(projectId, sceneId),
+  });
+
+  // Frames manifest — already cached if ProjectOverview mounted.
+  const framesQuery = useQuery({
+    queryKey: ['frames'],
+    queryFn: () => framesApi.list(),
+  });
+
+  // Storyboard — already cached by ProjectOverview; reuse the same query key.
+  const storyboardQuery = useQuery({
+    queryKey: ['storyboard', projectId],
+    queryFn: () => storyboardApi.get(projectId),
+    enabled: !!projectId,
+  });
+
+  // Resolve this scene's frame settings.
+  const scene = storyboardQuery.data?.scenes.find((s) => s.id === sceneId);
+  const hasOverride =
+    scene?.frame_style !== undefined || scene?.frame_background !== undefined;
+
+  const setSceneFrameMutation = useMutation({
+    mutationFn: (next: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null }) =>
+      storyboardApi.setSceneFrame(projectId, sceneId, next),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      qc.invalidateQueries({ queryKey: ['scene-render-status', projectId, sceneId] });
+    },
   });
 
   const renderMutation = useMutation({
@@ -94,6 +124,125 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
           </select>
         </label>
       </div>
+
+      {/* Frame style — per-scene override, falls back to project default */}
+      {framesQuery.data && framesQuery.data.length > 0 && (
+        <div
+          style={{
+            marginBottom: 16,
+            paddingTop: 14,
+            borderTop: '1px dashed var(--border)',
+            fontSize: 13,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--fg-muted)' }}>
+              Frame style
+            </div>
+            {hasOverride && (
+              <button
+                type="button"
+                onClick={() =>
+                  setSceneFrameMutation.mutate({ frame_style: null, frame_background: null })
+                }
+                disabled={setSceneFrameMutation.isPending}
+                style={{
+                  fontSize: 11,
+                  color: 'var(--fg-muted)',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                Reset to project default
+              </button>
+            )}
+          </div>
+
+          {!hasOverride && !frameOverrideOpen ? (
+            /* Show what the project default is, with an Override affordance */
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>
+                {(() => {
+                  const defStyle = storyboardQuery.data?.defaults?.frame_style;
+                  if (!defStyle) return 'Uses project default: None';
+                  const frame = framesQuery.data?.find((f) => f.id === defStyle);
+                  return frame
+                    ? `Uses project default: ${frame.family} — ${frame.variant}`
+                    : `Uses project default: ${defStyle}`;
+                })()}
+              </span>
+              <button
+                type="button"
+                onClick={() => setFrameOverrideOpen(true)}
+                style={{
+                  fontSize: 11,
+                  color: 'var(--accent)',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                Override
+              </button>
+            </div>
+          ) : (
+            /* Override editor — either user clicked Override or a per-scene value already exists */
+            <>
+              <FrameStylePicker
+                frames={framesQuery.data}
+                value={{
+                  frameStyle: scene?.frame_style ?? null,
+                  frameBackground: scene?.frame_background ?? null,
+                }}
+                onChange={(next) =>
+                  setSceneFrameMutation.mutate({
+                    frame_style: next.frameStyle,
+                    frame_background: next.frameBackground,
+                  })
+                }
+              />
+              {!hasOverride && (
+                <button
+                  type="button"
+                  onClick={() => setFrameOverrideOpen(false)}
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--fg-muted)',
+                    background: 'transparent',
+                    border: 'none',
+                    padding: '6px 0 0',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    display: 'block',
+                  }}
+                >
+                  Cancel override
+                </button>
+              )}
+              {setSceneFrameMutation.isPending && (
+                <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6, marginBottom: 0 }}>Saving…</p>
+              )}
+              {setSceneFrameMutation.isError && (
+                <p style={{ fontSize: 11, color: 'var(--danger)', marginTop: 6, marginBottom: 0 }}>
+                  {setSceneFrameMutation.error instanceof Error
+                    ? setSceneFrameMutation.error.message
+                    : 'Save failed'}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      {framesQuery.isError && (
+        <p style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 12 }}>
+          Could not load frame templates.
+        </p>
+      )}
 
       {/* Visual distinction from the project-level "Render Finished Video"
           button: this one is a secondary outlined button labelled "Render

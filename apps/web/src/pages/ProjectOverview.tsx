@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
+import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
+import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 // Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
 // the file's call sites reading the same as before.
@@ -279,6 +280,25 @@ function RenderSection({
     enabled: hasStoryboard,
   });
 
+  // Frame style defaults — fetched from storyboard (already cached by ProjectOverview)
+  // and from the frames manifest.
+  const storyboardQuery = useQuery({
+    queryKey: ['storyboard', projectId],
+    queryFn: () => storyboardApi.get(projectId),
+    enabled: !!projectId,
+  });
+  const framesQuery = useQuery({
+    queryKey: ['frames'],
+    queryFn: () => framesApi.list(),
+  });
+  const updateDefaultsMutation = useMutation({
+    mutationFn: (next: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null }) =>
+      storyboardApi.updateDefaults(projectId, next),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
+  });
+
   const startRender = useMutation({
     mutationFn: () =>
       renderApi.start(projectId, {
@@ -379,6 +399,60 @@ function RenderSection({
           Burn in subtitles
         </label>
       </div>
+
+      {/* Frame style — project-level default applied to all scenes unless overridden */}
+      {framesQuery.data && (
+        <div
+          style={{
+            marginBottom: 16,
+            paddingTop: 14,
+            borderTop: '1px dashed var(--border)',
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--fg-muted)', marginBottom: 10 }}>
+            Frame style (project default)
+          </div>
+          {framesQuery.data.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: 0 }}>
+              No frame templates found.
+            </p>
+          ) : (
+            <>
+              <FrameStylePicker
+                frames={framesQuery.data}
+                value={{
+                  frameStyle: storyboardQuery.data?.defaults?.frame_style ?? null,
+                  frameBackground: storyboardQuery.data?.defaults?.frame_background ?? null,
+                }}
+                onChange={(next) =>
+                  updateDefaultsMutation.mutate({
+                    frame_style: next.frameStyle,
+                    frame_background: next.frameBackground,
+                  })
+                }
+              />
+              {updateDefaultsMutation.isPending && (
+                <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6, marginBottom: 0 }}>Saving…</p>
+              )}
+              {updateDefaultsMutation.isError && (
+                <p style={{ fontSize: 11, color: 'var(--danger)', marginTop: 6, marginBottom: 0 }}>
+                  {updateDefaultsMutation.error instanceof Error
+                    ? updateDefaultsMutation.error.message
+                    : 'Save failed'}
+                </p>
+              )}
+              <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 0 }}>
+                Per-scene overrides will use this default unless overridden in the scene panel.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+      {framesQuery.isError && (
+        <p style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 12 }}>
+          Could not load frame templates.
+        </p>
+      )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <button
