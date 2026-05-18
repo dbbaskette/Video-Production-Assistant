@@ -40,14 +40,34 @@
   <!-- Hairline under title bar -->
   <polyline points="220,340 2440,130" stroke="#a8a8ae" stroke-width="2" fill="none"/>
 
-  <!-- Traffic-light dots projected onto the tilted title bar near top-left -->
-  <circle cx="300" cy="282" r="22" fill="#ff5f57"/>
-  <circle cx="368" cy="276" r="22" fill="#febc2e"/>
-  <circle cx="436" cy="270" r="22" fill="#28c840"/>
+  <!-- Title-bar geometry helpers:
+       Top edge slope = (10-220)/(2440-220) = -0.0946 → tilt ≈ -5.41° (rotate
+       the text by this amount so it follows the chrome). Title-bar
+       vertical center at x=X is roughly 280 + (X-220) * -0.0946. -->
 
-  <!-- URL pill projected onto tilted title bar -->
-  <polygon points="1020,256 1820,180 1820,250 1020,326" fill="#fbfbfd" stroke="#c4c4ca" stroke-width="1"/>
-  <text x="1054" y="296" font-family="-apple-system, system-ui, sans-serif" font-size="28" fill="#5a5a60">https://example.com/demo</text>
+  <!-- Traffic-light dots — centered along the tilted title-bar midline -->
+  <circle cx="300"  cy="272" r="22" fill="#ff5f57"/>
+  <circle cx="368"  cy="266" r="22" fill="#febc2e"/>
+  <circle cx="436"  cy="260" r="22" fill="#28c840"/>
+
+  <!-- URL pill — centered inside the title bar (60px tall, sloped to match
+       the title bar's top/bottom edges). At x=1020 the title bar spans
+       y=144..264; pill is y=174..234. At x=1820 it spans y=69..189; pill
+       is y=99..159. -->
+  <polygon points="1020,174 1820,99 1820,159 1020,234" fill="#fbfbfd" stroke="#c4c4ca" stroke-width="1"/>
+
+  <!-- Lock glyph inside the pill, projected onto the slope -->
+  <g transform="rotate(-5.41 1058 211)">
+    <rect x="1058" y="200" width="20" height="18" rx="2" ry="2" fill="#8a8a90"/>
+    <rect x="1062" y="194" width="12" height="12" rx="6" ry="6" fill="none" stroke="#8a8a90" stroke-width="3"/>
+  </g>
+
+  <!-- URL text — rotated -5.41° around its anchor so it follows the
+       title-bar slope cleanly. -->
+  <text x="1098" y="218"
+        transform="rotate(-5.41 1098 218)"
+        font-family="-apple-system, system-ui, sans-serif"
+        font-size="28" fill="#5a5a60">https://example.com/demo</text>
 
   <!-- Inner content-edge ring -->
   <path d="M 220 340 L 2440 130 L 2440 1590 L 220 1380 Z"
