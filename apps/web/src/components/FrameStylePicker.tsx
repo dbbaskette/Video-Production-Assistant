@@ -55,7 +55,11 @@ const tileBase: React.CSSProperties = {
   height: 60,
   borderRadius: 6,
   cursor: 'pointer',
-  background: 'var(--bg)',
+  // Soft light gradient stage — dark device chrome reads cleanly
+  // against it and the transparent screen areas come through as a
+  // muted "powered-on" off-white. Without this, the dark bezels blend
+  // into the page background and the silhouettes vanish.
+  background: 'linear-gradient(180deg, #d8d8e0 0%, #b8b8c4 100%)',
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
@@ -179,7 +183,8 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
             gap: 8,
           }}
         >
-          {/* "None" tile */}
+          {/* "None" tile — dark background to distinguish it from the
+              device tiles (which use a light stage so dark chrome shows). */}
           <button
             type="button"
             title="No frame"
@@ -187,6 +192,7 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
             onClick={() => handleFamilyClick(null)}
             style={{
               ...tileStyle(currentFamily === null),
+              background: 'var(--bg)',
               flexDirection: 'column',
               gap: 4,
             }}
