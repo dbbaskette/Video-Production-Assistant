@@ -122,12 +122,21 @@ export async function renderSingleScene(
     await copyFile(recordingPath, overlayPath);
   }
 
-  // 3b. Optional device-frame compositing. The upstream is overlay.mp4
-  //     (LTs already baked in, or a copy of the raw recording). The framed
-  //     output gets cached at renders/.frame/<sceneId>-framed.mp4 — same
-  //     location used by the project-level render — so both pipelines share
-  //     the cache and the storyboard `frame_render` field.
+  // 3b. Optional device-frame compositing. The framed output gets cached
+  //     at renders/.frame/<sceneId>-framed.mp4 — same location used by the
+  //     project-level render — so both pipelines share the cache and the
+  //     storyboard `frame_render` field.
   //
+  // Use the CANONICAL upstream (scene.overlay_render baked LT, else the
+  // raw recording) rather than the just-copied overlay.mp4 deliverable.
+  // overlay.mp4 is rewritten on every call (the LT-less branch above
+  // copies the recording into it), so its mtime ticks forward each
+  // render and the cache freshness check (cache mtime > upstream mtime)
+  // would otherwise always fail. Mirrors what the project-level render
+  // does in services/render/index.ts.
+  const canonicalUpstream = scene.overlay_render && existingOverlay && existsSync(existingOverlay)
+    ? existingOverlay
+    : recordingPath;
   // Wrap the brand resolver in a per-render memo so design.md is read at most
   // once even if this call were ever extended to multiple scenes.
   const frameDepsRaw = deps.__frameDeps ?? {};
@@ -142,7 +151,7 @@ export async function renderSingleScene(
     storyboard: sb,
     scene,
     defaults: sb.defaults,
-    upstreamVideo: overlayPath,
+    upstreamVideo: canonicalUpstream,
     vpaHome,
     workspaceRoot,
     deps: frameDepsWithCache,
