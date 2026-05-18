@@ -44,19 +44,24 @@ Append a new object with the appropriate type and geometry:
 
 ```json
 {
-  "id": "device-id-flat",
-  "label": "Device Name",
+  "id": "laptop-flat",
+  "family": "laptop",
+  "variant": "flat",
+  "displayName": "MacBook (flat)",
+  "frame": "frames/laptop-flat.png",
+  "thumbnail": "thumbnails/laptop-flat.png",
+  "frameSize": { "w": 1920, "h": 1200 },
   "type": "flat",
-  "thumbnail": "device-id-flat.png",
-  "frame": "device-id-flat.png",
   "inset": {
-    "x": 100,
-    "y": 60,
-    "w": 720,
-    "h": 480
+    "x": 80,
+    "y": 80,
+    "w": 1760,
+    "h": 1100
   }
 }
 ```
+
+Required fields: `id`, `family`, `variant`, `displayName`, `frame`, `thumbnail`, `frameSize` (`w`/`h`), `type: "flat"`, and `inset`.
 
 The `inset` is a rectangle in **frame pixel coordinates** that describes where the recording should land:
 - `x`, `y` — top-left corner of the recording region
@@ -66,19 +71,24 @@ The `inset` is a rectangle in **frame pixel coordinates** that describes where t
 
 ```json
 {
-  "id": "device-id-perspective",
-  "label": "Device Name (Tilted)",
+  "id": "laptop-tilt-right",
+  "family": "laptop",
+  "variant": "tilt-right",
+  "displayName": "MacBook (tilted right)",
+  "frame": "frames/laptop-tilt-right.png",
+  "thumbnail": "thumbnails/laptop-tilt-right.png",
+  "frameSize": { "w": 2200, "h": 1600 },
   "type": "perspective",
-  "thumbnail": "device-id-perspective.png",
-  "frame": "device-id-perspective.png",
   "quad": {
-    "tl": { "x": 120, "y": 80 },
-    "tr": { "x": 840, "y": 70 },
-    "br": { "x": 850, "y": 550 },
-    "bl": { "x": 110, "y": 560 }
+    "tl": { "x": 220, "y": 140 },
+    "tr": { "x": 1980, "y": 80 },
+    "br": { "x": 1990, "y": 1120 },
+    "bl": { "x": 210, "y": 1180 }
   }
 }
 ```
+
+Required fields: `id`, `family`, `variant`, `displayName`, `frame`, `thumbnail`, `frameSize` (`w`/`h`), `type: "perspective"`, and `quad`.
 
 The `quad` is four corners of the screen region in the frame PNG (in frame pixel coordinates):
 - `tl` — top-left corner

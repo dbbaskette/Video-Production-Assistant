@@ -842,10 +842,6 @@ export interface RenderOptions {
   musicTrackId?: string | null;
   /** Music gain offset in dB (negative = ducked under narration). Default -20. */
   musicVolumeDb?: number;
-  /** Device frame style to apply. null explicitly clears frame at render time. */
-  frameStyle?: string | null;
-  /** Device frame background: 'brand', 'transparent', or custom color. null explicitly clears. */
-  frameBackground?: 'brand' | 'transparent' | string | null;
 }
 
 export interface MusicTrack {
@@ -968,10 +964,6 @@ export const sceneRenderApi = {
     opts: {
       audioMode?: 'replace' | 'mix';
       burnSubtitles?: boolean;
-      /** Device frame style to apply. null explicitly clears frame at render time. */
-      frameStyle?: string | null;
-      /** Device frame background: 'brand', 'transparent', or custom color. null explicitly clears. */
-      frameBackground?: 'brand' | 'transparent' | string | null;
     } = {},
   ): Promise<SceneRenderResult> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/render`, opts);

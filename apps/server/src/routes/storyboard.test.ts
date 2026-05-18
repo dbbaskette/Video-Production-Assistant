@@ -323,6 +323,93 @@ describe('PUT storyboard defaults (frame fields)', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().code).toBe('not_found');
   });
+
+  it('PUT defaults clears frame_render on every scene', async () => {
+    const sb: Storyboard = {
+      ...makeSampleStoryboard(projectId, 'test-proj'),
+      scenes: [
+        {
+          id: 'scene-aaa',
+          name: 'Intro',
+          description: 'intro',
+          type: 'desktop',
+          frame_render: 'renders/.frame/scene-aaa-framed.mp4',
+        },
+        {
+          id: 'scene-bbb',
+          name: 'Demo',
+          description: 'demo',
+          type: 'terminal',
+          frame_render: 'renders/.frame/scene-bbb-framed.mp4',
+        },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { frame_style: 'laptop-flat' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    // Response must not carry any frame_render fields
+    const body = res.json();
+    for (const scene of body.scenes) {
+      expect(scene.frame_render).toBeUndefined();
+    }
+
+    // Persisted storyboard must also have frame_render cleared on every scene
+    const saved = await loadStoryboard(projectPath);
+    for (const scene of saved!.scenes) {
+      expect(scene.frame_render).toBeUndefined();
+    }
+  });
+
+  it('PUT defaults deletes frame_render cache files from disk', async () => {
+    const renderRelPathA = 'renders/.frame/scene-aaa-framed.mp4';
+    const renderRelPathB = 'renders/.frame/scene-bbb-framed.mp4';
+    const renderAbsPathA = path.join(projectPath, renderRelPathA);
+    const renderAbsPathB = path.join(projectPath, renderRelPathB);
+
+    await mkdir(path.dirname(renderAbsPathA), { recursive: true });
+    await writeFile(renderAbsPathA, 'fake video A', 'utf-8');
+    await writeFile(renderAbsPathB, 'fake video B', 'utf-8');
+
+    const sb: Storyboard = {
+      ...makeSampleStoryboard(projectId, 'test-proj'),
+      scenes: [
+        {
+          id: 'scene-aaa',
+          name: 'Intro',
+          description: 'intro',
+          type: 'desktop',
+          frame_render: renderRelPathA,
+        },
+        {
+          id: 'scene-bbb',
+          name: 'Demo',
+          description: 'demo',
+          type: 'terminal',
+          frame_render: renderRelPathB,
+        },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { frame_style: 'laptop-flat' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    // Both cache files must be deleted from disk
+    const fileAExists = await access(renderAbsPathA).then(() => true).catch(() => false);
+    const fileBExists = await access(renderAbsPathB).then(() => true).catch(() => false);
+    expect(fileAExists).toBe(false);
+    expect(fileBExists).toBe(false);
+  });
 });
 
 // ── PATCH /api/projects/:id/scenes/:sceneId/frame ────────────────────────────

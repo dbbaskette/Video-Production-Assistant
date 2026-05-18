@@ -189,9 +189,28 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
       }
     }
 
-    const updated = { ...sb, defaults: newDefaults };
-    await saveStoryboard(projectPath, updated);
-    return updated;
+    // Persist the new defaults first
+    const withNewDefaults = { ...sb, defaults: newDefaults };
+    await saveStoryboard(projectPath, withNewDefaults);
+
+    // Cache busting: any defaults change (frame_style or frame_background) invalidates
+    // ALL scene frame_render caches — simpler and safer than tracking which scenes inherit.
+    for (const scene of withNewDefaults.scenes) {
+      if (scene.frame_render) {
+        const cachePath = join(projectPath, scene.frame_render);
+        await rm(cachePath, { force: true });
+      }
+    }
+    const cleared = {
+      ...withNewDefaults,
+      scenes: withNewDefaults.scenes.map((s) => {
+        if (!s.frame_render) return s;
+        const { frame_render: _ignored, ...rest } = s;
+        return rest as typeof s;
+      }),
+    };
+    await saveStoryboard(projectPath, cleared);
+    return cleared;
   });
 
   // PATCH /api/projects/:id/scenes/:sceneId/frame — update per-scene frame settings

@@ -5,7 +5,7 @@
       "id": "laptop-flat",
       "family": "laptop",
       "variant": "flat",
-      "displayName": "MacBook (flat)",
+      "displayName": "MacBook (flat) — placeholder",
       "frame": "frames/laptop-flat.png",
       "thumbnail": "thumbnails/laptop-flat.png",
       "frameSize": { "w": 1920, "h": 1200 },
