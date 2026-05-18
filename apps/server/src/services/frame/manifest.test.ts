@@ -5,10 +5,14 @@ import path from 'node:path';
 import {
   loadFrameManifest,
   getFrame,
+  defaultAssetsDir,
   FrameEntrySchema,
+  __clearFrameManifestCache,
 } from './manifest.js';
 
 describe('frame manifest', () => {
+  beforeEach(() => __clearFrameManifestCache());
+
   let assetsDir: string;
 
   beforeEach(async () => {
@@ -263,6 +267,21 @@ describe('frame manifest', () => {
       const loaded = await loadFrameManifest(assetsDir);
       const frame = getFrame(loaded, 'unknown-id');
       expect(frame).toBeUndefined();
+    });
+  });
+
+  // ── defaultAssetsDir ──────────────────────────────────────────
+
+  describe('defaultAssetsDir', () => {
+    it('resolves to a directory containing a valid manifest with the laptop-flat entry', async () => {
+      const dir = defaultAssetsDir();
+      const manifest = await loadFrameManifest(dir);
+      const entry = manifest.frames.find((f) => f.id === 'laptop-flat');
+      expect(entry).toBeDefined();
+      expect(entry?.type).toBe('flat');
+      if (entry?.type === 'flat') {
+        expect(entry.inset).toMatchObject({ x: 80, y: 80, w: 1760, h: 1100 });
+      }
     });
   });
 

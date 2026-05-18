@@ -75,6 +75,13 @@ const cache = new Map<string, FrameManifest>();
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
+ * Test-only — clear the module-level manifest cache. Call from `beforeEach` if your tests need cache isolation.
+ */
+export function __clearFrameManifestCache(): void {
+  cache.clear();
+}
+
+/**
  * Load and validate the device-frame manifest from `<assetsDir>/manifest.json`.
  * Results are cached in memory so repeated calls with the same directory are free.
  */
