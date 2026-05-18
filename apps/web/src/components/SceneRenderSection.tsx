@@ -50,7 +50,7 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
   // Resolve this scene's frame settings.
   const scene = storyboardQuery.data?.scenes.find((s) => s.id === sceneId);
   const hasOverride =
-    scene?.frame_style !== undefined || scene?.frame_background !== undefined;
+    scene?.frame_style != null || scene?.frame_background != null;
 
   const setSceneFrameMutation = useMutation({
     mutationFn: (next: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null }) =>
