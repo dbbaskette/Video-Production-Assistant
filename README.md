@@ -38,6 +38,28 @@ pip install 'markitdown[all]'   # better PDF brand guideline extraction
 npx playwright install chromium # only needed for E2E tests
 ```
 
+### Optional — AI image generation (nano-banana)
+
+For generating device-frame placeholders, scene preview thumbnails, brand
+hero imagery, and other one-off visuals from inside a Claude Code session.
+Uses Google's Gemini 3 Pro Image model (~$0.04–0.15 per image depending on
+resolution).
+
+Inside Claude Code, run:
+
+```
+/plugin marketplace add devonjones/devon-claude-skills
+/plugin install nano-banana@devon-claude-skills
+```
+
+Then set a `GEMINI_API_KEY` (free key from
+[Google AI Studio](https://aistudio.google.com/apikey)) in your shell or
+the skill's `.env`. Python 3.8+ is required; the skill installs its own
+dependencies (google-genai, Pillow, PyYAML).
+
+Skip this if you're only running VPA — it isn't a runtime dependency, only
+a developer-experience extra.
+
 ## What It Does
 
 ### Workflow
