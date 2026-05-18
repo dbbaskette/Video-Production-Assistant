@@ -1,14 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  tablet-tilt-right — iPad-style landscape chrome tilted ~10° so the right
-  side is closer to the viewer. Camera dot projects onto the tilted top
-  bezel.
+  tablet-tilt-right — stronger ~22° tilt. Left edge ~27% shorter than right.
 
   Screen quad:
-    tl: ( 200, 180)
-    tr: (2260,  90)
-    br: (2260, 1710)
-    bl: ( 200, 1620)
+    tl: ( 360,  300)
+    tr: (2280,   80)
+    br: (2280, 1720)
+    bl: ( 360, 1500)
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1800" viewBox="0 0 2400 1800">
   <defs>
@@ -21,24 +19,24 @@
 
   <!-- Bezel polygon with screen polygon hole -->
   <path fill-rule="evenodd" fill="url(#tabletBezelTilt)"
-        d="M 100 80
-           L 2360 0
-           L 2360 1800
-           L 100 1720
+        d="M 300 240
+           L 2340  20
+           L 2340 1780
+           L 300 1560
            Z
-           M 200 180
-           L 2260  90
-           L 2260 1710
-           L 200 1620
+           M 360 300
+           L 2280  80
+           L 2280 1720
+           L 360 1500
            Z"/>
 
   <!-- Outer rim leading-right highlight -->
-  <polyline points="2360,0 2360,1800" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
+  <polyline points="2340,20 2340,1780" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
 
   <!-- Inner screen-edge ring -->
-  <path d="M 200 180 L 2260 90 L 2260 1710 L 200 1620 Z"
+  <path d="M 360 300 L 2280 80 L 2280 1720 L 360 1500 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Camera dot on the tilted top bezel -->
-  <circle cx="1230" cy="135" r="7" fill="#0a0a0a"/>
+  <!-- Camera dot on tilted top bezel midpoint -->
+  <circle cx="1320" cy="180" r="7" fill="#0a0a0a"/>
 </svg>

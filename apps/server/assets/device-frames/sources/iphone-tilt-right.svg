@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  iphone-tilt-right — iPhone chrome tilted ~10° so the right side is
-  closer to the viewer. Screen quad is a trapezoid; the bezel wraps it.
-  Sharp corners on the quads (perspective viewing softens the eye's
-  expectation of rounded corners at small scale).
+  iphone-tilt-right — stronger ~22° tilt. Left edge is ~27% shorter
+  than the right.
 
-  Screen quad (manifest "quad"):
-    tl: (100, 140)
-    tr: (1100,  60)
-    br: (1100, 2540)
-    bl: (100, 2460)
+  Screen quad:
+    tl: ( 180,  380)
+    tr: (1140,   40)
+    br: (1140, 2560)
+    bl: ( 180, 2220)
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2600" viewBox="0 0 1200 2600">
   <defs>
@@ -22,24 +20,24 @@
 
   <!-- Bezel polygon with screen polygon hole -->
   <path fill-rule="evenodd" fill="url(#iphoneBezelTilt)"
-        d="M 40 80
-           L 1160 0
-           L 1160 2600
-           L 40 2520
+        d="M 120 320
+           L 1180   0
+           L 1180 2600
+           L 120 2280
            Z
-           M 100 140
-           L 1100 60
-           L 1100 2540
-           L 100 2460
+           M 180 380
+           L 1140  40
+           L 1140 2560
+           L 180 2220
            Z"/>
 
-  <!-- Outer-rim leading-right highlight -->
-  <polyline points="1160,0 1160,2600" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
+  <!-- Outer rim leading-right highlight -->
+  <polyline points="1180,0 1180,2600" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
 
   <!-- Inner screen-edge ring -->
-  <path d="M 100 140 L 1100 60 L 1100 2540 L 100 2460 Z"
+  <path d="M 180 380 L 1140 40 L 1140 2560 L 180 2220 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Dynamic island — projected onto the tilted top -->
-  <ellipse cx="600" cy="195" rx="148" ry="38" fill="#000000"/>
+  <!-- Dynamic island — projected onto the tilted top of the screen quad -->
+  <ellipse cx="660" cy="200" rx="148" ry="38" fill="#000000"/>
 </svg>
