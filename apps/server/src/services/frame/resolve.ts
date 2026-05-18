@@ -32,7 +32,7 @@ export interface BrandColorResolver {
   (projectPath: string, opts: { vpaHome: string; workspaceRoot: string }): Promise<string>;
 }
 
-const defaultBrandColorResolver: BrandColorResolver = async (projectPath, opts) => {
+export const defaultBrandColorResolver: BrandColorResolver = async (projectPath, opts) => {
   const colors = await resolveLtColors(projectPath, opts);
   // `accent` is the brand primary stripe colour — the closest analog to a
   // "brand colour" in our palette resolution. `bgColor`/`textColor` are
@@ -92,6 +92,16 @@ async function resolveBackgroundColor(
   if (!bg) return DEFAULT_FRAME_BG;
   if (bg === 'transparent') return 'transparent';
   if (bg === 'brand') {
+    if (!opts.brandColorResolver) {
+      // Guard against silent crashes when the production caller omitted the
+      // path arguments that the default resolver depends on.
+      if (!opts.vpaHome || !opts.workspaceRoot) {
+        throw new Error(
+          "Cannot resolve frame_background='brand': vpaHome and workspaceRoot are required, " +
+            'or supply a brandColorResolver',
+        );
+      }
+    }
     const resolver = opts.brandColorResolver ?? defaultBrandColorResolver;
     return resolver(opts.projectPath, {
       vpaHome: opts.vpaHome,
@@ -100,4 +110,23 @@ async function resolveBackgroundColor(
   }
   // Literal hex like '#1a2b3c' — schema already validated the format.
   return bg;
+}
+
+/**
+ * Wraps a `BrandColorResolver` so the inner resolver is called at most once
+ * per render. Subsequent calls with the same (or different) project path return
+ * the memoised result without re-reading `design.md`.
+ *
+ * The cache key is intentionally project-agnostic: within a single render all
+ * scenes belong to the same project, so the brand colour is constant. Use a
+ * fresh wrapper per render if rendering multiple unrelated projects.
+ */
+export function createCachingBrandColorResolver(inner: BrandColorResolver): BrandColorResolver {
+  let cached: string | null = null;
+  return async (projectPath, opts) => {
+    if (cached === null) {
+      cached = await inner(projectPath, opts);
+    }
+    return cached;
+  };
 }

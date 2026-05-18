@@ -11,7 +11,12 @@ import {
   type FrameManifest,
 } from '../frame/manifest.js';
 import { createFrameRenderer, type FrameRenderer } from '../frame/render.js';
-import { resolveSceneFrame, type BrandColorResolver } from '../frame/resolve.js';
+import {
+  resolveSceneFrame,
+  createCachingBrandColorResolver,
+  defaultBrandColorResolver,
+  type BrandColorResolver,
+} from '../frame/resolve.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +100,11 @@ export async function renderFinalVideo(
     frameDeps.manifest = await loadFrameManifest(assetsDir);
     frameDeps.assetsDir = assetsDir;
   }
+  // Wrap the brand resolver in a per-render memo so design.md is read once even
+  // when multiple scenes all use frame_background: 'brand'.
+  frameDeps.brandColorResolver = createCachingBrandColorResolver(
+    frameDeps.brandColorResolver ?? defaultBrandColorResolver,
+  );
 
   const rendersDir = join(projectPath, 'renders');
   const tmpDir = join(rendersDir, '.tmp');
@@ -140,7 +150,8 @@ export async function renderFinalVideo(
       workspaceRoot: opts.workspaceRoot ?? '',
       frameDeps,
     });
-    // Persist any frame_render path written during the mux.
+    // Save per-scene so a crash mid-loop leaves the cached frame_render
+    // paths persisted — the next render skips work already done.
     if (muxResult.storyboard !== sb) {
       sb = muxResult.storyboard;
       await saveStoryboard(projectPath, sb);
@@ -325,8 +336,8 @@ interface PrepareSceneFrameResult {
  * Returns `null` when no frame is requested — callers should fall through to
  * their existing video-source resolution (overlay_render, else recording).
  *
- * Cache invalidation: if the cached file exists and its mtime is at least as
- * recent as the upstream video's mtime, the ffmpeg pass is skipped. The path
+ * Cache invalidation: if the cached file exists and its mtime is strictly
+ * newer than the upstream video's mtime, the ffmpeg pass is skipped. The path
  * is also persisted to `scene.frame_render` in the (returned) storyboard.
  */
 export async function prepareSceneFrame(
@@ -393,14 +404,17 @@ export async function prepareSceneFrame(
 }
 
 /**
- * Returns true when `cachePath` exists and its mtime is >= `upstreamPath`'s
- * mtime — i.e. the framed video is at least as new as its input. False on any
+ * Returns true when `cachePath` exists and its mtime is strictly > `upstreamPath`'s
+ * mtime — i.e. the framed video was modified AFTER its input. False on any
  * stat error (missing files, permission issues), so the caller will re-render.
+ *
+ * Tied mtimes (same-second writes on low-resolution filesystems) are NOT
+ * considered fresh so a simultaneous upstream write always forces a re-render.
  */
 async function isCacheFresh(cachePath: string, upstreamPath: string): Promise<boolean> {
   try {
     const [cacheStat, upstreamStat] = await Promise.all([stat(cachePath), stat(upstreamPath)]);
-    return cacheStat.mtimeMs >= upstreamStat.mtimeMs;
+    return cacheStat.mtimeMs > upstreamStat.mtimeMs;
   } catch {
     return false;
   }

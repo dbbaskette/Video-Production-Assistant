@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSceneFrame, type BrandColorResolver } from './resolve.js';
+import { resolveSceneFrame, createCachingBrandColorResolver, type BrandColorResolver } from './resolve.js';
 import type { FrameManifest } from './manifest.js';
 import type { Scene, StoryboardDefaults } from '@vpa/shared';
 
@@ -164,5 +164,94 @@ describe('resolveSceneFrame', () => {
         assetsDir: FAKE_ASSETS,
       });
     });
+  });
+
+  describe("brand background guard — missing vpaHome / workspaceRoot", () => {
+    it("throws a clear error when frame_background='brand' and no resolver or vpaHome", async () => {
+      const opts = {
+        scene: makeScene({ frame_style: 'laptop-flat', frame_background: 'brand' }),
+        defaults: undefined,
+        manifest,
+        assetsDir: FAKE_ASSETS,
+        projectPath: '/fake/project',
+        vpaHome: '',          // empty — should trigger the guard
+        workspaceRoot: '/fake/workspace',
+        // No brandColorResolver injected
+      };
+      await expect(resolveSceneFrame(opts)).rejects.toThrow(
+        /Cannot resolve frame_background='brand': vpaHome and workspaceRoot are required/,
+      );
+    });
+
+    it("throws a clear error when frame_background='brand' and workspaceRoot is missing", async () => {
+      const opts = {
+        scene: makeScene({ frame_style: 'laptop-flat', frame_background: 'brand' }),
+        defaults: undefined,
+        manifest,
+        assetsDir: FAKE_ASSETS,
+        projectPath: '/fake/project',
+        vpaHome: '/fake/vpa-home',
+        workspaceRoot: '',    // empty — should trigger the guard
+        // No brandColorResolver injected
+      };
+      await expect(resolveSceneFrame(opts)).rejects.toThrow(
+        /Cannot resolve frame_background='brand': vpaHome and workspaceRoot are required/,
+      );
+    });
+
+    it("does NOT throw when a brandColorResolver is injected, even if vpaHome is empty", async () => {
+      const opts = {
+        scene: makeScene({ frame_style: 'laptop-flat', frame_background: 'brand' }),
+        defaults: undefined,
+        manifest,
+        assetsDir: FAKE_ASSETS,
+        projectPath: '/fake/project',
+        vpaHome: '',
+        workspaceRoot: '',
+        brandColorResolver: (async () => '#aabbcc') satisfies BrandColorResolver,
+      };
+      const result = await resolveSceneFrame(opts);
+      expect(result?.backgroundColor).toBe('#aabbcc');
+    });
+  });
+});
+
+describe('createCachingBrandColorResolver', () => {
+  it('calls the inner resolver only once across multiple invocations', async () => {
+    let callCount = 0;
+    const inner: BrandColorResolver = async (_projectPath, _opts) => {
+      callCount += 1;
+      return '#cached';
+    };
+
+    const cached = createCachingBrandColorResolver(inner);
+
+    const r1 = await cached('/fake/project', { vpaHome: '/vpa', workspaceRoot: '/ws' });
+    const r2 = await cached('/fake/project', { vpaHome: '/vpa', workspaceRoot: '/ws' });
+    const r3 = await cached('/fake/project', { vpaHome: '/vpa', workspaceRoot: '/ws' });
+
+    expect(callCount).toBe(1);
+    expect(r1).toBe('#cached');
+    expect(r2).toBe('#cached');
+    expect(r3).toBe('#cached');
+  });
+
+  it('each wrapper instance has its own independent cache', async () => {
+    let callCount = 0;
+    const inner: BrandColorResolver = async () => {
+      callCount += 1;
+      return `#color${callCount}`;
+    };
+
+    const wrapper1 = createCachingBrandColorResolver(inner);
+    const wrapper2 = createCachingBrandColorResolver(inner);
+
+    const r1 = await wrapper1('/fake/project', { vpaHome: '/vpa', workspaceRoot: '/ws' });
+    const r2 = await wrapper2('/fake/project', { vpaHome: '/vpa', workspaceRoot: '/ws' });
+
+    // Each wrapper calls the inner once — total 2 calls.
+    expect(callCount).toBe(2);
+    expect(r1).toBe('#color1');
+    expect(r2).toBe('#color2');
   });
 });

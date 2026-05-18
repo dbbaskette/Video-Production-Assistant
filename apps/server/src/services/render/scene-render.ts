@@ -29,6 +29,10 @@ import {
   prepareSceneFrame,
   type FramePrepDeps,
 } from './index.js';
+import {
+  createCachingBrandColorResolver,
+  defaultBrandColorResolver,
+} from '../frame/resolve.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -123,6 +127,16 @@ export async function renderSingleScene(
   //     output gets cached at renders/.frame/<sceneId>-framed.mp4 — same
   //     location used by the project-level render — so both pipelines share
   //     the cache and the storyboard `frame_render` field.
+  //
+  // Wrap the brand resolver in a per-render memo so design.md is read at most
+  // once even if this call were ever extended to multiple scenes.
+  const frameDepsRaw = deps.__frameDeps ?? {};
+  const frameDepsWithCache: FramePrepDeps = {
+    ...frameDepsRaw,
+    brandColorResolver: createCachingBrandColorResolver(
+      frameDepsRaw.brandColorResolver ?? defaultBrandColorResolver,
+    ),
+  };
   const framePrep = await prepareSceneFrame({
     projectPath,
     storyboard: sb,
@@ -131,8 +145,10 @@ export async function renderSingleScene(
     upstreamVideo: overlayPath,
     vpaHome,
     workspaceRoot,
-    deps: deps.__frameDeps ?? {},
+    deps: frameDepsWithCache,
   });
+  // Save per-scene so a crash mid-loop leaves the cached frame_render
+  // paths persisted — the next render skips work already done.
   if (framePrep && framePrep.updatedStoryboard !== sb) {
     sb = framePrep.updatedStoryboard;
     await saveStoryboard(projectPath, sb);
