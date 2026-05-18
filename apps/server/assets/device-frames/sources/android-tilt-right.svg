@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  android-tilt-right — stronger ~22° tilt. Left edge ~27% shorter than
-  the right.
+  android-tilt-right — ~22° tilt. Bezel fills the full canvas with the
+  screen quad as a hole (masks the perspective filter's video bleed
+  outside the quad). See laptop-tilt-right.svg for the full rationale.
 
   Screen quad:
     tl: ( 180,  400)
@@ -18,12 +19,12 @@
     </linearGradient>
   </defs>
 
-  <!-- Bezel polygon with screen polygon hole -->
+  <!-- Full-canvas bezel with screen quad as the only hole -->
   <path fill-rule="evenodd" fill="url(#androidBezelTilt)"
-        d="M 120 340
-           L 1180  40
-           L 1180 2560
-           L 120 2260
+        d="M 0 0
+           L 1200 0
+           L 1200 2600
+           L 0 2600
            Z
            M 180 400
            L 1140  80
@@ -31,14 +32,16 @@
            L 180 2200
            Z"/>
 
-  <!-- Outer rim leading-right highlight -->
-  <polyline points="1180,40 1180,2560" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
-
-  <!-- Inner screen-edge ring -->
+  <!-- Inner stroke around the screen quad -->
   <path d="M 180 400 L 1140 80 L 1140 2520 L 180 2200 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Hole-punch camera, projected onto tilted top of screen quad -->
+  <!-- Faint device-shape outline so the phone reads against the
+       full-canvas bezel -->
+  <path d="M 120 340 L 1180 40" stroke="#3a3a3e" stroke-width="2" opacity="0.35" fill="none"/>
+  <path d="M 120 2260 L 1180 2560" stroke="#3a3a3e" stroke-width="2" opacity="0.35" fill="none"/>
+
+  <!-- Hole-punch camera projected onto tilted top of screen quad -->
   <circle cx="660" cy="240" r="32" fill="#000000"/>
   <circle cx="660" cy="240" r="20" fill="#0a0a0c"/>
   <circle cx="660" cy="240" r="11" fill="#1a1a2a" opacity="0.6"/>
