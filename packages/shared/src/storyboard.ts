@@ -113,6 +113,13 @@ export const SceneSchema = z.object({
       z.string().regex(/^#[0-9a-fA-F]{6}$/),
     ])
     .optional(),
+  /**
+   * Cached path (relative to the project) of the framed video — the result of
+   * compositing the (optionally lower-thirds-burned) recording into the chosen
+   * device frame. Lives under `renders/.frame/<sceneId>-framed.mp4`. Invalidated
+   * when its upstream video is newer than the cached file.
+   */
+  frame_render: z.string().optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 

@@ -2,9 +2,16 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, rm, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { loadStoryboard } from '../storyboard/index.js';
-import type { Scene } from '@vpa/shared';
+import { dirname, join } from 'node:path';
+import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
+import type { Scene, Storyboard, StoryboardDefaults } from '@vpa/shared';
+import {
+  loadFrameManifest,
+  defaultAssetsDir,
+  type FrameManifest,
+} from '../frame/manifest.js';
+import { createFrameRenderer, type FrameRenderer } from '../frame/render.js';
+import { resolveSceneFrame, type BrandColorResolver } from '../frame/resolve.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +38,16 @@ export interface RenderOptions {
     audioPath: string;          // absolute path to the music file (mp3/wav)
     volumeDb?: number;          // gain offset in dB; -20 = quiet bed, 0 = full volume
   };
+  /**
+   * VPA install root — needed only when scenes/defaults request
+   * `frame_background: 'brand'`, so the brand's primary color can be resolved.
+   * Optional; falls back to a neutral gray when scenes use non-brand backgrounds.
+   */
+  vpaHome?: string;
+  /** Workspace root — sibling of `vpaHome` for brand color resolution. */
+  workspaceRoot?: string;
+  /** Internal — DI seams for tests (manifest, frame renderer, brand resolver). */
+  __frameDeps?: FramePrepDeps;
 }
 
 export interface RenderResult {
@@ -52,7 +69,7 @@ export async function renderFinalVideo(
   opts: RenderOptions = {},
   onProgress?: RenderProgress,
 ): Promise<RenderResult> {
-  const sb = await loadStoryboard(projectPath);
+  let sb = await loadStoryboard(projectPath);
   if (!sb) throw new RenderError('No storyboard found', { hint: 'Build the storyboard first' });
 
   const audioMode = opts.audioMode ?? 'replace';
@@ -65,6 +82,20 @@ export async function renderFinalVideo(
     });
   }
 
+  // Pre-load the frame manifest once so each scene's frame pass doesn't pay
+  // the JSON-parse cost. Skipped entirely when no scene uses a frame — the
+  // helper bails out before touching the manifest in that case, but loading
+  // it up-front avoids a stat/parse on every iteration when frames ARE used.
+  const framesRequested = renderableScenes.some(
+    (s) => s.frame_style ?? sb!.defaults?.frame_style,
+  );
+  const frameDeps: FramePrepDeps = opts.__frameDeps ?? {};
+  if (framesRequested && !frameDeps.manifest) {
+    const assetsDir = frameDeps.assetsDir ?? defaultAssetsDir();
+    frameDeps.manifest = await loadFrameManifest(assetsDir);
+    frameDeps.assetsDir = assetsDir;
+  }
+
   const rendersDir = join(projectPath, 'renders');
   const tmpDir = join(rendersDir, '.tmp');
   await mkdir(rendersDir, { recursive: true });
@@ -72,7 +103,9 @@ export async function renderFinalVideo(
 
   const scenePaths: string[] = [];
   for (let i = 0; i < renderableScenes.length; i++) {
-    const scene = renderableScenes[i]!;
+    // Refresh scene reference from the (possibly updated) storyboard so the
+    // frame_render path persisted on a prior iteration is visible here.
+    const scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
     onProgress?.({
       type: 'step',
       step: 'concat-audio',
@@ -94,14 +127,24 @@ export async function renderFinalVideo(
     });
 
     const sceneMp4 = join(rendersDir, `${paddedIndex(i)}-${slug(scene.name)}.mp4`);
-    await muxScene({
+    const muxResult = await muxScene({
       projectPath,
+      storyboard: sb,
       scene,
+      defaults: sb.defaults,
       audioPath: sceneAudioPath,
       audioMode,
       burnSubtitles,
       outputPath: sceneMp4,
+      vpaHome: opts.vpaHome ?? '',
+      workspaceRoot: opts.workspaceRoot ?? '',
+      frameDeps,
     });
+    // Persist any frame_render path written during the mux.
+    if (muxResult.storyboard !== sb) {
+      sb = muxResult.storyboard;
+      await saveStoryboard(projectPath, sb);
+    }
     scenePaths.push(sceneMp4);
   }
 
@@ -237,26 +280,190 @@ async function prepareSceneAudio(projectPath: string, scene: Scene, tmpDir: stri
   return out;
 }
 
+// ── Frame compositing (slots between LT-overlay and audio mux) ───────
+
+/**
+ * Internal DI seams for the frame pass. Tests pass fakes; production callers
+ * leave them undefined to get the real ffmpeg-backed implementations.
+ */
+export interface FramePrepDeps {
+  manifest?: FrameManifest;
+  frameRenderer?: FrameRenderer;
+  brandColorResolver?: BrandColorResolver;
+  assetsDir?: string;
+}
+
+interface PrepareSceneFrameOpts {
+  projectPath: string;
+  /** Storyboard handle — used to persist `scene.frame_render` after a fresh render. */
+  storyboard: Storyboard;
+  scene: Scene;
+  defaults: StoryboardDefaults | undefined;
+  /** Absolute path to the upstream video (overlay_render or raw recording). */
+  upstreamVideo: string;
+  vpaHome: string;
+  workspaceRoot: string;
+  deps: FramePrepDeps;
+}
+
+interface PrepareSceneFrameResult {
+  /** Absolute path to the framed video that should feed the audio mux. */
+  framedVideo: string;
+  /** Updated storyboard (if `scene.frame_render` was written). Caller owns persisting it. */
+  updatedStoryboard: Storyboard;
+  /** Whether the frame pass ran (false = cache hit or no frame requested). */
+  rendered: boolean;
+}
+
+/**
+ * If the scene (or storyboard defaults) requests a device frame, composite the
+ * upstream video into it and cache the result at
+ *   `renders/.frame/<sceneId>-framed.mp4`
+ * relative to the project. Returns the framed video path so callers can feed it
+ * into the audio mux stage.
+ *
+ * Returns `null` when no frame is requested — callers should fall through to
+ * their existing video-source resolution (overlay_render, else recording).
+ *
+ * Cache invalidation: if the cached file exists and its mtime is at least as
+ * recent as the upstream video's mtime, the ffmpeg pass is skipped. The path
+ * is also persisted to `scene.frame_render` in the (returned) storyboard.
+ */
+export async function prepareSceneFrame(
+  opts: PrepareSceneFrameOpts,
+): Promise<PrepareSceneFrameResult | null> {
+  const {
+    projectPath,
+    storyboard,
+    scene,
+    defaults,
+    upstreamVideo,
+    vpaHome,
+    workspaceRoot,
+    deps,
+  } = opts;
+
+  // Manifest is shared per-project-render; load lazily if the caller didn't
+  // pre-load. defaultAssetsDir() points at the bundled assets folder.
+  const assetsDir = deps.assetsDir ?? defaultAssetsDir();
+  const manifest = deps.manifest ?? (await loadFrameManifest(assetsDir));
+
+  const resolved = await resolveSceneFrame({
+    scene,
+    defaults,
+    manifest,
+    assetsDir,
+    projectPath,
+    vpaHome,
+    workspaceRoot,
+    brandColorResolver: deps.brandColorResolver,
+  });
+  if (!resolved) return null;
+
+  // Cache location is deterministic per scene id so re-runs reuse the same
+  // file. Hidden `.frame` subdir keeps renders/ tidy alongside .tmp.
+  const cacheRel = join('renders', '.frame', `${scene.id}-framed.mp4`);
+  const cacheAbs = join(projectPath, cacheRel);
+
+  const cacheFresh = await isCacheFresh(cacheAbs, upstreamVideo);
+  let updatedStoryboard = storyboard;
+
+  if (cacheFresh) {
+    // Persist cache path in case it wasn't set (e.g. someone hand-copied the
+    // file). Idempotent — does nothing if already equal.
+    if (scene.frame_render !== cacheRel) {
+      updatedStoryboard = updateScene(storyboard, scene.id, { frame_render: cacheRel });
+    }
+    return { framedVideo: cacheAbs, updatedStoryboard, rendered: false };
+  }
+
+  await mkdir(dirname(cacheAbs), { recursive: true });
+
+  const renderer = deps.frameRenderer ?? createFrameRenderer();
+  await renderer({
+    inputVideo: upstreamVideo,
+    frameEntry: resolved.frameEntry,
+    assetsDir: resolved.assetsDir,
+    backgroundColor: resolved.backgroundColor,
+    outputPath: cacheAbs,
+  });
+
+  updatedStoryboard = updateScene(storyboard, scene.id, { frame_render: cacheRel });
+  return { framedVideo: cacheAbs, updatedStoryboard, rendered: true };
+}
+
+/**
+ * Returns true when `cachePath` exists and its mtime is >= `upstreamPath`'s
+ * mtime — i.e. the framed video is at least as new as its input. False on any
+ * stat error (missing files, permission issues), so the caller will re-render.
+ */
+async function isCacheFresh(cachePath: string, upstreamPath: string): Promise<boolean> {
+  try {
+    const [cacheStat, upstreamStat] = await Promise.all([stat(cachePath), stat(upstreamPath)]);
+    return cacheStat.mtimeMs >= upstreamStat.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
 // ── Stage 2: per-scene mux ───────────────────────────────────────────
 
 interface MuxOpts {
   projectPath: string;
+  storyboard: Storyboard;
   scene: Scene;
+  defaults: StoryboardDefaults | undefined;
   audioPath: string | null;
   audioMode: 'replace' | 'mix';
   burnSubtitles: boolean;
   outputPath: string;
+  vpaHome: string;
+  workspaceRoot: string;
+  frameDeps: FramePrepDeps;
 }
 
-async function muxScene(opts: MuxOpts): Promise<void> {
-  const { projectPath, scene, audioPath, audioMode, burnSubtitles, outputPath } = opts;
+interface MuxResult {
+  /** Storyboard reflecting any `frame_render` writes from the frame pass.
+   *  Equal-by-reference to `opts.storyboard` when nothing changed. */
+  storyboard: Storyboard;
+}
+
+async function muxScene(opts: MuxOpts): Promise<MuxResult> {
+  const {
+    projectPath,
+    storyboard,
+    scene,
+    defaults,
+    audioPath,
+    audioMode,
+    burnSubtitles,
+    outputPath,
+    vpaHome,
+    workspaceRoot,
+    frameDeps,
+  } = opts;
 
   // Use the rendered overlay video (with lower thirds) if available;
   // otherwise the raw recording.
   const overlay = scene.overlay_render ? join(projectPath, scene.overlay_render) : null;
   const rec = scene.recording!.source;
   const recPath = join(projectPath, rec);
-  const videoSrc = overlay && existsSync(overlay) ? overlay : recPath;
+  const upstreamVideo = overlay && existsSync(overlay) ? overlay : recPath;
+
+  // Frame pass — slot between lower-thirds bake and audio mux. When no frame
+  // is requested, this returns null and we fall through to the upstream video.
+  const framePrep = await prepareSceneFrame({
+    projectPath,
+    storyboard,
+    scene,
+    defaults,
+    upstreamVideo,
+    vpaHome,
+    workspaceRoot,
+    deps: frameDeps,
+  });
+  const videoSrc = framePrep?.framedVideo ?? upstreamVideo;
+  const updatedStoryboard = framePrep?.updatedStoryboard ?? storyboard;
 
   const args: string[] = ['-y', '-i', videoSrc];
   if (audioPath) args.push('-i', audioPath);
@@ -292,6 +499,8 @@ async function muxScene(opts: MuxOpts): Promise<void> {
 
   args.push(outputPath);
   await runFfmpeg(args);
+
+  return { storyboard: updatedStoryboard };
 }
 
 // ── Stage 3: multi-scene concat ──────────────────────────────────────

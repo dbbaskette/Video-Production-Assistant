@@ -9,6 +9,8 @@ import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 
 interface Deps {
   store: ProjectStore;
+  vpaHome: string;
+  workspaceRoot: string;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -32,6 +34,8 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     const opts: RenderOptions = {
       audioMode: body.audioMode === 'mix' ? 'mix' : 'replace',
       burnSubtitles: !!body.burnSubtitles,
+      vpaHome: deps.vpaHome,
+      workspaceRoot: deps.workspaceRoot,
     };
 
     let projectPath: string;

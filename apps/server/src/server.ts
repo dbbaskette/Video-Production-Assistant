@@ -154,7 +154,11 @@ export async function buildServer() {
     registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
-    registerRenderRoutes(instance, { store }),
+    registerRenderRoutes(instance, {
+      store,
+      vpaHome: config.vpaHome,
+      workspaceRoot: wsRoot,
+    }),
   );
   await app.register(async (instance) =>
     registerSceneRenderRoutes(instance, {
