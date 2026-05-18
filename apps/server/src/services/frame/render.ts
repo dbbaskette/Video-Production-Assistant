@@ -148,6 +148,7 @@ export function createFrameRenderer(opts?: {
       '-c:v', 'libx264',
       '-preset', 'veryfast',
       '-crf', '20',
+      '-pix_fmt', 'yuv420p',
       '-c:a', 'copy',
       outputPath,
     ];

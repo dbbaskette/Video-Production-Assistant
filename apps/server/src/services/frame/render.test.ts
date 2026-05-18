@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { buildFlatFilter, createFrameRenderer } from './render.js';
 import type { FlatFrame } from './manifest.js';
 
@@ -199,6 +199,21 @@ describe('createFrameRenderer', () => {
     expect(capturedArgs).toContain('20');
     expect(capturedArgs).toContain('-c:a');
     expect(capturedArgs).toContain('copy');
+  });
+
+  it('pins -pix_fmt yuv420p to avoid libx264 alpha deprecation warning', async () => {
+    const render = createFrameRenderer({ runFfmpeg: fakeRunFfmpeg, probeDuration: fakeProbeDuration });
+    await render({
+      inputVideo: INPUT_VIDEO,
+      frameEntry: sampleEntry,
+      assetsDir: ASSETS_DIR,
+      backgroundColor: BG_HEX,
+      outputPath: OUTPUT_PATH,
+    });
+
+    const pixFmtIdx = capturedArgs.indexOf('-pix_fmt');
+    expect(pixFmtIdx).toBeGreaterThan(-1);
+    expect(capturedArgs[pixFmtIdx + 1]).toBe('yuv420p');
   });
 
   it('last arg is the output path', async () => {
