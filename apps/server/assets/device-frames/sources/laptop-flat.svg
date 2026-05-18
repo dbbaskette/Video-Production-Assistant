@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  laptop-flat — clean MacBook-style display chrome with a transparent
+  screen cutout. Inset is a strict rectangle (the bezel's opaque corners
+  mask the recording's hard edges). 16:10 frame canvas; the inset is
+  16.06:9.34 ≈ 1.71 (slightly wider than 16:9), letterboxing handles
+  whatever the recording's actual aspect ratio is.
+
+  Geometry:
+    Canvas        2560 × 1600
+    Outer corners 48px radius
+    Inset         x=80, y=80, w=2400, h=1400, inner-corner radius 14px
+    Bottom bezel  is 120px (vs 80 on top/sides) for the subtle
+                  bottom-weighted laptop feel.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
+  <defs>
+    <linearGradient id="bezelGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a2a2c"/>
+      <stop offset="55%" stop-color="#19191b"/>
+      <stop offset="100%" stop-color="#0c0c0d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bezel + screen cutout via even-odd path fill -->
+  <path fill-rule="evenodd" fill="url(#bezelGradient)"
+        d="M 48 0
+           L 2512 0
+           Q 2560 0 2560 48
+           L 2560 1552
+           Q 2560 1600 2512 1600
+           L 48 1600
+           Q 0 1600 0 1552
+           L 0 48
+           Q 0 0 48 0
+           Z
+           M 94 80
+           Q 80 80 80 94
+           L 80 1466
+           Q 80 1480 94 1480
+           L 2466 1480
+           Q 2480 1480 2480 1466
+           L 2480 94
+           Q 2480 80 2466 80
+           Z"/>
+
+  <!-- Outer bezel highlight (top rim catches faint light) -->
+  <rect x="2" y="2" width="2556" height="1596" rx="46" ry="46"
+        fill="none" stroke="#3a3a3c" stroke-width="2" opacity="0.45"/>
+
+  <!-- Screen edge inner-shadow rim -->
+  <rect x="80" y="80" width="2400" height="1400" rx="14" ry="14"
+        fill="none" stroke="#000000" stroke-width="2" opacity="0.7"/>
+
+  <!-- Tiny camera notch at top center -->
+  <circle cx="1280" cy="40" r="7" fill="#0a0a0a"/>
+  <circle cx="1280" cy="40" r="2.5" fill="#404044" opacity="0.6"/>
+</svg>

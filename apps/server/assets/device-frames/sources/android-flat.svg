@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  android-flat — Android-style portrait chrome. Slightly squarer corners
+  than iPhone, hole-punch front camera at top center, thin uniform bezel.
+
+  Canvas        1200 × 2600   (≈ 9:19.5)
+  Outer corners 80px radius (less rounded than iPhone's 140)
+  Inset         x=50, y=110, w=1100, h=2440, inner-corner radius 60px
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2600" viewBox="0 0 1200 2600">
+  <defs>
+    <linearGradient id="androidBezel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#26262a"/>
+      <stop offset="55%" stop-color="#141417"/>
+      <stop offset="100%" stop-color="#0a0a0c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bezel + screen cutout -->
+  <path fill-rule="evenodd" fill="url(#androidBezel)"
+        d="M 80 0
+           L 1120 0
+           Q 1200 0 1200 80
+           L 1200 2520
+           Q 1200 2600 1120 2600
+           L 80 2600
+           Q 0 2600 0 2520
+           L 0 80
+           Q 0 0 80 0
+           Z
+           M 110 110
+           Q 50 110 50 170
+           L 50 2490
+           Q 50 2550 110 2550
+           L 1090 2550
+           Q 1150 2550 1150 2490
+           L 1150 170
+           Q 1150 110 1090 110
+           Z"/>
+
+  <!-- Outer rim highlight -->
+  <rect x="2" y="2" width="1196" height="2596" rx="78" ry="78"
+        fill="none" stroke="#3a3a3e" stroke-width="2" opacity="0.4"/>
+
+  <!-- Inner screen-edge shadow -->
+  <rect x="50" y="110" width="1100" height="2440" rx="60" ry="60"
+        fill="none" stroke="#000000" stroke-width="2" opacity="0.7"/>
+
+  <!-- Hole-punch camera at top center, within the screen area -->
+  <circle cx="600" cy="190" r="34" fill="#000000"/>
+  <circle cx="600" cy="190" r="22" fill="#0a0a0c"/>
+  <circle cx="600" cy="190" r="12" fill="#1a1a2a" opacity="0.6"/>
+
+  <!-- Side power button hint (right edge) -->
+  <rect x="1194" y="640" width="6" height="180" fill="#08080a"/>
+  <!-- Side volume buttons (right edge, below power) -->
+  <rect x="1194" y="900" width="6" height="280" fill="#08080a"/>
+</svg>

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  browser-flat — macOS-style browser window chrome. Just a title bar at
+  the top (with traffic-light dots and URL pill); content area below it
+  is transparent so the recording shows through.
+
+  Canvas        2560 × 1600
+  Title bar     120px tall, rounded top corners
+  Inset         x=0, y=120, w=2560, h=1480 (full-width content area
+                below the title bar)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
+  <defs>
+    <linearGradient id="browserChrome" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e8e8ed"/>
+      <stop offset="100%" stop-color="#d0d0d6"/>
+    </linearGradient>
+    <linearGradient id="urlPill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fbfbfd"/>
+      <stop offset="100%" stop-color="#f2f2f5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Title bar with rounded top corners (the only opaque chrome). -->
+  <path fill="url(#browserChrome)"
+        d="M 16 0
+           L 2544 0
+           Q 2560 0 2560 16
+           L 2560 120
+           L 0 120
+           L 0 16
+           Q 0 0 16 0
+           Z"/>
+
+  <!-- 1px hairline under the title bar -->
+  <line x1="0" y1="120" x2="2560" y2="120" stroke="#a8a8ae" stroke-width="2"/>
+
+  <!-- Traffic-light dots (close, minimize, maximize) -->
+  <circle cx="60"  cy="60" r="22" fill="#ff5f57"/>
+  <circle cx="120" cy="60" r="22" fill="#febc2e"/>
+  <circle cx="180" cy="60" r="22" fill="#28c840"/>
+
+  <!-- URL pill centered -->
+  <rect x="880" y="28" width="800" height="64" rx="32" ry="32"
+        fill="url(#urlPill)" stroke="#c4c4ca" stroke-width="1"/>
+  <!-- Lock glyph inside the pill -->
+  <rect x="908" y="50" width="22" height="20" rx="2" ry="2" fill="#8a8a90"/>
+  <rect x="912" y="44" width="14" height="14" rx="6" ry="6"
+        fill="none" stroke="#8a8a90" stroke-width="3"/>
+  <!-- Placeholder URL text -->
+  <text x="950" y="74" font-family="-apple-system, system-ui, sans-serif"
+        font-size="32" fill="#5a5a60">https://example.com/demo</text>
+</svg>

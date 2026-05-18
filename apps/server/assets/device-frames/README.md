@@ -1,46 +1,70 @@
 # Device Frame Assets
 
-This directory contains frame assets used by the render pipeline to wrap recordings in device mockups.
+Frame assets used by the render pipeline to wrap recordings in device mockups.
 
-## What the Manifest Is
+## What's Here
 
-The `manifest.json` file at this path describes all available device-frame assets that the render pipeline can wrap a recording in. Each entry specifies:
+```
+device-frames/
+├── manifest.json       # registry of every available frame
+├── sources/            # hand-authored SVG sources (source of truth)
+├── frames/             # rasterized PNGs consumed by the render pipeline
+├── thumbnails/         # rasterized thumbnails consumed by the picker UI
+└── README.md
+```
 
-- A frame PNG (the device chrome/bezel itself)
-- A thumbnail PNG (small preview for the UI)
-- Geometry to position the recording within the frame, via either:
-  - A flat inset (rectangular region inside the frame PNG)
-  - A perspective quad (four screen corners for 3D tilted frames)
+## Manifest
 
-The manifest is read by the server and exposed via `GET /api/frames`, which populates the frame picker in the UI.
+`manifest.json` is read on server startup and exposed via `GET /api/frames`,
+which populates the frame picker in the UI. Each entry specifies:
 
-## Schema Reference
+- A frame PNG (device chrome / bezel)
+- A thumbnail PNG (small preview)
+- Geometry: either a flat `inset` rectangle or a perspective `quad`
 
-Frame entries in `manifest.json` conform to one of two TypeScript schemas defined in `apps/server/src/services/frame/manifest.ts`:
+The zod schemas in `apps/server/src/services/frame/manifest.ts`
+(`FlatFrameSchema` / `PerspectiveFrameSchema`, joined by a discriminated
+union on `type`) are the truth — this README only covers conceptual
+structure. Look at the schema for exact field definitions.
 
-- **`FlatFrameSchema`** — for frames with a flat, axis-aligned screen region. Includes an `inset` rectangle.
-- **`PerspectiveFrameSchema`** — for frames with a tilted or 3D-rotated screen region. Includes a `quad` (four corner points).
+## Shipped Families
 
-See those schemas in the source code for full property details; this README covers the conceptual structure and how to add frames.
+| Family   | Flat                | Perspective              |
+|----------|---------------------|--------------------------|
+| laptop   | `laptop-flat`       | `laptop-tilt-right`      |
+| iphone   | `iphone-flat`       | `iphone-tilt-right`      |
+| android  | `android-flat`      | `android-tilt-right`     |
+| tablet   | `tablet-flat`       | `tablet-tilt-right`      |
+| browser  | `browser-flat`      | `browser-tilt-right`     |
 
-## v1 Shipping Assets
+All ten frames are hand-authored SVG → PNG. The browser-chrome variants
+draw a static URL pill reading `https://example.com/demo`; making that
+per-scene editable is a follow-up (see [#29](https://github.com/dbbaskette/Video-Production-Assistant/issues/29)).
 
-Currently, v1 ships only **`laptop-flat`** as a reference asset. The frame PNG is a 1×1 placeholder; real design work is pending. See [#29](https://github.com/dbbaskette/Video-Production-Assistant/issues/29) for the design + manifest roadmap for the remaining device families (iPhone, Android, browser-chrome, tablet).
+## Editing or Adding Frames
 
-## Adding a New Frame
+### Workflow
 
-### 1. Create and prepare the frame assets
+1. Edit / add an SVG under `sources/<id>.svg`. The viewBox sets the
+   frame's pixel canvas — match `frameSize` in the manifest entry.
+2. For flat frames: draw the bezel/chrome with the screen region cut
+   out via `fill-rule="evenodd"` so the recording shows through.
+3. For perspective frames: draw the bezel as a polygon outside the
+   screen quad, with the screen quad punched out via `fill-rule="evenodd"`.
+   The renderer warps the recording into the quad using ffmpeg's
+   `perspective` filter — the SVG just provides chrome geometry.
+4. Run the build script:
+   ```bash
+   ./scripts/render-frames.sh
+   ```
+   Requires `librsvg` (`brew install librsvg`). Outputs to `frames/` and
+   `thumbnails/`.
+5. Edit `manifest.json` — add or update the entry with the correct
+   `inset` (flat) or `quad` (perspective) geometry matching the SVG.
+6. Restart the server. Changes appear at `GET /api/frames` and in the
+   FrameStylePicker.
 
-- **Frame PNG** — the device chrome/bezel. Save at `frames/<id>.png`. Recommend 2× to 3× the final output resolution to avoid upscaling artifacts.
-- **Thumbnail PNG** — a small preview (~160×100 px) used in the FrameStylePicker UI. Save at `thumbnails/<id>.png`.
-
-The frame PNG should have an opaque region outside the screen area (so that perspective distortion bleed gets masked cleanly).
-
-### 2. Add an entry to `manifest.json`
-
-Append a new object with the appropriate type and geometry:
-
-#### For flat frames (axis-aligned screen)
+### Flat frame manifest entry
 
 ```json
 {
@@ -50,24 +74,18 @@ Append a new object with the appropriate type and geometry:
   "displayName": "MacBook (flat)",
   "frame": "frames/laptop-flat.png",
   "thumbnail": "thumbnails/laptop-flat.png",
-  "frameSize": { "w": 1920, "h": 1200 },
+  "frameSize": { "w": 2560, "h": 1600 },
   "type": "flat",
-  "inset": {
-    "x": 80,
-    "y": 80,
-    "w": 1760,
-    "h": 1100
-  }
+  "inset": { "x": 80, "y": 80, "w": 2400, "h": 1400 }
 }
 ```
 
-Required fields: `id`, `family`, `variant`, `displayName`, `frame`, `thumbnail`, `frameSize` (`w`/`h`), `type: "flat"`, and `inset`.
+`inset` is the rectangle in frame-pixel coordinates where the recording
+lands. The renderer letterboxes recordings whose aspect ratio doesn't
+match the inset, so chrome with rounded screen corners still works
+cleanly (the opaque bezel masks the recording's hard corners).
 
-The `inset` is a rectangle in **frame pixel coordinates** that describes where the recording should land:
-- `x`, `y` — top-left corner of the recording region
-- `w`, `h` — width and height of the recording region
-
-#### For perspective frames (tilted screen)
+### Perspective frame manifest entry
 
 ```json
 {
@@ -77,49 +95,36 @@ The `inset` is a rectangle in **frame pixel coordinates** that describes where t
   "displayName": "MacBook (tilted right)",
   "frame": "frames/laptop-tilt-right.png",
   "thumbnail": "thumbnails/laptop-tilt-right.png",
-  "frameSize": { "w": 2200, "h": 1600 },
+  "frameSize": { "w": 2560, "h": 1600 },
   "type": "perspective",
   "quad": {
-    "tl": { "x": 220, "y": 140 },
-    "tr": { "x": 1980, "y": 80 },
-    "br": { "x": 1990, "y": 1120 },
-    "bl": { "x": 210, "y": 1180 }
+    "tl": { "x": 200, "y": 180 },
+    "tr": { "x": 2400, "y": 100 },
+    "br": { "x": 2400, "y": 1500 },
+    "bl": { "x": 200, "y": 1420 }
   }
 }
 ```
 
-Required fields: `id`, `family`, `variant`, `displayName`, `frame`, `thumbnail`, `frameSize` (`w`/`h`), `type: "perspective"`, and `quad`.
-
-The `quad` is four corners of the screen region in the frame PNG (in frame pixel coordinates):
-- `tl` — top-left corner
-- `tr` — top-right corner
-- `br` — bottom-right corner
-- `bl` — bottom-left corner
-
-**Important:** When these corners are passed to ffmpeg's perspective filter, they are reordered to `tl→tr→bl→br`. The renderer handles this reordering for you; just enter the corners in the manifest order shown above.
-
-### 3. Restart the server
-
-The manifest is read on startup. Restart the server:
-
-```bash
-npm run dev
-```
-
-The new frame will appear in `GET /api/frames` and in the UI frame picker immediately.
-
-## Remaining Device Families
-
-Design and manifest entries for the following device families are tracked in [#29](https://github.com/dbbaskette/Video-Production-Assistant/issues/29):
-
-- iPhone (flat + at least one perspective variant)
-- Android phone (flat + at least one perspective variant)
-- Browser chrome (flat + at least one perspective variant, with editable URL bar text deferred)
-- Tablet (flat + at least one perspective variant)
-- Mac laptop real design (upgrade from 1×1 placeholder + at least one perspective variant)
+`quad` is the four screen corners in frame-pixel coordinates. **Note:**
+when these corners flow into ffmpeg's `perspective` filter, they are
+reordered to `tl → tr → bl → br`. The renderer (`buildPerspectiveFilter`)
+handles this reordering; you just enter the corners in the manifest
+order shown above (`tl, tr, br, bl`).
 
 ## Technical Notes
 
-- The render pipeline uses the `buildPerspectiveFilter` function, which applies a "scale-to-frame, no pre-pad" geometry. This means recorded video may bleed slightly outside the perspective quad. The device frame PNG must have opaque chrome covering the entire area outside the screen region to mask this bleed cleanly.
-- Adding a new frame requires only asset files and a manifest entry — no code changes are needed once the schema is in place.
-- Thumbnails should not have transparency or distortion; they are displayed as-is in the picker UI.
+- The render pipeline's `buildPerspectiveFilter` uses a "scale-to-frame,
+  no pre-pad" geometry: the recording is scaled to the full frame canvas
+  before being warped into the quad. This means recorded video may bleed
+  outside the screen quad. The device PNG must have opaque chrome
+  covering everything outside the quad to mask this bleed cleanly. All
+  shipped frames satisfy this.
+- Background fill (`brand`, `transparent`, or a custom hex) is resolved
+  by the render pipeline — the SVG does not own the background color.
+  Just leave space outside the chrome transparent.
+- Transparent backgrounds are explicitly disabled in v1 (mp4 lacks
+  alpha). The picker shows the option; the renderer throws a clear error.
+- Browser-chrome URL bar text is currently hard-coded in the SVG. Making
+  it scene-editable is deferred (small new optional `Scene.frame_url`
+  field + renderer text-overlay step).

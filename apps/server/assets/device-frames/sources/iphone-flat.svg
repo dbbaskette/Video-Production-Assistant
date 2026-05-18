@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  iphone-flat — modern iPhone-style portrait chrome with rounded corners
+  and a dynamic-island cutout near the top of the screen.
+
+  Canvas        1200 × 2600   (≈ 9:19.5)
+  Outer corners 140px radius
+  Inset         x=60, y=60, w=1080, h=2480, inner-corner radius 100px
+                (the bezel's rounded screen mask hides corner pixels of
+                 the recording; renderer still treats inset as a strict
+                 rect for placement)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2600" viewBox="0 0 1200 2600">
+  <defs>
+    <linearGradient id="iphoneBezel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2a2a2e"/>
+      <stop offset="55%" stop-color="#16161a"/>
+      <stop offset="100%" stop-color="#08080a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bezel + screen cutout -->
+  <path fill-rule="evenodd" fill="url(#iphoneBezel)"
+        d="M 140 0
+           L 1060 0
+           Q 1200 0 1200 140
+           L 1200 2460
+           Q 1200 2600 1060 2600
+           L 140 2600
+           Q 0 2600 0 2460
+           L 0 140
+           Q 0 0 140 0
+           Z
+           M 160 60
+           Q 60 60 60 160
+           L 60 2440
+           Q 60 2540 160 2540
+           L 1040 2540
+           Q 1140 2540 1140 2440
+           L 1140 160
+           Q 1140 60 1040 60
+           Z"/>
+
+  <!-- Outer rim highlight -->
+  <rect x="2" y="2" width="1196" height="2596" rx="138" ry="138"
+        fill="none" stroke="#3a3a3e" stroke-width="2" opacity="0.45"/>
+
+  <!-- Inner screen-edge shadow -->
+  <rect x="60" y="60" width="1080" height="2480" rx="100" ry="100"
+        fill="none" stroke="#000000" stroke-width="2" opacity="0.7"/>
+
+  <!-- Dynamic Island near top of screen -->
+  <rect x="450" y="120" width="300" height="80" rx="40" ry="40" fill="#000000"/>
+
+  <!-- Side buttons hints (left: volume; right: power) — subtle, off-bezel -->
+  <rect x="0" y="600"  width="6" height="180" fill="#08080a"/>
+  <rect x="0" y="820"  width="6" height="120" fill="#08080a"/>
+  <rect x="0" y="980"  width="6" height="120" fill="#08080a"/>
+  <rect x="1194" y="700" width="6" height="220" fill="#08080a"/>
+</svg>

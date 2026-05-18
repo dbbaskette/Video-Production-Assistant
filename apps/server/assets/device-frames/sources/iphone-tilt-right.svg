@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  iphone-tilt-right — iPhone chrome tilted ~10° so the right side is
+  closer to the viewer. Screen quad is a trapezoid; the bezel wraps it.
+  Sharp corners on the quads (perspective viewing softens the eye's
+  expectation of rounded corners at small scale).
+
+  Screen quad (manifest "quad"):
+    tl: (100, 140)
+    tr: (1100,  60)
+    br: (1100, 2540)
+    bl: (100, 2460)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2600" viewBox="0 0 1200 2600">
+  <defs>
+    <linearGradient id="iphoneBezelTilt" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#08080a"/>
+      <stop offset="55%" stop-color="#16161a"/>
+      <stop offset="100%" stop-color="#2a2a2e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bezel polygon with screen polygon hole -->
+  <path fill-rule="evenodd" fill="url(#iphoneBezelTilt)"
+        d="M 40 80
+           L 1160 0
+           L 1160 2600
+           L 40 2520
+           Z
+           M 100 140
+           L 1100 60
+           L 1100 2540
+           L 100 2460
+           Z"/>
+
+  <!-- Outer-rim leading-right highlight -->
+  <polyline points="1160,0 1160,2600" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
+
+  <!-- Inner screen-edge ring -->
+  <path d="M 100 140 L 1100 60 L 1100 2540 L 100 2460 Z"
+        fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
+
+  <!-- Dynamic island — projected onto the tilted top -->
+  <ellipse cx="600" cy="195" rx="148" ry="38" fill="#000000"/>
+</svg>
