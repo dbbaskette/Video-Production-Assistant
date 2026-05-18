@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  iphone-tilt-right — stronger ~22° tilt. Left edge is ~27% shorter
-  than the right.
+  iphone-tilt-right — ~22° tilt. Bezel fills the full canvas with the
+  screen quad as a hole (masks the perspective filter's video bleed
+  outside the quad). See laptop-tilt-right.svg for the full rationale.
 
   Screen quad:
     tl: ( 180,  380)
@@ -18,12 +19,12 @@
     </linearGradient>
   </defs>
 
-  <!-- Bezel polygon with screen polygon hole -->
+  <!-- Full-canvas bezel with screen quad as the only hole -->
   <path fill-rule="evenodd" fill="url(#iphoneBezelTilt)"
-        d="M 120 320
-           L 1180   0
-           L 1180 2600
-           L 120 2280
+        d="M 0 0
+           L 1200 0
+           L 1200 2600
+           L 0 2600
            Z
            M 180 380
            L 1140  40
@@ -31,13 +32,15 @@
            L 180 2220
            Z"/>
 
-  <!-- Outer rim leading-right highlight -->
-  <polyline points="1180,0 1180,2600" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
-
-  <!-- Inner screen-edge ring -->
+  <!-- Inner stroke around the screen quad for depth -->
   <path d="M 180 380 L 1140 40 L 1140 2560 L 180 2220 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Dynamic island — projected onto the tilted top of the screen quad -->
+  <!-- Faint device-shape outline (parallel to screen quad) so the eye
+       still reads "phone" against the full-canvas bezel. -->
+  <path d="M 120 320 L 1180 0" stroke="#3a3a3e" stroke-width="2" opacity="0.35" fill="none"/>
+  <path d="M 120 2280 L 1180 2600" stroke="#3a3a3e" stroke-width="2" opacity="0.35" fill="none"/>
+
+  <!-- Dynamic island projected onto the tilted top of the screen quad -->
   <ellipse cx="660" cy="200" rx="148" ry="38" fill="#000000"/>
 </svg>

@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  laptop-tilt-right — stronger ~22° tilt so the perspective reads even at
-  thumbnail size. Left edge is ~25% shorter than the right.
+  laptop-tilt-right — ~22° tilt. Bezel fills the full canvas with the
+  screen quad as a hole; this is required because the render pipeline's
+  perspective filter scales the video to the full canvas before warping,
+  and pixels outside the screen quad become garbage extrapolation. The
+  full-canvas bezel masks that bleed. (Side effect: any frame_background
+  color is hidden behind the bezel on perspective variants — the visible
+  device sits flush with the canvas edges.)
 
   Screen quad (manifest "quad"):
     tl: ( 400,  260)
@@ -18,13 +23,12 @@
     </linearGradient>
   </defs>
 
-  <!-- Bezel quad with screen quad punched out (even-odd fill).
-       Bezel ~60px outside each screen-quad corner along the diagonal. -->
+  <!-- Full-canvas bezel with screen quad punched out (even-odd fill). -->
   <path fill-rule="evenodd" fill="url(#bezelGradientTilt)"
-        d="M 340 200
-           L 2500  20
-           L 2500 1580
-           L 340 1400
+        d="M 0 0
+           L 2560 0
+           L 2560 1600
+           L 0 1600
            Z
            M 400 260
            L 2440  80
@@ -32,13 +36,17 @@
            L 400 1340
            Z"/>
 
-  <!-- Outer rim highlight on the leading-right edge -->
-  <polyline points="2500,20 2500,1580" stroke="#404044" stroke-width="3" opacity="0.55" fill="none"/>
-
-  <!-- Inner screen-edge shadow -->
+  <!-- Subtle inner stroke around the screen quad to give the bezel rim
+       depth where it meets the screen. -->
   <path d="M 400 260 L 2440 80 L 2440 1520 L 400 1340 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Camera notch — projected onto the tilted top edge at midpoint -->
+  <!-- A faint device-shape outline so the eye still reads "laptop" even
+       though the bezel runs to the canvas edges. Two slanted strokes
+       parallel to the screen quad's left + right edges. -->
+  <path d="M 340 200 L 2500 20" stroke="#3a3a3c" stroke-width="2" opacity="0.35" fill="none"/>
+  <path d="M 340 1400 L 2500 1580" stroke="#3a3a3c" stroke-width="2" opacity="0.35" fill="none"/>
+
+  <!-- Camera notch — projected onto the tilted top edge -->
   <circle cx="1420" cy="170" r="6" fill="#0a0a0a"/>
 </svg>
