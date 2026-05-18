@@ -249,6 +249,23 @@ function SceneRow({
   const hasLowerThirds = (scene.lower_thirds?.length ?? 0) > 0;
 
   if (editing) {
+    const cancel = () => {
+      setEditing(false);
+      setName(scene.name);
+      setDescription(scene.description);
+    };
+    const submit = () => {
+      if (!updateMutation.isPending) updateMutation.mutate({ name, description });
+    };
+    const onKeyDown: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement> = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    };
     return (
       <div
         style={{
@@ -261,35 +278,34 @@ function SceneRow({
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
+          onKeyDown={onKeyDown}
+          autoFocus
           style={{ width: '100%', marginBottom: 6, fontSize: 13, fontWeight: 600 }}
           placeholder="Scene name"
         />
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
+          onKeyDown={onKeyDown}
           style={{ width: '100%', resize: 'vertical', minHeight: 50, fontSize: 12 }}
           placeholder="Scene description"
           rows={3}
         />
-        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6, alignItems: 'center' }}>
           <button
             className="primary"
-            onClick={() => updateMutation.mutate({ name, description })}
+            onClick={submit}
             disabled={updateMutation.isPending}
             style={{ padding: '4px 10px', fontSize: 12 }}
           >
             {updateMutation.isPending ? 'Saving…' : 'Save'}
           </button>
-          <button
-            onClick={() => {
-              setEditing(false);
-              setName(scene.name);
-              setDescription(scene.description);
-            }}
-            style={{ padding: '4px 10px', fontSize: 12 }}
-          >
+          <button onClick={cancel} style={{ padding: '4px 10px', fontSize: 12 }}>
             Cancel
           </button>
+          <span style={{ fontSize: 10, color: 'var(--fg-muted)', marginLeft: 'auto' }}>
+            ⌘↵ save · esc cancel
+          </span>
         </div>
       </div>
     );

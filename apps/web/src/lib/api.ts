@@ -79,6 +79,24 @@ export const api = {
   },
 };
 
+export interface FrameInfo {
+  id: string;
+  family: string;
+  variant: string;
+  displayName: string;
+  type: 'flat' | 'perspective';
+  thumbnailUrl: string;
+}
+
+export const framesApi = {
+  async list(): Promise<FrameInfo[]> {
+    return request<FrameInfo[]>('GET', '/api/frames');
+  },
+  thumbnailUrl(id: string): string {
+    return `${BASE}/api/frames/${encodeURIComponent(id)}/thumbnail`;
+  },
+};
+
 export const brandsApi = {
   async list(): Promise<BrandRegistry> {
     return request<BrandRegistry>('GET', '/api/brands');
@@ -161,6 +179,19 @@ export const storyboardApi = {
   },
   async reorderScenes(projectId: string, orderedIds: string[]): Promise<Storyboard> {
     return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/reorder`, { orderedIds });
+  },
+  async updateDefaults(
+    projectId: string,
+    defaults: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null },
+  ): Promise<Storyboard> {
+    return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/defaults`, defaults);
+  },
+  async setSceneFrame(
+    projectId: string,
+    sceneId: string,
+    frame: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null },
+  ): Promise<Scene> {
+    return request<Scene>('PATCH', `/api/projects/${projectId}/scenes/${sceneId}/frame`, frame);
   },
 };
 
@@ -488,9 +519,35 @@ export interface ChunkNarrationResult {
   unsupportedEmotives: string[];
 }
 
+export interface TtsScratchClip {
+  id: string;
+  createdAt: string;
+  engine: string;
+  voice: string;
+  speed: number;
+  text: string;
+  durationSec: number;
+  format: 'mp3' | 'wav';
+  bytes: number;
+}
+
 export const ttsApi = {
   async listEngines(): Promise<TtsEngineInfo[]> {
     return request<TtsEngineInfo[]>('GET', '/api/tts/engines');
+  },
+  scratch: {
+    async list(): Promise<TtsScratchClip[]> {
+      return request<TtsScratchClip[]>('GET', '/api/tts/scratch');
+    },
+    async generate(input: { engine: string; voice: string; text: string; speed?: number }): Promise<TtsScratchClip> {
+      return request<TtsScratchClip>('POST', '/api/tts/scratch', input);
+    },
+    async remove(id: string): Promise<void> {
+      await request('DELETE', `/api/tts/scratch/${encodeURIComponent(id)}`);
+    },
+    audioUrl(id: string): string {
+      return `${BASE}/api/tts/scratch/${encodeURIComponent(id)}/audio`;
+    },
   },
 };
 
@@ -904,7 +961,10 @@ export const sceneRenderApi = {
   async start(
     projectId: string,
     sceneId: string,
-    opts: { audioMode?: 'replace' | 'mix'; burnSubtitles?: boolean } = {},
+    opts: {
+      audioMode?: 'replace' | 'mix';
+      burnSubtitles?: boolean;
+    } = {},
   ): Promise<SceneRenderResult> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/render`, opts);
   },

@@ -58,9 +58,9 @@ export function NavBar() {
         <Link
           to="/voices"
           className={`navbar__link${location.pathname.startsWith('/voices') ? ' navbar__link--active' : ''}`}
-          title="Voices"
+          title="Voice clones — reference recordings used by TTS providers"
         >
-          Voices
+          Voice Clones
         </Link>
         <Link
           to="/setup"

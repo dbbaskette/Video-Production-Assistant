@@ -21,7 +21,18 @@ import type { Scene } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { renderLowerThirdsOverlay } from '../overlay/render.js';
 import { resolveLtColors } from '../overlay/colors.js';
-import { RenderError, runFfmpeg, probeDuration, escapeForFilter } from './index.js';
+import {
+  RenderError,
+  runFfmpeg,
+  probeDuration,
+  escapeForFilter,
+  prepareSceneFrame,
+  type FramePrepDeps,
+} from './index.js';
+import {
+  createCachingBrandColorResolver,
+  defaultBrandColorResolver,
+} from '../frame/resolve.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -46,6 +57,8 @@ interface Deps {
   sceneId: string;
   vpaHome: string;
   workspaceRoot: string;
+  /** Internal — DI seams for the frame pass (manifest, frame renderer, brand resolver). */
+  __frameDeps?: FramePrepDeps;
 }
 
 export async function renderSingleScene(
@@ -56,11 +69,11 @@ export async function renderSingleScene(
   const audioMode = opts.audioMode ?? 'replace';
 
   // 1. Load + validate
-  const sb = await loadStoryboard(projectPath);
+  let sb = await loadStoryboard(projectPath);
   if (!sb) {
     throw new RenderError('No storyboard found', { hint: 'Build the storyboard first' });
   }
-  const scene = sb.scenes.find((s) => s.id === sceneId);
+  let scene = sb.scenes.find((s) => s.id === sceneId);
   if (!scene) {
     throw new RenderError(`Scene not found: ${sceneId}`);
   }
@@ -100,19 +113,54 @@ export async function renderSingleScene(
     });
     const renderedAt = join(projectPath, result.outputPath);
     await copyFile(renderedAt, overlayPath);
-    const updated = updateScene(sb, sceneId, { overlay_render: result.outputPath });
-    await saveStoryboard(projectPath, updated);
+    sb = updateScene(sb, sceneId, { overlay_render: result.outputPath });
+    await saveStoryboard(projectPath, sb);
+    scene = sb.scenes.find((s) => s.id === sceneId)!;
   } else {
     // No LTs at all — overlay.mp4 is just a copy of the raw recording so
     // the per-scene folder always has a "video" file in a predictable spot.
     await copyFile(recordingPath, overlayPath);
   }
 
+  // 3b. Optional device-frame compositing. The upstream is overlay.mp4
+  //     (LTs already baked in, or a copy of the raw recording). The framed
+  //     output gets cached at renders/.frame/<sceneId>-framed.mp4 — same
+  //     location used by the project-level render — so both pipelines share
+  //     the cache and the storyboard `frame_render` field.
+  //
+  // Wrap the brand resolver in a per-render memo so design.md is read at most
+  // once even if this call were ever extended to multiple scenes.
+  const frameDepsRaw = deps.__frameDeps ?? {};
+  const frameDepsWithCache: FramePrepDeps = {
+    ...frameDepsRaw,
+    brandColorResolver: createCachingBrandColorResolver(
+      frameDepsRaw.brandColorResolver ?? defaultBrandColorResolver,
+    ),
+  };
+  const framePrep = await prepareSceneFrame({
+    projectPath,
+    storyboard: sb,
+    scene,
+    defaults: sb.defaults,
+    upstreamVideo: overlayPath,
+    vpaHome,
+    workspaceRoot,
+    deps: frameDepsWithCache,
+  });
+  // Save per-scene so a crash mid-loop leaves the cached frame_render
+  // paths persisted — the next render skips work already done.
+  if (framePrep && framePrep.updatedStoryboard !== sb) {
+    sb = framePrep.updatedStoryboard;
+    await saveStoryboard(projectPath, sb);
+    scene = sb.scenes.find((s) => s.id === sceneId)!;
+  }
+  const muxInputVideo = framePrep?.framedVideo ?? overlayPath;
+
   // 4. Produce narration.mp3 (joined from chunks if needed)
   const narrationRel = join(outDirRel, 'narration.mp3');
   const narrationPath = await prepareNarrationAudio(projectPath, scene, outDir, narrationRel);
 
-  // 5. Mux combined.mp4 — overlay video + narration audio
+  // 5. Mux combined.mp4 — (framed or overlay) video + narration audio
   const combinedRel = join(outDirRel, 'combined.mp4');
   const combinedPath = join(projectPath, combinedRel);
   const burnSubtitles = !!opts.burnSubtitles && !!scene.narration?.subtitles?.srt;
@@ -121,7 +169,7 @@ export async function renderSingleScene(
     : null;
 
   await muxOne({
-    videoPath: overlayPath,
+    videoPath: muxInputVideo,
     audioPath: narrationPath,
     audioMode,
     burnSubtitles,

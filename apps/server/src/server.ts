@@ -12,6 +12,7 @@ import { registerRecordingRoutes } from './routes/recordings.js';
 import { registerScriptRoutes } from './routes/scripts.js';
 import { registerNarrationRoutes } from './routes/narration.js';
 import { registerVoiceCloneRoutes } from './routes/voice-clone.js';
+import { registerTtsScratchRoutes } from './routes/tts-scratch.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerRenderRoutes } from './routes/render.js';
 import { registerSceneRenderRoutes } from './routes/scene-render.js';
@@ -21,6 +22,7 @@ import { registerLowerThirdsRoutes } from './routes/lower-thirds.js';
 import { registerQualityReviewRoutes } from './routes/quality-review.js';
 import { registerOverlayRoutes } from './routes/overlay.js';
 import { registerExportRoutes } from './routes/export.js';
+import { registerFramesRoutes } from './routes/frames.js';
 import { ProjectStore } from './services/project/store.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
@@ -147,10 +149,17 @@ export async function buildServer() {
     registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome, tts }),
   );
   await app.register(async (instance) =>
+    registerTtsScratchRoutes(instance, { vpaHome: config.vpaHome, tts }),
+  );
+  await app.register(async (instance) =>
     registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome }),
   );
   await app.register(async (instance) =>
-    registerRenderRoutes(instance, { store }),
+    registerRenderRoutes(instance, {
+      store,
+      vpaHome: config.vpaHome,
+      workspaceRoot: wsRoot,
+    }),
   );
   await app.register(async (instance) =>
     registerSceneRenderRoutes(instance, {
@@ -177,6 +186,7 @@ export async function buildServer() {
   await app.register(async (instance) =>
     registerExportRoutes(instance, { store }),
   );
+  await app.register(async (instance) => registerFramesRoutes(instance, {}));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
   return { app, config, store };

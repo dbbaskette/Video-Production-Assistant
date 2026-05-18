@@ -18,10 +18,17 @@ export function VoicesList() {
           <h1 style={{ margin: 0 }}>Voice Clones</h1>
           <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: '4px 0 0' }}>
             Reference recordings that clone your voice for TTS narration. Use them via Fish Audio (local) or xAI (uploaded as a custom voice).
-            Different from TTS Voice Profiles in <a href="/settings" style={{ color: 'var(--accent)', textDecoration: 'none' }}>Settings</a>.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <Link to="/voices/tts">
+            <button
+              style={{ padding: '8px 16px', fontSize: 13, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--fg)' }}
+              title="Generate one-off TTS clips with any voice"
+            >
+              Quick TTS
+            </button>
+          </Link>
           <button
             onClick={() => setShowImport(true)}
             style={{ padding: '8px 16px', fontSize: 13, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--fg)' }}

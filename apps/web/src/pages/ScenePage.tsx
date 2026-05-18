@@ -8,6 +8,7 @@ import { RecordingInfo } from '../components/RecordingInfo.js';
 import { ScenePreview } from '../components/ScenePreview.js';
 import { SceneRenderSection } from '../components/SceneRenderSection.js';
 import { useUi } from '../components/ui/UiProvider.js';
+import { estimateTtsCost, formatUsd } from '../lib/tts-pricing.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
 import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
 import { RefreshCcw, Sparkles } from 'lucide-react';
@@ -393,6 +394,46 @@ export function ScenePage(props: ScenePageProps = {}) {
     }
     return { engine: selectedEngine, voice: selectedVoice, speed: selectedSpeed };
   }, [narrationMode, chunkSpeakers, speakerConfigs, selectedEngine, selectedVoice, selectedSpeed]);
+
+  // Estimate the cost of generating every chunk that doesn't already have
+  // audio. Honors per-speaker engines in dialog mode, so a scene split
+  // between paid (xAI) and free (Gemini) speakers totals only the paid
+  // half. Recomputed any time the chunk list, edited text, or engine
+  // selection changes.
+  const pendingCost = (() => {
+    const chunks = narrationState?.chunks ?? [];
+    const pending = chunks.filter((c) => !c.audio);
+    if (pending.length === 0) {
+      return { chars: 0, costUsd: 0, free: true, label: 'nothing to generate', engines: [] as string[] };
+    }
+    let totalUsd = 0;
+    let totalChars = 0;
+    let anyUnknown = false;
+    const engineSet = new Set<string>();
+    for (const chunk of pending) {
+      const { engine } = resolveChunkVoice(chunk);
+      const chars = getChunkText(chunk).length;
+      totalChars += chars;
+      engineSet.add(engine);
+      const est = estimateTtsCost(engine, chars);
+      if (est.costUsd === undefined) {
+        anyUnknown = true;
+      } else {
+        totalUsd += est.costUsd;
+      }
+    }
+    return {
+      chars: totalChars,
+      costUsd: totalUsd,
+      free: totalUsd === 0 && !anyUnknown,
+      unknown: anyUnknown,
+      label:
+        pending.length === 1
+          ? `${pending.length} chunk · ${totalChars.toLocaleString()} chars`
+          : `${pending.length} chunks · ${totalChars.toLocaleString()} chars`,
+      engines: Array.from(engineSet),
+    } as { chars: number; costUsd: number; free: boolean; unknown?: boolean; label: string; engines: string[] };
+  })();
 
   // Generate a single chunk
   const generateChunk = useCallback(async (chunk: NarrationChunkInfo) => {
@@ -1543,6 +1584,20 @@ export function ScenePage(props: ScenePageProps = {}) {
                 ? (generateAllProgress.done + generateAllProgress.failed) / generateAllProgress.total
                 : undefined
             }
+            steps={(() => {
+              if (!generateAllProgress || !narrationState?.chunks?.length) return undefined;
+              // First chunk that's neither done nor failed is the one
+              // currently in flight — the server processes sequentially.
+              const activeIdx = narrationState.chunks.findIndex(
+                (c) => !c.audio && !c.failed,
+              );
+              return narrationState.chunks.map((chunk, i) => {
+                if (chunk.audio) return { status: 'done' as const };
+                if (chunk.failed) return { status: 'failed' as const };
+                if (i === activeIdx) return { status: 'active' as const };
+                return { status: 'queued' as const };
+              });
+            })()}
             hint="Each chunk is synthesised one at a time. Cancel stops at the next chunk boundary."
             onCancel={generateAllJobId ? cancelGenerateAll : undefined}
           />
@@ -1731,6 +1786,14 @@ export function ScenePage(props: ScenePageProps = {}) {
                         : 'Generate All'}
                     </button>
                   </div>
+
+                  {/* Cost estimate for the upcoming Generate All — sums
+                      every un-narrated chunk against the engine that
+                      would actually be called (per-speaker in dialog,
+                      global selection in monologue). */}
+                  {pendingCost.chars > 0 && (
+                    <NarrationCostBadge cost={pendingCost} />
+                  )}
 
                   {/* Emotive tags hint */}
                   {currentEngine && currentEngine.supportedEmotives.length > 0 && (
@@ -2619,6 +2682,63 @@ export function ScenePage(props: ScenePageProps = {}) {
 // diff preview so the user sees exactly what's about to be overwritten.
 // Equal values render as a single line with a muted "(unchanged)" tag
 // to keep the panel concise when only one field actually changed.
+
+/** Inline cost summary for the "Generate All" affordance. Mirrors the
+ *  shape used on the Quick TTS page so users see consistent pricing UI
+ *  whether they're scratching a one-off or generating a scene. */
+function NarrationCostBadge({
+  cost,
+}: {
+  cost: { chars: number; costUsd: number; free: boolean; unknown?: boolean; label: string; engines: string[] };
+}) {
+  const enginesLabel = cost.engines.length === 1
+    ? cost.engines[0]
+    : `${cost.engines.length} engines`;
+  const tone: 'paid' | 'free' | 'unknown' = cost.unknown
+    ? 'unknown'
+    : cost.free
+      ? 'free'
+      : 'paid';
+  const stylesByTone: Record<typeof tone, React.CSSProperties> = {
+    paid: { background: 'var(--accent-bg)', color: 'var(--accent)', borderColor: 'var(--accent)' },
+    free: { background: 'transparent', color: 'var(--fg-muted)', borderColor: 'var(--border)' },
+    unknown: { background: 'transparent', color: 'var(--fg-muted)', borderColor: 'var(--border)' },
+  };
+  const valueLabel = tone === 'paid'
+    ? `~${formatUsd(cost.costUsd)}`
+    : tone === 'free'
+      ? 'free'
+      : 'pricing unknown';
+  return (
+    <div
+      title={
+        tone === 'paid'
+          ? `Estimated cost to synthesize ${cost.chars.toLocaleString()} characters across ${enginesLabel}.`
+          : tone === 'free'
+            ? `No per-character charge on ${enginesLabel} (local model or preview tier).`
+            : `No price data for ${enginesLabel}.`
+      }
+      style={{
+        marginTop: 8,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        fontSize: 11,
+        fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
+        fontVariantNumeric: 'tabular-nums',
+        padding: '4px 10px',
+        borderRadius: 999,
+        border: '1px solid',
+        ...stylesByTone[tone],
+      }}
+    >
+      <span aria-hidden>{tone === 'paid' ? '$' : '○'}</span>
+      <span>{valueLabel}</span>
+      <span style={{ opacity: 0.7 }}>· {cost.label}</span>
+      <span style={{ opacity: 0.5 }}>· {enginesLabel}</span>
+    </div>
+  );
+}
 
 function DiffRow({
   label,

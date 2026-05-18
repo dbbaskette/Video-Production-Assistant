@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "frames": [
+    {
+      "id": "laptop-flat",
+      "family": "laptop",
+      "variant": "flat",
+      "displayName": "MacBook (flat) — placeholder",
+      "frame": "frames/laptop-flat.png",
+      "thumbnail": "thumbnails/laptop-flat.png",
+      "frameSize": { "w": 1920, "h": 1200 },
+      "type": "flat",
+      "inset": { "x": 80, "y": 80, "w": 1760, "h": 1100 }
+    }
+  ]
+}

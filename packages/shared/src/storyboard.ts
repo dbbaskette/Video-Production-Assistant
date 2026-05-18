@@ -104,6 +104,22 @@ export const SceneSchema = z.object({
   lower_thirds: z.array(LowerThirdSchema).optional(),
   overlay_render: z.string().optional(),
   review: ReviewSchema.optional(),
+  // Device-mockup frame applied at render time. Scene-level overrides defaults.
+  frame_style: z.string().optional(),
+  frame_background: z
+    .union([
+      z.literal('brand'),
+      z.literal('transparent'),
+      z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    ])
+    .optional(),
+  /**
+   * Cached path (relative to the project) of the framed video — the result of
+   * compositing the (optionally lower-thirds-burned) recording into the chosen
+   * device frame. Lives under `renders/.frame/<sceneId>-framed.mp4`. Invalidated
+   * when its upstream video is newer than the cached file.
+   */
+  frame_render: z.string().optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 
@@ -111,6 +127,15 @@ export const StoryboardDefaultsSchema = z.object({
   brand: z.string().optional(),
   voice_profile: z.string().optional(),
   tts_engine: z.string().optional(),
+  // Device-mockup frame applied at render time. Scene-level overrides defaults.
+  frame_style: z.string().optional(),
+  frame_background: z
+    .union([
+      z.literal('brand'),
+      z.literal('transparent'),
+      z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    ])
+    .optional(),
 });
 export type StoryboardDefaults = z.infer<typeof StoryboardDefaultsSchema>;
 

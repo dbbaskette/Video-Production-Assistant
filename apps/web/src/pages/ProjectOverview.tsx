@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi } from '../lib/api.js';
+import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
-import { STATUS_COLOR } from '../lib/palette.js';
+import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 // Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
 // the file's call sites reading the same as before.
@@ -196,19 +196,27 @@ function Pipeline({
         </div>
       </div>
 
-      {/* Stepper rail — the filament is a static border that becomes a
-          progress fill via the inline width. Steps sit on top of it. */}
-      <ol className="pipeline__rail" role="list">
-        <div
-          aria-hidden
-          className="pipeline__filament"
-          style={{ width: `calc(${fillRatio * 100}% )` }}
-        />
+      {/* Stepper rail — the filament is the progress fill behind the
+          nodes. Its length is set via the --fill custom property so CSS
+          can map it to width (horizontal) or height (vertical) without
+          fighting an inline width style. */}
+      <ol
+        className="pipeline__rail"
+        role="list"
+        style={{ ['--fill' as string]: `${fillRatio * 100}%` }}
+      >
+        <div aria-hidden className="pipeline__filament" />
         {steps.map((step, i) => {
           const Icon = STEP_ICONS[step.key] ?? Layers;
+          const index = String(i + 1).padStart(2, '0');
+          const total = String(steps.length).padStart(2, '0');
           return (
             <li key={step.key} className={`pipeline__step pipeline__step--${step.status}`}>
-              <Link to={step.to} className="pipeline__node" title={step.detail ?? step.label}>
+              <Link
+                to={step.to}
+                className="pipeline__node"
+                aria-label={`Step ${i + 1} of ${steps.length}: ${step.label}${step.detail ? ` — ${step.detail}` : ''}`}
+              >
                 <span className="pipeline__node-disc">
                   {step.status === 'done' ? (
                     <Check size={16} strokeWidth={2.5} aria-hidden />
@@ -216,11 +224,17 @@ function Pipeline({
                     <Icon size={16} strokeWidth={1.8} aria-hidden />
                   )}
                 </span>
-                <span className="pipeline__node-num">{`Step ${i + 1}`}</span>
-                <span className="pipeline__node-label">{step.label}</span>
-                {step.detail && (
-                  <span className="pipeline__node-detail">{step.detail}</span>
-                )}
+                <span className="pipeline__node-meta">
+                  <span className="pipeline__node-num" aria-hidden>
+                    {index}
+                    <span className="pipeline__node-num-sep">/</span>
+                    {total}
+                  </span>
+                  <span className="pipeline__node-label">{step.label}</span>
+                  {step.detail && (
+                    <span className="pipeline__node-detail">{step.detail}</span>
+                  )}
+                </span>
               </Link>
             </li>
           );
@@ -264,6 +278,25 @@ function RenderSection({
     queryKey: ['render-status', projectId],
     queryFn: () => renderApi.status(projectId),
     enabled: hasStoryboard,
+  });
+
+  // Frame style defaults — fetched from storyboard (already cached by ProjectOverview)
+  // and from the frames manifest.
+  const storyboardQuery = useQuery({
+    queryKey: ['storyboard', projectId],
+    queryFn: () => storyboardApi.get(projectId),
+    enabled: !!projectId,
+  });
+  const framesQuery = useQuery({
+    queryKey: ['frames'],
+    queryFn: () => framesApi.list(),
+  });
+  const updateDefaultsMutation = useMutation({
+    mutationFn: (next: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null }) =>
+      storyboardApi.updateDefaults(projectId, next),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
   });
 
   const startRender = useMutation({
@@ -366,6 +399,60 @@ function RenderSection({
           Burn in subtitles
         </label>
       </div>
+
+      {/* Frame style — project-level default applied to all scenes unless overridden */}
+      {framesQuery.data && (
+        <div
+          style={{
+            marginBottom: 16,
+            paddingTop: 14,
+            borderTop: '1px dashed var(--border)',
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--fg-muted)', marginBottom: 10 }}>
+            Frame style (project default)
+          </div>
+          {framesQuery.data.length === 0 ? (
+            <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: 0 }}>
+              No frame templates found.
+            </p>
+          ) : (
+            <>
+              <FrameStylePicker
+                frames={framesQuery.data}
+                value={{
+                  frameStyle: storyboardQuery.data?.defaults?.frame_style ?? null,
+                  frameBackground: storyboardQuery.data?.defaults?.frame_background ?? null,
+                }}
+                onChange={(next) =>
+                  updateDefaultsMutation.mutate({
+                    frame_style: next.frameStyle,
+                    frame_background: next.frameBackground,
+                  })
+                }
+              />
+              {updateDefaultsMutation.isPending && (
+                <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6, marginBottom: 0 }}>Saving…</p>
+              )}
+              {updateDefaultsMutation.isError && (
+                <p style={{ fontSize: 11, color: 'var(--danger)', marginTop: 6, marginBottom: 0 }}>
+                  {updateDefaultsMutation.error instanceof Error
+                    ? updateDefaultsMutation.error.message
+                    : 'Save failed'}
+                </p>
+              )}
+              <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 0 }}>
+                Per-scene overrides will use this default unless overridden in the scene panel.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+      {framesQuery.isError && (
+        <p style={{ fontSize: 11, color: 'var(--danger)', marginBottom: 12 }}>
+          Could not load frame templates.
+        </p>
+      )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <button
@@ -604,7 +691,13 @@ function BackgroundMusicSection({
         rows={2}
         value={prompt}
         onChange={(e) => setPrompt(e.target.value.slice(0, 1500))}
-        placeholder="e.g. calm low-key tech demo loop, soft piano and pads, no vocals, consistent feel — a 30-second bed that loops cleanly"
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !isBusy && prompt.trim().length > 0) {
+            e.preventDefault();
+            generate.mutate();
+          }
+        }}
+        placeholder="e.g. calm low-key tech demo loop, soft piano and pads, no vocals, consistent feel — a 30-second bed that loops cleanly  (⌘↵ to generate)"
         disabled={isBusy}
         style={{
           width: '100%',
@@ -917,6 +1010,14 @@ function ExportButton({ projectId }: { projectId: string }) {
     mutationFn: () => exportApi.run(projectId),
     onSuccess: (data) => setExportDir(data.exportDir),
   });
+
+  // Auto-dismiss the success line after a few seconds so it doesn't
+  // linger across navigations and look like a fresh result.
+  useEffect(() => {
+    if (!exportDir) return;
+    const t = window.setTimeout(() => setExportDir(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [exportDir]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
