@@ -1,14 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  android-tilt-right — Android chrome tilted ~10° so the right side is
-  closer to the viewer. Hole-punch camera is projected onto the tilted
-  top edge of the screen quad.
+  android-tilt-right — stronger ~22° tilt. Left edge ~27% shorter than
+  the right.
 
   Screen quad:
-    tl: ( 90, 190)
-    tr: (1110, 110)
-    br: (1110, 2490)
-    bl: ( 90, 2410)
+    tl: ( 180,  400)
+    tr: (1140,   80)
+    br: (1140, 2520)
+    bl: ( 180, 2200)
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2600" viewBox="0 0 1200 2600">
   <defs>
@@ -21,26 +20,26 @@
 
   <!-- Bezel polygon with screen polygon hole -->
   <path fill-rule="evenodd" fill="url(#androidBezelTilt)"
-        d="M 40 130
-           L 1160 50
-           L 1160 2550
-           L 40 2470
+        d="M 120 340
+           L 1180  40
+           L 1180 2560
+           L 120 2260
            Z
-           M 90 190
-           L 1110 110
-           L 1110 2490
-           L 90 2410
+           M 180 400
+           L 1140  80
+           L 1140 2520
+           L 180 2200
            Z"/>
 
   <!-- Outer rim leading-right highlight -->
-  <polyline points="1160,50 1160,2550" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
+  <polyline points="1180,40 1180,2560" stroke="#404048" stroke-width="3" opacity="0.55" fill="none"/>
 
   <!-- Inner screen-edge ring -->
-  <path d="M 90 190 L 1110 110 L 1110 2490 L 90 2410 Z"
+  <path d="M 180 400 L 1140 80 L 1140 2520 L 180 2200 Z"
         fill="none" stroke="#000000" stroke-width="3" opacity="0.6"/>
 
-  <!-- Hole-punch camera, projected onto tilted top -->
-  <circle cx="600" cy="265" r="32" fill="#000000"/>
-  <circle cx="600" cy="265" r="20" fill="#0a0a0c"/>
-  <circle cx="600" cy="265" r="11" fill="#1a1a2a" opacity="0.6"/>
+  <!-- Hole-punch camera, projected onto tilted top of screen quad -->
+  <circle cx="660" cy="240" r="32" fill="#000000"/>
+  <circle cx="660" cy="240" r="20" fill="#0a0a0c"/>
+  <circle cx="660" cy="240" r="11" fill="#1a1a2a" opacity="0.6"/>
 </svg>

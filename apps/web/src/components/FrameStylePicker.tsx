@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
-import type { FrameInfo } from '../lib/api.js';
+import { framesApi, type FrameInfo } from '../lib/api.js';
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -75,15 +75,6 @@ function tileStyle(active: boolean): React.CSSProperties {
   };
 }
 
-const selectStyle: React.CSSProperties = {
-  padding: '7px 10px',
-  fontSize: 13,
-  background: 'var(--bg)',
-  color: 'var(--fg)',
-  border: '1px solid var(--border)',
-  borderRadius: 6,
-  minWidth: 160,
-};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -149,10 +140,6 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
       if (!first) return;
       onChange({ ...value, frameStyle: first.id });
     }
-  }
-
-  function handleVariantChange(e: React.ChangeEvent<HTMLSelectElement>) {
-    onChange({ ...value, frameStyle: e.target.value });
   }
 
   function handleRadioChange(mode: 'brand' | 'transparent' | 'custom') {
@@ -237,9 +224,9 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
                 onClick={() => handleFamilyClick(family)}
                 style={tileStyle(isActive)}
               >
-                {representative?.thumbnailUrl ? (
+                {representative ? (
                   <img
-                    src={representative.thumbnailUrl}
+                    src={framesApi.thumbnailUrl(representative.id)}
                     alt={family}
                     style={{
                       width: '100%',
@@ -301,9 +288,12 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
           </div>
         )}
 
-        {/* Variant selector — only when a real family is selected */}
+        {/* Variant chips — only when a real family has multiple variants.
+            A chip row reads at a glance and lets us flag perspective
+            variants with a small "↗" badge, which a <select> couldn't.
+            Clicking a chip sets frame_style to that variant's id. */}
         {currentFamily !== null && familyVariants.length > 1 && (
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span
               style={{
                 fontSize: 11,
@@ -315,17 +305,40 @@ export function FrameStylePicker({ value, onChange, frames }: FrameStylePickerPr
             >
               Variant
             </span>
-            <select
-              value={value.frameStyle ?? ''}
-              onChange={handleVariantChange}
-              style={selectStyle}
-            >
-              {familyVariants.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.variant}
-                </option>
-              ))}
-            </select>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {familyVariants.map((f) => {
+                const active = f.id === value.frameStyle;
+                const isPerspective = f.type === 'perspective';
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => onChange({ ...value, frameStyle: f.id })}
+                    aria-pressed={active}
+                    title={f.displayName}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '5px 12px',
+                      fontSize: 12,
+                      fontWeight: active ? 600 : 500,
+                      color: active ? 'var(--accent)' : 'var(--fg)',
+                      background: active ? 'var(--accent-bg)' : 'var(--bg)',
+                      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                      borderRadius: 14,
+                      cursor: 'pointer',
+                      transition: 'background 120ms, border-color 120ms, color 120ms',
+                    }}
+                  >
+                    {isPerspective && (
+                      <span aria-hidden style={{ fontSize: 11, opacity: 0.85 }}>↗</span>
+                    )}
+                    <span>{f.variant}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

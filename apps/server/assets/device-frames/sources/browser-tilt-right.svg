@@ -1,21 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  browser-tilt-right — browser window tilted ~10° so the right side
-  is closer to the viewer. Title bar and content area are both warped
-  into a trapezoid. The traffic-light dots and URL pill are projected
-  onto the tilted title bar.
+  browser-tilt-right — stronger ~22° tilt. Title bar and content area
+  both tilt together. Left edge ~25% shorter.
 
-  Content quad (where the recording lands):
-    tl: ( 120, 220)
-    tr: (2440, 130)
+  Content quad (manifest "quad"):
+    tl: ( 220,  340)
+    tr: (2440,  130)
     br: (2440, 1590)
-    bl: ( 120, 1500)
+    bl: ( 220, 1380)
 
-  Title quad (above the content, visually attached):
-    tl: ( 120,  100)
-    tr: (2440,  10)
-    br: (2440, 130)
-    bl: ( 120, 220)
+  Title bar quad (above content, attached):
+    tl: ( 220,  220)
+    tr: (2440,   10)
+    br: (2440,  130)
+    bl: ( 220,  340)
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
   <defs>
@@ -25,40 +23,40 @@
     </linearGradient>
   </defs>
 
-  <!-- Outer window frame quad — encloses both title and content.
-       Punched-out content quad is the inset. -->
+  <!-- Outer window frame (encloses both title + content) with content
+       quad punched out. Title-bar area is solid; content area is the
+       inset where the recording lands. -->
   <path fill-rule="evenodd" fill="#bcbcc2"
-        d="M  90  90
-           L 2470  0
-           L 2470 1600
-           L  90 1510
+        d="M 180 200
+           L 2480   0
+           L 2480 1600
+           L 180 1400
            Z
-           M 120 220
+           M 220 340
            L 2440 130
            L 2440 1590
-           L 120 1500
+           L 220 1380
            Z"/>
 
-  <!-- Title-bar polygon (above content quad) -->
-  <polygon points="120,100 2440,10 2440,130 120,220" fill="url(#browserChromeTilt)"/>
+  <!-- Title-bar polygon (above content quad, drawn separately to give
+       it a different gradient + hairline) -->
+  <polygon points="220,220 2440,10 2440,130 220,340" fill="url(#browserChromeTilt)"/>
 
-  <!-- Hairline under title bar -->
-  <polyline points="120,220 2440,130" stroke="#a8a8ae" stroke-width="2" fill="none"/>
+  <!-- Hairline under title bar (along bottom edge of title quad) -->
+  <polyline points="220,340 2440,130" stroke="#a8a8ae" stroke-width="2" fill="none"/>
 
-  <!-- Traffic-light dots — projected onto the tilted title bar near top-left.
-       Y values fall along the line from tl(120,100) to tr(2440,10):
-       slope = (10-100) / (2440-120) = -0.0388. For x=180: y = 100 + (60)*(-0.0388) ≈ 97.6.
-       Small adjustments visually below. -->
-  <circle cx="180" cy="160" r="20" fill="#ff5f57"/>
-  <circle cx="240" cy="158" r="20" fill="#febc2e"/>
-  <circle cx="300" cy="156" r="20" fill="#28c840"/>
+  <!-- Traffic-light dots projected onto top-left of tilted title bar.
+       Top edge slope = (10-220) / (2440-220) ≈ -0.0946. So at x=300,
+       y ≈ 220 + (80)*(-0.0946) ≈ 212. -->
+  <circle cx="300" cy="282" r="22" fill="#ff5f57"/>
+  <circle cx="368" cy="276" r="22" fill="#febc2e"/>
+  <circle cx="436" cy="270" r="22" fill="#28c840"/>
 
-  <!-- URL pill projected onto title bar, roughly centered horizontally.
-       Drawn as a polygon to follow the tilt. -->
-  <polygon points="980,148 1780,118 1780,178 980,208" fill="#fbfbfd" stroke="#c4c4ca" stroke-width="1"/>
-  <text x="1010" y="184" font-family="-apple-system, system-ui, sans-serif" font-size="28" fill="#5a5a60">https://example.com/demo</text>
+  <!-- URL pill projected onto the tilted title bar near the center -->
+  <polygon points="1020,256 1820,180 1820,250 1020,326" fill="#fbfbfd" stroke="#c4c4ca" stroke-width="1"/>
+  <text x="1054" y="296" font-family="-apple-system, system-ui, sans-serif" font-size="28" fill="#5a5a60">https://example.com/demo</text>
 
-  <!-- Inner content-edge ring (around the inset quad) -->
-  <path d="M 120 220 L 2440 130 L 2440 1590 L 120 1500 Z"
+  <!-- Inner content-edge ring -->
+  <path d="M 220 340 L 2440 130 L 2440 1590 L 220 1380 Z"
         fill="none" stroke="#000000" stroke-width="2" opacity="0.4"/>
 </svg>
