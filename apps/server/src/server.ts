@@ -22,6 +22,7 @@ import { registerLowerThirdsRoutes } from './routes/lower-thirds.js';
 import { registerQualityReviewRoutes } from './routes/quality-review.js';
 import { registerOverlayRoutes } from './routes/overlay.js';
 import { registerExportRoutes } from './routes/export.js';
+import { registerFramesRoutes } from './routes/frames.js';
 import { ProjectStore } from './services/project/store.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
@@ -185,6 +186,7 @@ export async function buildServer() {
   await app.register(async (instance) =>
     registerExportRoutes(instance, { store }),
   );
+  await app.register(async (instance) => registerFramesRoutes(instance, {}));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
   return { app, config, store };
