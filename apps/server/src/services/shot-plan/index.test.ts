@@ -5,6 +5,7 @@ import {
   ShotPlanManager,
   stripJsonBlock,
 } from './index.js';
+import type { LlmClient } from '../llm/index.js';
 
 describe('parseStepsFromResponse', () => {
   it('extracts steps from a fenced JSON block', () => {
@@ -146,5 +147,87 @@ describe('ShotPlanManager', () => {
     expect(b).toBe(a);
     expect(b.transcript).toHaveLength(1);
     expect(b.transcript[0]?.content).toBe('first');
+  });
+});
+
+const MOCK_LLM_TEXT =
+  'Here is the plan:\n\n```json\n{"steps":[' +
+  '{"index":1,"action":"Open Terminal"},' +
+  '{"index":2,"action":"Type `npm run dev`","note":"wait"}' +
+  ']}\n```\n\nAnything missing?';
+
+const mockLlm: LlmClient = {
+  async complete() {
+    return { text: MOCK_LLM_TEXT };
+  },
+};
+
+describe('ShotPlanSession.sendMessage', () => {
+  it('appends user + assistant turns and updates proposedSteps', async () => {
+    const s = new ShotPlanSession('p1', 'scene-01');
+    const scene = {
+      id: 'scene-01',
+      name: 'Boot the dev server',
+      description: 'Show the dev server starting',
+      type: 'terminal' as const,
+    };
+    const project = { objective: 'Show how to run the app', audience: 'developers' };
+
+    const reply = await s.sendMessage('Plan it', mockLlm, scene, project);
+
+    expect(s.transcript).toHaveLength(2);
+    expect(s.transcript[0]?.role).toBe('user');
+    expect(s.transcript[0]?.content).toBe('Plan it');
+    expect(s.transcript[1]?.role).toBe('assistant');
+
+    expect(reply.role).toBe('assistant');
+    expect(reply.content).not.toContain('```json');
+    expect(reply.content).toContain('Anything missing?');
+
+    expect(s.proposedSteps).toHaveLength(2);
+    expect(s.proposedSteps[0]?.action).toBe('Open Terminal');
+  });
+
+  it('passes scene + project context into the LLM prompt', async () => {
+    let captured = '';
+    const captureLlm: LlmClient = {
+      async complete(opts) {
+        captured = `${opts.systemPrompt}\n---\n${opts.userPrompt}`;
+        return { text: MOCK_LLM_TEXT };
+      },
+    };
+    const s = new ShotPlanSession('p1', 'scene-01');
+    const scene = {
+      id: 'scene-01',
+      name: 'Boot the dev server',
+      description: 'Show the dev server starting',
+      intent: 'demonstrate hot reload',
+      type: 'terminal' as const,
+    };
+    const project = { objective: 'Show how to run the app', audience: 'developers' };
+
+    await s.sendMessage('Plan it', captureLlm, scene, project);
+
+    expect(captured).toContain('Shot Plan author');
+    expect(captured).toContain('Boot the dev server');
+    expect(captured).toContain('Show the dev server starting');
+    expect(captured).toContain('demonstrate hot reload');
+    expect(captured).toContain('Show how to run the app');
+    expect(captured).toContain('developers');
+  });
+
+  it('leaves proposedSteps unchanged when the response has no JSON block', async () => {
+    const noJsonLlm: LlmClient = {
+      async complete() {
+        return { text: 'just prose, no fence here' };
+      },
+    };
+    const s = new ShotPlanSession('p1', 'scene-01');
+    const scene = { id: 'scene-01', name: 'X', description: 'y', type: 'desktop' as const };
+
+    await s.sendMessage('hi', noJsonLlm, scene, {});
+    expect(s.proposedSteps).toEqual([]);
+    expect(s.transcript).toHaveLength(2);
+    expect(s.transcript[1]?.content).toBe('just prose, no fence here');
   });
 });

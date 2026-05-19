@@ -125,6 +125,10 @@ function isQualityReviewPrompt(opts: LlmCompleteOptions): boolean {
   return opts.systemPrompt.toLowerCase().includes('quality review');
 }
 
+function isShotPlanPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('shot plan author');
+}
+
 function isSceneSplitterPrompt(opts: LlmCompleteOptions): boolean {
   const lower = opts.systemPrompt.toLowerCase();
   return lower.includes('scene splitter') && !lower.includes('scene name and description');
@@ -193,6 +197,21 @@ export function createFakeLlm(): LlmClient {
             description: `This scene demonstrates step ${sceneNum} of the workflow. The recording shows the key actions and configuration needed for this part of the demo.`,
             type: sceneNum % 2 === 0 ? 'terminal' : 'desktop',
           }),
+        };
+      }
+
+      // Shot-plan (must come before ideation — prompt may contain "storyboard")
+      if (isShotPlanPrompt(opts)) {
+        return {
+          text:
+            "Here's a first pass — tell me anything I should make more specific.\n\n" +
+            '```json\n' +
+            '{"steps":[' +
+            '{"index":1,"action":"Open a new Terminal window"},' +
+            '{"index":2,"action":"Type `npm run dev` and press Enter","note":"Wait for the ready line"},' +
+            '{"index":3,"action":"Show the rendered page in the browser"}' +
+            ']}\n' +
+            '```',
         };
       }
 

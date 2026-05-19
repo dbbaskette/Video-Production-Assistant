@@ -1,3 +1,12 @@
+import { resolve } from 'node:path';
+import type { Scene } from '@vpa/shared';
+import type { LlmClient } from '../llm/index.js';
+import { loadPrompt } from '../llm/prompts.js';
+
+function workspaceRoot(): string {
+  return resolve(import.meta.dirname, '../../../../..');
+}
+
 export interface ShotPlanStep {
   index: number;
   action: string;
@@ -83,6 +92,57 @@ export class ShotPlanSession {
     };
     this.transcript.push(turn);
     return turn;
+  }
+
+  async sendMessage(
+    content: string,
+    llm: LlmClient,
+    scene: Pick<Scene, 'id' | 'name' | 'description' | 'type'> & {
+      intent?: string;
+    },
+    project: { objective?: string; audience?: string; sourceDocs?: string[] },
+  ): Promise<ShotPlanChatTurn> {
+    this.appendTurn('user', content);
+
+    const systemPrompt = await loadPrompt(workspaceRoot(), 'scene-shot-plan');
+
+    const sceneContext =
+      `Scene name: ${scene.name}\n` +
+      `Scene type: ${scene.type}\n` +
+      `Scene description: ${scene.description}` +
+      (scene.intent ? `\nUser intent: ${scene.intent}` : '');
+
+    const projectContext =
+      (project.objective ? `Project objective: ${project.objective}\n` : '') +
+      (project.audience ? `Audience: ${project.audience}\n` : '') +
+      (project.sourceDocs && project.sourceDocs.length > 0
+        ? `Project source docs: ${project.sourceDocs.join(', ')}\n`
+        : '');
+
+    const historyContext = this.transcript
+      .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
+      .join('\n\n');
+
+    const currentStepsContext =
+      this.proposedSteps.length > 0
+        ? `\n\nCurrent proposed steps:\n${JSON.stringify({ steps: this.proposedSteps }, null, 2)}`
+        : '';
+
+    const userPrompt =
+      `${sceneContext}\n\n${projectContext}\nConversation:\n${historyContext}${currentStepsContext}`;
+
+    const completion = await llm.complete({
+      systemPrompt,
+      userPrompt,
+      temperature: 0.4,
+    });
+
+    const steps = parseStepsFromResponse(completion.text);
+    if (steps.length > 0) {
+      this.proposedSteps = steps;
+    }
+
+    return this.appendTurn('assistant', stripJsonBlock(completion.text));
   }
 }
 
