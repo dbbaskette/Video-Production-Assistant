@@ -192,6 +192,7 @@ describe('ShotPlanSession.sendMessage', () => {
     let captured = '';
     const captureLlm: LlmClient = {
       async complete(opts) {
+        expect(opts.temperature).toBe(0.4);
         captured = `${opts.systemPrompt}\n---\n${opts.userPrompt}`;
         return { text: MOCK_LLM_TEXT };
       },
