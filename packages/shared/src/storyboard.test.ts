@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SceneSchema, StoryboardSchema } from './storyboard.js';
-
-describe('SceneSchema', () => {
-  it('is defined', () => {
-    expect(SceneSchema).toBeDefined();
-  });
-});
+import { SceneSchema } from './storyboard.js';
 
 describe('SceneSchema shot_plan additions', () => {
   it('parses a scene without shot_plan (backwards compatible)', () => {
