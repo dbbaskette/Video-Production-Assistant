@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { SaveIndicator } from './ui/SaveIndicator.js';
+import { ThemeToggle } from './ui/ThemeToggle.js';
 
 export function NavBar() {
   const location = useLocation();
@@ -26,6 +27,8 @@ export function NavBar() {
         )}
 
         <div className="navbar__spacer" />
+
+        <ThemeToggle />
 
         <SaveIndicator />
 

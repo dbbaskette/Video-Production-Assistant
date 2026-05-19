@@ -46,8 +46,10 @@ export function ProjectSidebar({ projectName }: Props) {
       style={{
         width: 240,
         minWidth: 240,
-        background: 'var(--bg-elev)',
+        background: 'linear-gradient(180deg, var(--panel-grad-top), var(--bg-elev))',
         borderRight: '1px solid var(--border)',
+        boxShadow:
+          'inset -1px 0 0 var(--border-soft, var(--border)), inset 0 1px 0 rgba(255,255,255,0.5)',
         height: '100%',
         display: 'flex',
         flexDirection: 'column',

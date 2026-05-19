@@ -21,6 +21,33 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap"
     />
+
+    <!--
+      Theme bootstrap. Runs before React mounts so the first paint already
+      has the right `data-theme` attribute set and we avoid a light→dark
+      flash on dark-mode users. Reads localStorage.vpaTheme first
+      ('light' | 'dark'); falls back to OS preference if no choice saved.
+      The ThemeToggle component (and ThemeStore in `lib/theme.ts`) own
+      writing to localStorage.
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('vpaTheme');
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = saved === 'light' || saved === 'dark'
+            ? saved
+            : prefersDark
+              ? 'dark'
+              : 'light';
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (_) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,29 +1,106 @@
 :root {
+  color-scheme: light;
+
+  /* ── LIGHT THEME (default) — Apple Pro Apps palette ────────────────
+     Inspired by Final Cut / Logic light mode. Cool gray app bg with
+     subtle gradient panels and system blue accent. To opt into dark
+     mode, set `data-theme="dark"` on <html>.
+  */
+  --bg: #e8e9ee;
+  --bg-elev: #f3f4f8;
+  --bg-elev2: #ebecf0;
+  --surface: #ffffff;
+  --border: #c8ccd5;
+  --border-hover: #a8aeba;
+  --border-soft: #dde0e7;
+  --divider: #e3e6ec;
+  --fg: #1d1d1f;
+  --fg-muted: #5e6470;
+  --fg-dim: #8a8f9a;
+
+  /* Panel & titlebar gradients (top → bottom). Pro apps use subtle
+     vertical gradients on chrome surfaces for a softly-lit look. */
+  --panel-grad-top: #ffffff;
+  --panel-grad-bot: #f6f7fa;
+  --titlebar-grad-top: #f0f1f5;
+  --titlebar-grad-bot: #d9dbe1;
+  --button-grad-top: #ffffff;
+  --button-grad-bot: #ececf1;
+  --button-grad-top-hover: #fafafd;
+  --button-grad-bot-hover: #e2e3e8;
+
+  /* Primary accent — Apple system blue. Reserved for: human-driven
+     primary CTAs, active route, focused border, hyperlinks. */
+  --accent: #007aff;
+  --accent-hover: #0066d6;
+  --accent-bg: #e5f0ff;
+  --accent-bg-hover: #c9dfff;
+
+  /* Secondary accent — indigo. Reserved for AI-generated content and
+     "Next step" callouts. The product's whole pitch is AI-generated
+     content; giving the model its own colour stops the primary blue
+     from having to mean five different things at once. */
+  --accent-2: #5856d6;
+  --accent-2-hover: #4543c2;
+  --accent-2-bg: #ebebff;
+  --accent-2-bg-hover: #d8d8ff;
+
+  /* Status — Apple system semantics, darkened for AA contrast on light bg */
+  --success: #1c8b3a;
+  --success-bg: #e0f4e4;
+  --warn: #c66a00;
+  --warn-bg: #fff1de;
+  --danger: #d70015;
+  --danger-bg: #fde8e8;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --transition: 150ms ease;
+
+  /* Type system: Inter for UI, Newsreader for editorial headings,
+     JetBrains Mono for code chips. */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --font-serif: 'Newsreader', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', monospace;
+
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* ── DARK THEME (opt-in) — preserves the original Tokyo Night palette.
+   Activated by setting `data-theme="dark"` on <html> (see theme
+   bootstrap in index.html and ThemeToggle component). */
+[data-theme="dark"] {
   color-scheme: dark;
-  /* Surfaces — softened from `#0a0a0c` (harsh) to `#0e0e12`. The four-stop
-     elevation scale stays; everything else just lifts a hair, which makes
-     the UI feel less "terminal black" and more "ink". */
+
   --bg: #0e0e12;
   --bg-elev: #16161c;
   --bg-elev2: #1e1e26;
   --surface: #1a1a22;
   --border: #2a2a34;
   --border-hover: #3a3a48;
+  --border-soft: #20202a;
+  --divider: #20202a;
   --fg: #e8e8f0;
   --fg-muted: #8888a0;
   --fg-dim: #55556a;
 
-  /* Primary accent — Tokyo-Night blue. Reserved for: human-driven primary
-     CTAs, active route, focused border, hyperlinks. */
+  --panel-grad-top: #1e1e26;
+  --panel-grad-bot: #16161c;
+  --titlebar-grad-top: rgba(20, 20, 26, 0.85);
+  --titlebar-grad-bot: rgba(10, 10, 14, 0.85);
+  --button-grad-top: #22222c;
+  --button-grad-bot: #1a1a22;
+  --button-grad-top-hover: #2a2a36;
+  --button-grad-bot-hover: #20202a;
+
   --accent: #7aa2f7;
   --accent-hover: #8db4ff;
   --accent-bg: #151a2e;
   --accent-bg-hover: #1a2040;
 
-  /* Secondary accent — quiet violet. Reserved for AI-generated content
-     and "Next step" callouts. The product's whole pitch is AI-generated
-     content; giving the model its own colour stops the primary blue from
-     having to mean five different things at once. */
   --accent-2: #a78bfa;
   --accent-2-hover: #b8a0ff;
   --accent-2-bg: #1a1530;
@@ -32,23 +109,9 @@
   --success: #73c05a;
   --success-bg: #0e1a0b;
   --warn: #f4a83a;
+  --warn-bg: #2a1d0a;
   --danger: #e05555;
   --danger-bg: #1e0e0e;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --transition: 150ms ease;
-
-  /* Type system (Direction C): Inter for UI, Newsreader for editorial
-     headings, JetBrains Mono for code chips. Inter is the default; the
-     `.serif` class opts in to Newsreader for h1 / project names. */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
-  --font-serif: 'Newsreader', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', monospace;
-
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -66,11 +129,13 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(10, 10, 12, 0.82);
+  background: linear-gradient(180deg, var(--titlebar-grad-top), var(--titlebar-grad-bot));
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset;
 }
+[data-theme="dark"] .navbar { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset; }
 
 .navbar__inner {
   max-width: 1200px;
@@ -173,26 +238,35 @@ button {
   font: inherit;
   font-size: 13px;
   font-weight: 500;
-  background: var(--bg-elev2);
+  background: linear-gradient(180deg, var(--button-grad-top), var(--button-grad-bot));
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 7px 14px;
   cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset, 0 1px 1.5px rgba(0, 0, 0, 0.04);
   transition: border-color var(--transition), background var(--transition), color var(--transition);
 }
-button:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface); }
+[data-theme="dark"] button { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 1px 1.5px rgba(0, 0, 0, 0.3); }
+button:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  background: linear-gradient(180deg, var(--button-grad-top-hover), var(--button-grad-bot-hover));
+}
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 button.primary,
 .btn--accent {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
+  border-color: var(--accent-hover);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 1px 2px rgba(0, 122, 255, 0.25);
 }
 button.primary:hover:not(:disabled),
-.btn--accent:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn--accent:hover:not(:disabled) {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent-hover));
+  border-color: var(--accent-hover);
+}
 
 .btn--ghost {
   background: transparent;
@@ -211,26 +285,44 @@ button.primary:hover:not(:disabled),
 
 .btn--danger {
   background: var(--danger-bg);
-  border-color: rgba(224, 85, 85, 0.35);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
   color: var(--danger);
+  box-shadow: none;
 }
-.btn--danger:hover:not(:disabled) { background: rgba(224, 85, 85, 0.15); border-color: var(--danger); }
+.btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, var(--danger-bg));
+  border-color: var(--danger);
+}
 
 /* ── Inputs ──────────────────────────────────────────── */
 
 input, textarea, select {
   font: inherit;
   font-size: 14px;
-  background: var(--bg-elev);
+  background: var(--surface);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
-  transition: border-color var(--transition);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.04);
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select { box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.25); }
 input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.04),
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+[data-theme="dark"] input:focus,
+[data-theme="dark"] textarea:focus,
+[data-theme="dark"] select:focus {
+  box-shadow:
+    inset 0 1px 1px rgba(0, 0, 0, 0.25),
+    0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -247,10 +339,10 @@ a:hover { text-decoration: underline; }
 
 .section-label {
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--fg-dim);
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
 }
 
 /* ── Page layout ─────────────────────────────────────── */
@@ -262,15 +354,52 @@ a:hover { text-decoration: underline; }
 /* ── Cards ───────────────────────────────────────────── */
 
 .card {
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 16px 20px;
-  transition: border-color var(--transition);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
+[data-theme="dark"] .card { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 1px 2px rgba(0, 0, 0, 0.2); }
 .card:hover { border-color: var(--border-hover); }
 .card--interactive { cursor: pointer; }
 .card--interactive:hover { border-color: var(--accent); }
+
+/* ── Segmented control (Apple Pro view-mode style) ────
+   Used for view-mode toggles (Timeline / Storyboard / Outline),
+   theme toggle, and any 2–4 way exclusive choice. */
+.segmented {
+  display: inline-flex;
+  background: linear-gradient(180deg, var(--button-grad-bot), var(--bg-elev2));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 1px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.4) inset, 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+[data-theme="dark"] .segmented { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 1px 2px rgba(0, 0, 0, 0.25); }
+.segmented button {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  padding: 3px 11px;
+  border-radius: 5px;
+  transition: background var(--transition), color var(--transition);
+}
+.segmented button:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg);
+}
+.segmented button.is-active,
+.segmented button[aria-pressed="true"] {
+  background: linear-gradient(180deg, var(--button-grad-top), var(--button-grad-bot));
+  color: var(--fg);
+  box-shadow: 0 0 0 0.5px var(--border), 0 1px 1px rgba(0, 0, 0, 0.05);
+}
 
 /* ── Hero cards (dashboard) ──────────────────────────── */
 
@@ -294,14 +423,16 @@ a:hover { text-decoration: underline; }
 .hero-card:hover { transform: translateY(-1px); }
 
 .hero-card--ideate {
-  background: linear-gradient(135deg, #151a2e 0%, #0f1724 100%);
-  border-color: rgba(122, 162, 247, 0.2);
+  background: linear-gradient(135deg, var(--accent-bg) 0%, var(--accent-bg-hover) 100%);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -16px color-mix(in srgb, var(--accent) 35%, transparent);
 }
-.hero-card--ideate:hover { border-color: rgba(122, 162, 247, 0.45); }
+.hero-card--ideate:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 
 .hero-card--record {
-  background: linear-gradient(135deg, #131e10 0%, #0e1a0b 100%);
-  border-color: rgba(115, 192, 90, 0.2);
+  background: linear-gradient(135deg, var(--success-bg) 0%, color-mix(in srgb, var(--success-bg) 70%, var(--success) 10%) 100%);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -16px color-mix(in srgb, var(--success) 35%, transparent);
 }
 .hero-card--record:hover { border-color: rgba(115, 192, 90, 0.45); }
 
@@ -674,12 +805,18 @@ pre code {
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, 0 1px 2px rgba(0, 0, 0, 0.03);
   cursor: pointer;
-  transition: border-color var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
 }
-.project-item:hover { border-color: var(--border-hover); }
-.project-item + .project-item { margin-top: 6px; }
+[data-theme="dark"] .project-item { box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 1px 2px rgba(0, 0, 0, 0.2); }
+.project-item:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, 0 4px 12px -4px rgba(0, 0, 0, 0.08);
+  transform: translateY(-1px);
+}
+.project-item + .project-item { margin-top: 8px; }
 .project-item__name { font-weight: 600; font-size: 15px; }
 .project-item__path { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
 .project-item__time { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
@@ -692,7 +829,7 @@ pre code {
   border-radius: var(--radius-md);
   margin-bottom: 16px;
 }
-.banner--info { background: var(--accent-bg); border: 1px solid rgba(122,162,247,0.2); color: var(--fg); }
+.banner--info { background: var(--accent-bg); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); color: var(--fg); }
 
 /* ── Dialogs / Modals ────────────────────────────────── */
 
@@ -972,7 +1109,7 @@ pre code {
 .pipeline__step--done .pipeline__node-disc {
   background: var(--success);
   border-color: var(--success);
-  color: #0a0a0c;
+  color: #fff;
 }
 .pipeline__step--done .pipeline__node-num { color: var(--success); }
 
