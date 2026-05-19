@@ -231,4 +231,52 @@ describe('ShotPlanSession.sendMessage', () => {
     expect(s.transcript).toHaveLength(2);
     expect(s.transcript[1]?.content).toBe('just prose, no fence here');
   });
+
+  it('includes sibling scenes in the prompt with a CURRENT SCENE marker', async () => {
+    let captured = '';
+    const captureLlm: LlmClient = {
+      async complete(opts) {
+        captured = opts.userPrompt;
+        return { text: MOCK_LLM_TEXT };
+      },
+    };
+    const s = new ShotPlanSession('p1', 'scene-02');
+    const scene = {
+      id: 'scene-02',
+      name: 'Orienting to the Data',
+      description: 'Show the schema',
+      type: 'desktop' as const,
+    };
+    const siblings = [
+      { id: 'scene-01', name: 'Connecting MCP to Cursor', description: 'Connect Cursor', type: 'desktop' as const },
+      { id: 'scene-02', name: 'Orienting to the Data', description: 'Show the schema', type: 'desktop' as const },
+      { id: 'scene-03', name: 'Wrap-up', description: 'Summary', type: 'desktop' as const },
+    ];
+
+    await s.sendMessage('Plan it', captureLlm, scene, {}, siblings);
+
+    expect(captured).toContain('3-scene demo');
+    expect(captured).toContain('Connecting MCP to Cursor');
+    expect(captured).toContain('Wrap-up');
+    // CURRENT SCENE marker should appear on the active scene only
+    expect(captured).toMatch(/Orienting to the Data \[desktop\] — Show the schema ◀ CURRENT SCENE/);
+    expect(captured).not.toMatch(/Connecting MCP to Cursor.*CURRENT SCENE/);
+  });
+
+  it('omits the storyboard block when no sibling scenes are provided', async () => {
+    let captured = '';
+    const captureLlm: LlmClient = {
+      async complete(opts) {
+        captured = opts.userPrompt;
+        return { text: MOCK_LLM_TEXT };
+      },
+    };
+    const s = new ShotPlanSession('p1', 'scene-01');
+    const scene = { id: 'scene-01', name: 'Solo', description: 'd', type: 'desktop' as const };
+
+    await s.sendMessage('Plan it', captureLlm, scene, {});
+
+    expect(captured).not.toContain('Storyboard context');
+    expect(captured).not.toContain('CURRENT SCENE');
+  });
 });

@@ -101,6 +101,13 @@ export class ShotPlanSession {
       intent?: string;
     },
     project: { objective?: string; audience?: string; sourceDocs?: string[] },
+    /**
+     * Every scene in the storyboard, in order. Used to give the model
+     * cross-scene continuity context so e.g. scene 2's plan doesn't re-open
+     * tools that scene 1 already established. Omit (or pass an empty array)
+     * to fall back to single-scene context.
+     */
+    siblingScenes: ReadonlyArray<Pick<Scene, 'id' | 'name' | 'description' | 'type'>> = [],
   ): Promise<ShotPlanChatTurn> {
     this.appendTurn('user', content);
 
@@ -119,6 +126,17 @@ export class ShotPlanSession {
         ? `Project source docs: ${project.sourceDocs.join(', ')}\n`
         : '');
 
+    const storyboardContext = siblingScenes.length > 0
+      ? `Storyboard context — this scene is part of a ${siblingScenes.length}-scene demo. Assume continuity: tools, apps, files, and state established in earlier scenes carry forward into this one (don't repeat their setup steps), and don't include work that later scenes will handle.\nAll scenes in order:\n` +
+        siblingScenes
+          .map((s, i) => {
+            const marker = s.id === scene.id ? ' ◀ CURRENT SCENE' : '';
+            return `${i + 1}. ${s.name} [${s.type}] — ${s.description}${marker}`;
+          })
+          .join('\n') +
+        '\n\n'
+      : '';
+
     const historyContext = this.transcript
       .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
       .join('\n\n');
@@ -129,7 +147,7 @@ export class ShotPlanSession {
         : '';
 
     const userPrompt =
-      `${sceneContext}\n\n${projectContext}\nConversation:\n${historyContext}${currentStepsContext}`;
+      `${sceneContext}\n\n${projectContext}\n${storyboardContext}Conversation:\n${historyContext}${currentStepsContext}`;
 
     const completion = await llm.complete({
       systemPrompt,

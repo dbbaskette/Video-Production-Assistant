@@ -112,6 +112,15 @@ export async function registerShotPlanRoutes(
           audience: sb.project.audience,
           sourceDocs: sb.project.source_docs ?? [],
         },
+        // Pass the full storyboard so the model maintains cross-scene
+        // continuity (don't re-open tools earlier scenes already set up,
+        // don't duplicate work later scenes will handle).
+        sb.scenes.map((s) => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          type: s.type,
+        })),
       );
     } catch (err) {
       req.log.error({ err }, 'shot-plan LLM call failed');
