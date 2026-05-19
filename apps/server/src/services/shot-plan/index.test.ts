@@ -42,6 +42,11 @@ describe('parseStepsFromResponse', () => {
       { index: 2, action: 'B' },
     ]);
   });
+
+  it('returns empty array when JSON block has no steps key', () => {
+    const text = '```json\n{"plan":[{"action":"X"}]}\n```';
+    expect(parseStepsFromResponse(text)).toEqual([]);
+  });
 });
 
 describe('stripJsonBlock', () => {
@@ -68,6 +73,36 @@ describe('ShotPlanSession (state only)', () => {
       { role: 'assistant', content: 'ok', at: '2026-05-19T12:00:01.000Z' },
     ]);
     expect(s.transcript).toHaveLength(2);
+  });
+});
+
+describe('ShotPlanSession.appendTurn', () => {
+  it('returns a turn with the given role and content and a valid ISO timestamp', () => {
+    const s = new ShotPlanSession('p1', 'scene-01');
+    const turn = s.appendTurn('user', 'Plan it');
+    expect(turn.role).toBe('user');
+    expect(turn.content).toBe('Plan it');
+    // ISO 8601 datetime, e.g. 2026-05-19T12:00:00.000Z
+    expect(turn.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/);
+  });
+
+  it('appends the turn to the session transcript', () => {
+    const s = new ShotPlanSession('p1', 'scene-01');
+    s.appendTurn('user', 'hi');
+    expect(s.transcript).toHaveLength(1);
+    expect(s.transcript[0]?.content).toBe('hi');
+  });
+
+  it('accumulates sequential turns in order', () => {
+    const s = new ShotPlanSession('p1', 'scene-01');
+    s.appendTurn('user', 'first');
+    s.appendTurn('assistant', 'second');
+    s.appendTurn('user', 'third');
+    expect(s.transcript.map((t) => `${t.role}:${t.content}`)).toEqual([
+      'user:first',
+      'assistant:second',
+      'user:third',
+    ]);
   });
 });
 

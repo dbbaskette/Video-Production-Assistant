@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 export interface ShotPlanStep {
   index: number;
   action: string;
@@ -41,7 +39,7 @@ export function parseStepsFromResponse(text: string): ShotPlanStep[] {
     const action = typeof obj.action === 'string' ? obj.action.trim() : '';
     if (!action) continue;
     const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined;
-    const step: ShotPlanStep = { index: cleaned.length + 1, action };
+    const step: ShotPlanStep = { index: 0, action }; // index assigned by the final renumbering pass
     if (note !== undefined) step.note = note;
     cleaned.push(step);
   }
@@ -77,7 +75,6 @@ export class ShotPlanSession {
     }
   }
 
-  /** Append a turn. The id is generated for future use (logging, references); not exposed. */
   appendTurn(role: 'user' | 'assistant', content: string): ShotPlanChatTurn {
     const turn: ShotPlanChatTurn = {
       role,
@@ -85,8 +82,6 @@ export class ShotPlanSession {
       at: new Date().toISOString(),
     };
     this.transcript.push(turn);
-    // randomUUID call kept for parity with Ideation — not stored, just future-proofing.
-    void randomUUID();
     return turn;
   }
 }
@@ -95,6 +90,8 @@ export class ShotPlanSession {
 export class ShotPlanManager {
   private sessions = new Map<string, ShotPlanSession>();
 
+  // Safe today because projectId is UUID-shaped and sceneId follows the `scene-<8-hex>` slug pattern;
+  // re-encode if either ever permits a literal `:`.
   private key(projectId: string, sceneId: string): string {
     return `${projectId}:${sceneId}`;
   }
