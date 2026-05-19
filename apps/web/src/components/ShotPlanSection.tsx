@@ -222,16 +222,33 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
                 </ol>
               )}
             </div>
-            <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-              <button
-                className="primary"
-                onClick={() => acceptMutation.mutate()}
-                disabled={data.proposedSteps.length === 0 || acceptMutation.isPending}
-                style={{ flex: 1 }}
-              >
-                Accept plan
-              </button>
-              <button onClick={handleCancel}>Cancel</button>
+            <div style={{ padding: 12, borderTop: '1px solid var(--border)' }}>
+              {acceptMutation.isError && (
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    marginBottom: 8,
+                    border: '1px solid var(--danger, #d9534f)',
+                    borderRadius: 4,
+                    background: 'var(--bg)',
+                    color: 'var(--danger, #d9534f)',
+                    fontSize: 12,
+                  }}
+                >
+                  Failed to save: {acceptMutation.error instanceof Error ? acceptMutation.error.message : 'unknown error'}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="primary"
+                  onClick={() => acceptMutation.mutate()}
+                  disabled={data.proposedSteps.length === 0 || acceptMutation.isPending}
+                  style={{ flex: 1 }}
+                >
+                  Accept plan
+                </button>
+                <button onClick={handleCancel}>Cancel</button>
+              </div>
             </div>
           </aside>
         </div>
@@ -268,27 +285,44 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
               </li>
             ))}
           </ol>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <a
-              href={`/projects/${projectId}/scenes/${sceneId}/shot-plan/print`}
-              target="_blank"
-              rel="noreferrer"
-              className="primary"
-              style={{ padding: '8px 12px', textDecoration: 'none', display: 'inline-block' }}
-            >
-              Open print view
-            </a>
-            <button onClick={() => setRefining(true)}>Refine</button>
-            <button
-              onClick={() => {
-                if (confirm('Discard this shot plan? This cannot be undone.')) {
-                  discardMutation.mutate();
-                }
-              }}
-              style={{ marginLeft: 'auto' }}
-            >
-              Discard
-            </button>
+          <div>
+            {discardMutation.isError && (
+              <div
+                style={{
+                  padding: '8px 12px',
+                  marginBottom: 8,
+                  border: '1px solid var(--danger, #d9534f)',
+                  borderRadius: 4,
+                  background: 'var(--bg)',
+                  color: 'var(--danger, #d9534f)',
+                  fontSize: 12,
+                }}
+              >
+                Failed to discard: {discardMutation.error instanceof Error ? discardMutation.error.message : 'unknown error'}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <a
+                href={`/projects/${projectId}/scenes/${sceneId}/shot-plan/print`}
+                target="_blank"
+                rel="noreferrer"
+                className="primary"
+                style={{ padding: '8px 12px', textDecoration: 'none', display: 'inline-block' }}
+              >
+                Open print view
+              </a>
+              <button onClick={() => setRefining(true)}>Refine</button>
+              <button
+                onClick={() => {
+                  if (confirm('Discard this shot plan? This cannot be undone.')) {
+                    discardMutation.mutate();
+                  }
+                }}
+                style={{ marginLeft: 'auto' }}
+              >
+                Discard
+              </button>
+            </div>
           </div>
         </div>
       )}
