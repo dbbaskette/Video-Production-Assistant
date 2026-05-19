@@ -8,79 +8,9 @@
       "displayName": "MacBook (flat)",
       "frame": "frames/laptop-flat.png",
       "thumbnail": "thumbnails/laptop-flat.png",
-      "frameSize": { "w": 2560, "h": 1600 },
+      "frameSize": { "w": 4260, "h": 2840 },
       "type": "flat",
-      "inset": { "x": 80, "y": 80, "w": 2400, "h": 1400 }
-    },
-    {
-      "id": "laptop-tilt-right",
-      "family": "laptop",
-      "variant": "tilt-right",
-      "displayName": "MacBook (tilted right)",
-      "frame": "frames/laptop-tilt-right.png",
-      "thumbnail": "thumbnails/laptop-tilt-right.png",
-      "frameSize": { "w": 2560, "h": 1600 },
-      "type": "perspective",
-      "quad": {
-        "tl": { "x": 400, "y": 260 },
-        "tr": { "x": 2440, "y": 80 },
-        "br": { "x": 2440, "y": 1520 },
-        "bl": { "x": 400, "y": 1340 }
-      }
-    },
-    {
-      "id": "iphone-flat",
-      "family": "iphone",
-      "variant": "flat",
-      "displayName": "iPhone (flat)",
-      "frame": "frames/iphone-flat.png",
-      "thumbnail": "thumbnails/iphone-flat.png",
-      "frameSize": { "w": 1200, "h": 2600 },
-      "type": "flat",
-      "inset": { "x": 60, "y": 60, "w": 1080, "h": 2480 }
-    },
-    {
-      "id": "iphone-tilt-right",
-      "family": "iphone",
-      "variant": "tilt-right",
-      "displayName": "iPhone (tilted right)",
-      "frame": "frames/iphone-tilt-right.png",
-      "thumbnail": "thumbnails/iphone-tilt-right.png",
-      "frameSize": { "w": 1200, "h": 2600 },
-      "type": "perspective",
-      "quad": {
-        "tl": { "x": 180, "y": 380 },
-        "tr": { "x": 1140, "y": 40 },
-        "br": { "x": 1140, "y": 2560 },
-        "bl": { "x": 180, "y": 2220 }
-      }
-    },
-    {
-      "id": "android-flat",
-      "family": "android",
-      "variant": "flat",
-      "displayName": "Android phone (flat)",
-      "frame": "frames/android-flat.png",
-      "thumbnail": "thumbnails/android-flat.png",
-      "frameSize": { "w": 1200, "h": 2600 },
-      "type": "flat",
-      "inset": { "x": 50, "y": 110, "w": 1100, "h": 2440 }
-    },
-    {
-      "id": "android-tilt-right",
-      "family": "android",
-      "variant": "tilt-right",
-      "displayName": "Android phone (tilted right)",
-      "frame": "frames/android-tilt-right.png",
-      "thumbnail": "thumbnails/android-tilt-right.png",
-      "frameSize": { "w": 1200, "h": 2600 },
-      "type": "perspective",
-      "quad": {
-        "tl": { "x": 180, "y": 400 },
-        "tr": { "x": 1140, "y": 80 },
-        "br": { "x": 1140, "y": 2520 },
-        "bl": { "x": 180, "y": 2200 }
-      }
+      "inset": { "x": 402, "y": 303, "w": 3456, "h": 2234 }
     },
     {
       "id": "tablet-flat",
@@ -89,25 +19,9 @@
       "displayName": "Tablet (flat)",
       "frame": "frames/tablet-flat.png",
       "thumbnail": "thumbnails/tablet-flat.png",
-      "frameSize": { "w": 2400, "h": 1800 },
+      "frameSize": { "w": 3000, "h": 2300 },
       "type": "flat",
-      "inset": { "x": 100, "y": 100, "w": 2200, "h": 1600 }
-    },
-    {
-      "id": "tablet-tilt-right",
-      "family": "tablet",
-      "variant": "tilt-right",
-      "displayName": "Tablet (tilted right)",
-      "frame": "frames/tablet-tilt-right.png",
-      "thumbnail": "thumbnails/tablet-tilt-right.png",
-      "frameSize": { "w": 2400, "h": 1800 },
-      "type": "perspective",
-      "quad": {
-        "tl": { "x": 360, "y": 300 },
-        "tr": { "x": 2280, "y": 80 },
-        "br": { "x": 2280, "y": 1720 },
-        "bl": { "x": 360, "y": 1500 }
-      }
+      "inset": { "x": 124, "y": 118, "w": 2752, "h": 2064 }
     },
     {
       "id": "browser-flat",
@@ -118,23 +32,7 @@
       "thumbnail": "thumbnails/browser-flat.png",
       "frameSize": { "w": 2560, "h": 1600 },
       "type": "flat",
-      "inset": { "x": 0, "y": 120, "w": 2560, "h": 1480 }
-    },
-    {
-      "id": "browser-tilt-right",
-      "family": "browser",
-      "variant": "tilt-right",
-      "displayName": "Browser window (tilted right)",
-      "frame": "frames/browser-tilt-right.png",
-      "thumbnail": "thumbnails/browser-tilt-right.png",
-      "frameSize": { "w": 2560, "h": 1600 },
-      "type": "perspective",
-      "quad": {
-        "tl": { "x": 220, "y": 340 },
-        "tr": { "x": 2440, "y": 130 },
-        "br": { "x": 2440, "y": 1590 },
-        "bl": { "x": 220, "y": 1380 }
-      }
+      "inset": { "x": 0, "y": 160, "w": 2560, "h": 1440 }
     }
   ]
 }
