@@ -59,6 +59,22 @@ export function StoryboardPreview({ scenes, onRefineScene }: Props) {
                 {scene.type}
               </span>
               <span style={{ fontWeight: 600, fontSize: 14 }}>{scene.name}</span>
+              {scene.shot_plan && scene.shot_plan.length > 0 && (
+                <span
+                  title={`Shot plan ready (${scene.shot_plan.length} steps)`}
+                  style={{
+                    fontSize: 11,
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--fg-muted)',
+                    fontWeight: 500,
+                  }}
+                >
+                  ✓ plan
+                </span>
+              )}
             </div>
             {onRefineScene && (
               <button
