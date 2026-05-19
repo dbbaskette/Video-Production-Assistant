@@ -229,10 +229,10 @@ export function CommandPalette() {
       aria-modal="true"
       aria-label="Command palette"
       onClick={() => setOpen(false)}
+      className="cmdk-overlay"
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0, 0, 0, 0.55)',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
@@ -242,15 +242,12 @@ export function CommandPalette() {
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="cmdk-panel"
         style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: 10,
           width: 'min(560px, 92vw)',
           maxHeight: '60vh',
           display: 'flex',
           flexDirection: 'column',
-          boxShadow: '0 20px 60px rgba(0, 0, 0, 0.6)',
         }}
       >
         <input

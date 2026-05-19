@@ -134,18 +134,14 @@ function ImportXaiDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
-      }}
+      className="dialog-overlay"
+      style={{ zIndex: 50 }}
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10,
-          padding: 24, width: 'min(480px, 90vw)',
-        }}
+        className="dialog"
+        style={{ width: 'min(480px, 90vw)' }}
       >
         <h2 style={{ margin: 0, fontSize: 18 }}>Import xAI voice</h2>
         <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '6px 0 16px' }}>
@@ -187,13 +183,9 @@ function ImportXaiDialog({ onClose }: { onClose: () => void }) {
 }
 
 function Badge({ children, tone, title }: { children: React.ReactNode; tone: 'good' | 'accent' | 'muted'; title?: string }) {
-  const styles: Record<string, React.CSSProperties> = {
-    good: { background: 'rgba(94, 138, 58, 0.15)', color: '#9bc572', border: '1px solid rgba(94, 138, 58, 0.4)' },
-    accent: { background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid rgba(99, 102, 241, 0.3)' },
-    muted: { background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)' },
-  };
+  const cls = tone === 'good' ? 'pill pill--success' : tone === 'accent' ? 'pill pill--accent' : 'pill';
   return (
-    <span title={title} style={{ ...styles[tone], padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600 }}>
+    <span title={title} className={cls}>
       {children}
     </span>
   );
