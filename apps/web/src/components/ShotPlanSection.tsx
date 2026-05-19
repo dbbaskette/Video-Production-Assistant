@@ -16,6 +16,7 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
   const [refining, setRefining] = useState(false);
   const [localTicked, setLocalTicked] = useState<Set<number>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const lastInputRef = useRef<string>('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['shot-plan', projectId, sceneId],
@@ -77,14 +78,15 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
   const handleSend = () => {
     const t = input.trim();
     if (!t || sendMutation.isPending) return;
+    lastInputRef.current = t;
     setInput('');
     sendMutation.mutate(t);
   };
 
   const handleStartChat = () => {
+    // The chat session is created server-side on the first POST /message; nothing
+    // to do here besides flipping into chat mode.
     setRefining(true);
-    // Empty mutation just to ensure session exists; user will type the first message.
-    qc.invalidateQueries({ queryKey: ['shot-plan', projectId, sceneId] });
   };
 
   const handleCancel = () => {
@@ -132,6 +134,37 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
               ))}
               {sendMutation.isPending && (
                 <div style={{ color: 'var(--fg-muted)', fontSize: 13, marginTop: 8 }}>Thinking…</div>
+              )}
+              {sendMutation.isError && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: 12,
+                    border: '1px solid var(--danger, #d9534f)',
+                    borderRadius: 6,
+                    background: 'var(--bg)',
+                    fontSize: 13,
+                    color: 'var(--danger, #d9534f)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                  }}
+                >
+                  <span>
+                    {sendMutation.error instanceof Error
+                      ? sendMutation.error.message
+                      : 'Failed to reach the LLM.'}
+                  </span>
+                  <button
+                    onClick={() => {
+                      if (lastInputRef.current) sendMutation.mutate(lastInputRef.current);
+                    }}
+                    disabled={sendMutation.isPending || !lastInputRef.current}
+                  >
+                    Retry
+                  </button>
+                </div>
               )}
               <div ref={chatEndRef} />
             </div>
