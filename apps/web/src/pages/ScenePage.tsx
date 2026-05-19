@@ -707,8 +707,9 @@ export function ScenePage(props: ScenePageProps = {}) {
       ? { padding: '0', maxWidth: '100%' }
       : { padding: '32px 48px', maxWidth: 900 }}
     >
-      {/* Scene header — hidden in embedded mode (Storyboard host shows the name) */}
-      {!embedded && (
+      {/* Scene header — full version standalone, compact description-only when
+          embedded in StoryboardView (the left rail already shows the name). */}
+      {!embedded ? (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
             <span
@@ -730,7 +731,23 @@ export function ScenePage(props: ScenePageProps = {}) {
             {scene.description}
           </p>
         </>
-      )}
+      ) : scene.description ? (
+        <p
+          style={{
+            color: 'var(--fg-muted)',
+            margin: '0 0 20px',
+            fontSize: 13,
+            lineHeight: 1.5,
+            padding: '12px 14px',
+            background: 'var(--bg-elev)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+          }}
+          title="Scene description from ideation (click the pencil in the sidebar to edit)"
+        >
+          {scene.description}
+        </p>
+      ) : null}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>

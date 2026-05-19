@@ -13,7 +13,28 @@ interface Props {
 export function ShotPlanSection({ projectId, sceneId }: Props) {
   const qc = useQueryClient();
   const [input, setInput] = useState('');
-  const [refining, setRefining] = useState(false);
+  // `refining` survives scene navigation by being mirrored to sessionStorage
+  // keyed per (projectId, sceneId). StoryboardView forces a full remount on
+  // every scene switch (via `key={selectedSceneId}`), which would otherwise
+  // drop the user back to Accepted view mid-refine.
+  const refiningStorageKey = `vpa:shotplan:refining:${projectId}:${sceneId}`;
+  const [refining, setRefiningState] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(refiningStorageKey) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setRefining = (value: boolean) => {
+    setRefiningState(value);
+    try {
+      if (value) sessionStorage.setItem(refiningStorageKey, '1');
+      else sessionStorage.removeItem(refiningStorageKey);
+    } catch {
+      // sessionStorage may be unavailable (private mode etc.) — fall back to
+      // memory-only, no behaviour change beyond losing cross-mount persistence.
+    }
+  };
   const [localTicked, setLocalTicked] = useState<Set<number>>(new Set());
   const chatEndRef = useRef<HTMLDivElement>(null);
   const lastInputRef = useRef<string>('');
