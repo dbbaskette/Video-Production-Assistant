@@ -120,6 +120,34 @@ export const SceneSchema = z.object({
    * when its upstream video is newer than the cached file.
    */
   frame_render: z.string().optional(),
+  /**
+   * Optional per-scene operator script — a numbered list of recording instructions
+   * the user follows while capturing the scene. Generated and refined via the
+   * shot-plan chat. Absent for scenes the user did not opt in to plan.
+   */
+  shot_plan: z
+    .array(
+      z.object({
+        index: z.number().int().nonnegative(),
+        action: z.string().min(1),
+        note: z.string().optional(),
+      }),
+    )
+    .optional(),
+  /**
+   * Persisted chat transcript from the shot-plan session that produced
+   * `shot_plan`. Kept so the user can resume refinement after the in-memory
+   * session has been dropped (server restart, eviction, etc.).
+   */
+  shot_plan_chat: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string(),
+        at: z.string().datetime(),
+      }),
+    )
+    .optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 
