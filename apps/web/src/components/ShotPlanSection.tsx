@@ -84,9 +84,15 @@ export function ShotPlanSection({ projectId, sceneId }: Props) {
   };
 
   const handleStartChat = () => {
-    // The chat session is created server-side on the first POST /message; nothing
-    // to do here besides flipping into chat mode.
     setRefining(true);
+    // Auto-fire the AI's first draft so the user lands on a working starting
+    // point instead of an empty chat. The scene name/description/intent are
+    // already in the server-side prompt context, so this minimal kickoff is
+    // enough for the model to produce a meaningful first pass.
+    const kickoff =
+      'Please draft an initial shot plan for this scene using its description and intent. I will refine from here.';
+    lastInputRef.current = kickoff;
+    sendMutation.mutate(kickoff);
   };
 
   const handleCancel = () => {
