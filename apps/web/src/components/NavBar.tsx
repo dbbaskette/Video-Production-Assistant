@@ -35,18 +35,7 @@ export function NavBar() {
         <span
           aria-hidden
           title="Press ⌘K to open command palette"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '4px 8px',
-            fontSize: 11,
-            color: 'var(--fg-muted)',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-            cursor: 'help',
-          }}
+          className="kbd"
         >
           ⌘K
         </span>

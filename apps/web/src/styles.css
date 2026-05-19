@@ -123,6 +123,28 @@ body {
   min-height: 100vh;
 }
 
+/* ── Custom scrollbars ─────────────────────────────────
+   System scrollbars look out of place inside a pro-app surface.
+   These match Final Cut / Logic: thin, transparent track, semi-opaque
+   thumb that brightens on hover. WebKit + Gecko. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg-dim) 60%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--fg-dim) 50%, transparent);
+  transition: background-color var(--transition);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--fg-dim) 85%, transparent);
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
 /* ── Global nav ──────────────────────────────────────── */
 
 .navbar {
@@ -144,7 +166,7 @@ body {
   align-items: center;
   gap: 12px;
   padding: 0 24px;
-  height: 52px;
+  height: 56px;
 }
 
 .navbar__brand {
@@ -366,6 +388,31 @@ a:hover { text-decoration: underline; }
 .card--interactive { cursor: pointer; }
 .card--interactive:hover { border-color: var(--accent); }
 
+/* ── Keyboard chip (kbd) ──────────────────────────────
+   Renders a single key (e.g. "⌘K") as a small Apple-style key cap. */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: linear-gradient(180deg, var(--button-grad-top), var(--button-grad-bot));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  cursor: help;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.45) inset,
+    0 1px 1.5px rgba(0, 0, 0, 0.06);
+}
+[data-theme="dark"] .kbd {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 1px 1.5px rgba(0, 0, 0, 0.3);
+}
+
 /* ── Segmented control (Apple Pro view-mode style) ────
    Used for view-mode toggles (Timeline / Storyboard / Outline),
    theme toggle, and any 2–4 way exclusive choice. */
@@ -418,22 +465,71 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
   border: 1px solid transparent;
   overflow: hidden;
-  transition: border-color var(--transition), transform var(--transition);
+  transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
 }
 .hero-card:hover { transform: translateY(-1px); }
 
+/* Inner top-edge sheen catches light, sells the "solid panel" read. */
+.hero-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent);
+  pointer-events: none;
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+}
+[data-theme="dark"] .hero-card::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+}
+
 .hero-card--ideate {
   background: linear-gradient(135deg, var(--accent-bg) 0%, var(--accent-bg-hover) 100%);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -16px color-mix(in srgb, var(--accent) 35%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 28px -16px color-mix(in srgb, var(--accent) 45%, transparent);
 }
-.hero-card--ideate:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+[data-theme="dark"] .hero-card--ideate {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 10px 28px -16px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.hero-card--ideate:hover {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 16px 36px -16px color-mix(in srgb, var(--accent) 55%, transparent);
+}
 
 .hero-card--record {
   background: linear-gradient(135deg, var(--success-bg) 0%, color-mix(in srgb, var(--success-bg) 70%, var(--success) 10%) 100%);
-  border-color: color-mix(in srgb, var(--success) 30%, transparent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px -16px color-mix(in srgb, var(--success) 35%, transparent);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 28px -16px color-mix(in srgb, var(--success) 45%, transparent);
 }
+[data-theme="dark"] .hero-card--record {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.2),
+    0 10px 28px -16px color-mix(in srgb, var(--success) 35%, transparent);
+}
+.hero-card--record:hover {
+  border-color: color-mix(in srgb, var(--success) 60%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 16px 36px -16px color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+/* Inner content sits above the ::before sheen */
+.hero-card > * { position: relative; z-index: 1; }
 .hero-card--record:hover { border-color: rgba(115, 192, 90, 0.45); }
 
 .hero-card__icon {
@@ -472,7 +568,7 @@ a:hover { text-decoration: underline; }
   height: 28px;
   border-radius: 6px;
   flex-shrink: 0;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .brand-card__name { font-weight: 600; font-size: 14px; flex: 1; }
@@ -486,11 +582,36 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.5px;
   background: var(--accent-bg);
   color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .brand-card__badge--fork {
   background: var(--success-bg);
   color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 22%, transparent);
 }
+
+/* ── Pills (generic badge primitive) ───────────────────
+   Reusable inline status indicator. Variants share the same shape,
+   just swap colours. Used by future scene status, render status, etc. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: var(--bg-elev2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill--accent { background: var(--accent-bg); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
+.pill--success { background: var(--success-bg); color: var(--success); border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+.pill--warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 22%, transparent); }
+.pill--danger { background: var(--danger-bg); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 22%, transparent); }
 
 .brand-grid {
   display: grid;
@@ -767,13 +888,14 @@ pre code {
   width: 72px;
   height: 48px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
   display: flex;
   align-items: flex-end;
   padding: 4px 5px;
   font-size: 10px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-weight: 500;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   transition: transform var(--transition);
 }
 .brand-detail__color-swatch:hover { transform: scale(1.05); }
@@ -782,12 +904,12 @@ pre code {
 .tokens-table th {
   text-align: left;
   padding: 8px 10px;
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--fg-dim);
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
 }
 .tokens-table td {
   padding: 6px 10px;
@@ -831,22 +953,52 @@ pre code {
 }
 .banner--info { background: var(--accent-bg); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); color: var(--fg); }
 
+/* ── Command palette (⌘K) ─────────────────────────────
+   Frequently-used floating modal — gets its own chrome so it reads as
+   distinct from a regular dialog. Pulls the same panel-gradient tokens
+   so it tracks the theme automatically. */
+.cmdk-overlay {
+  background: rgba(15, 17, 26, 0.40);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+[data-theme="dark"] .cmdk-overlay { background: rgba(0, 0, 0, 0.55); }
+.cmdk-panel {
+  background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 24px 64px rgba(15, 17, 26, 0.22),
+    0 0 0 0.5px var(--border);
+}
+[data-theme="dark"] .cmdk-panel {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 64px rgba(0, 0, 0, 0.6),
+    0 0 0 0.5px rgba(255, 255, 255, 0.03);
+}
+
 /* ── Dialogs / Modals ────────────────────────────────── */
 
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  /* Slightly lighter scrim in light mode (the page underneath is already
+     bright, so we don't need to nuke it); deeper in dark mode where the
+     dialog needs more separation. */
+  background: rgba(15, 17, 26, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 200;
 }
+[data-theme="dark"] .dialog-overlay { background: rgba(0, 0, 0, 0.65); }
 
 .dialog {
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 28px;
@@ -854,7 +1006,16 @@ pre code {
   max-width: 92vw;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 24px 64px rgba(15, 17, 26, 0.18),
+    0 0 0 0.5px var(--border);
+}
+[data-theme="dark"] .dialog {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 64px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(255, 255, 255, 0.03);
 }
 
 .dialog h2 { margin: 0 0 20px; font-size: 20px; }
