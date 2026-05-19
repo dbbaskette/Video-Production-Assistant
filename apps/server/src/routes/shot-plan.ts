@@ -50,7 +50,12 @@ export async function registerShotPlanRoutes(
 ): Promise<void> {
   const { store, llm, shotPlanManager } = deps;
 
-  // Fastify error handler — translate our thrown { statusCode, code, message } shape.
+  // Plugin-scoped error handler. Other routes in this codebase throw plain
+  // `{ statusCode, message }` and rely on Fastify's built-in handler. We throw
+  // `{ statusCode, code, message }` so the client gets a stable `code` field
+  // (e.g. `project_not_found`, `scene_not_found`) for error-driven UI. This
+  // handler translates that shape; the fallthrough `reply.send(err)` leaves
+  // unrelated errors to Fastify's default (which honors `statusCode` natively).
   app.setErrorHandler((err, _req, reply) => {
     const e = err as { statusCode?: number; code?: string; message?: string };
     if (e.statusCode && e.code) {

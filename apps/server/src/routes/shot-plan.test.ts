@@ -169,6 +169,7 @@ describe('shot-plan routes', () => {
     const scene = sb!.scenes.find((s) => s.id === 'scene-01')!;
     expect(scene.shot_plan).toBeUndefined();
     expect(scene.shot_plan_chat).toBeUndefined();
+    expect(ctx.shotPlanManager.get(projectId, 'scene-01')).toBeUndefined();
   });
 
   it('POST /evict drops only the in-memory session, never touches disk', async () => {
