@@ -65,12 +65,18 @@ async function runClaude(userPrompt: string, opts: RunOptions = {}): Promise<str
   const args = [
     '-p',
     '--output-format', 'stream-json',
-    '--max-turns', '1',
+    // `--max-turns 1` is too tight: `--tools ""` only disables built-ins, so
+    // plugin-provided tools (LSP) and user MCPs still load. If the model
+    // decides to call any of those, the tool call consumes the single allowed
+    // turn and the follow-up text turn never fires → empty response with
+    // `result:error_max_turns`. 3 leaves room for one optional tool round-trip
+    // plus the final text reply.
+    '--max-turns', '3',
     '--model', model,
     '--verbose',
     '--dangerously-skip-permissions',
     '--disable-slash-commands',
-    '--tools', '',  // no tools — pure text generation
+    '--tools', '',  // disables built-ins (plugins/MCPs still load)
   ];
 
   if (opts.systemPrompt) {
