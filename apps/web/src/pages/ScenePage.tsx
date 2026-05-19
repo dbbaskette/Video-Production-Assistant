@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi } from '../lib/api.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
+import { ShotPlanSection } from '../components/ShotPlanSection.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
 import { ScenePreview } from '../components/ScenePreview.js';
 import { SceneRenderSection } from '../components/SceneRenderSection.js';
@@ -1017,6 +1018,7 @@ export function ScenePage(props: ScenePageProps = {}) {
               <p style={{ color: 'var(--fg-muted)', marginBottom: 16 }}>
                 No recording uploaded for this scene yet.
               </p>
+              <ShotPlanSection projectId={projectId!} sceneId={sceneId!} />
               <RecordingUpload
                 multiple={false}
                 isUploading={uploadMutation.isPending}
