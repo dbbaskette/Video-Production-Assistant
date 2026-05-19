@@ -8,6 +8,8 @@ import { registerJobRoutes } from './routes/jobs.js';
 import { registerBrandRoutes } from './routes/brands.js';
 import { registerStoryboardRoutes } from './routes/storyboard.js';
 import { registerIdeationRoutes } from './routes/ideation.js';
+import { registerShotPlanRoutes } from './routes/shot-plan.js';
+import { ShotPlanManager } from './services/shot-plan/index.js';
 import { registerRecordingRoutes } from './routes/recordings.js';
 import { registerScriptRoutes } from './routes/scripts.js';
 import { registerNarrationRoutes } from './routes/narration.js';
@@ -88,6 +90,7 @@ export async function buildServer() {
   app.log.info(`LLM: ${llm.getLabel()} (with retry on 429/5xx/network)`);
 
   const ideationManager = new IdeationManager();
+  const shotPlanManager = new ShotPlanManager();
 
   const tts = new TtsService();
   tts.register(createFakeTtsProvider());
@@ -136,6 +139,9 @@ export async function buildServer() {
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
   await app.register(async (instance) => registerIdeationRoutes(instance, { store, llm, ideationManager }));
+  await app.register(async (instance) =>
+    registerShotPlanRoutes(instance, { store, llm, shotPlanManager }),
+  );
   await app.register(async (instance) =>
     registerRecordingRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
   );

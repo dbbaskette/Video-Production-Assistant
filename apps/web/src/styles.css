@@ -277,6 +277,7 @@ button:hover:not(:disabled) {
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 button.primary,
+a.primary,
 .btn--accent {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent));
   border-color: var(--accent-hover);
@@ -285,9 +286,14 @@ button.primary,
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 1px 2px rgba(0, 122, 255, 0.25);
 }
 button.primary:hover:not(:disabled),
+a.primary:hover:not([aria-disabled='true']),
 .btn--accent:hover:not(:disabled) {
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent-hover));
   border-color: var(--accent-hover);
+}
+a.primary[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .btn--ghost {

@@ -19,6 +19,8 @@ import { SceneRedirect } from './pages/SceneRedirect.js';
 import { ReviewPage } from './pages/ReviewPage.js';
 import { RecordingsPage } from './pages/RecordingsPage.js';
 import { Settings } from './pages/Settings.js';
+import { ShotPlanPrintView } from './pages/ShotPlanPrintView.js';
+import { ShotPlanProjectPrintView } from './pages/ShotPlanProjectPrintView.js';
 
 export function App() {
   return (
@@ -48,6 +50,14 @@ export function App() {
           <Route path="recordings" element={<RecordingsPage />} />
           <Route path="review" element={<ReviewPage />} />
         </Route>
+        <Route
+          path="/projects/:projectId/scenes/:sceneId/shot-plan/print"
+          element={<ShotPlanPrintView />}
+        />
+        <Route
+          path="/projects/:projectId/shot-plans/print"
+          element={<ShotPlanProjectPrintView />}
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

@@ -1072,3 +1072,64 @@ export const jobsApi = {
     return () => es.close();
   },
 };
+
+export interface ShotPlanStep {
+  index: number;
+  action: string;
+  note?: string;
+}
+
+export interface ShotPlanChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  at: string;
+}
+
+export interface ShotPlanState {
+  transcript: ShotPlanChatTurn[];
+  proposedSteps: ShotPlanStep[];
+  savedPlan: ShotPlanStep[] | null;
+}
+
+export interface ShotPlanMessageResponse {
+  reply: string;
+  proposedSteps: ShotPlanStep[];
+}
+
+export const shotPlanApi = {
+  get(projectId: string, sceneId: string): Promise<ShotPlanState> {
+    return request<ShotPlanState>(
+      'GET',
+      `/api/projects/${projectId}/scenes/${sceneId}/shot-plan`,
+    );
+  },
+  sendMessage(
+    projectId: string,
+    sceneId: string,
+    content: string,
+  ): Promise<ShotPlanMessageResponse> {
+    return request<ShotPlanMessageResponse>(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/shot-plan/message`,
+      { content },
+    );
+  },
+  accept(projectId: string, sceneId: string): Promise<Scene> {
+    return request<Scene>(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/shot-plan/accept`,
+    );
+  },
+  discard(projectId: string, sceneId: string): Promise<Scene> {
+    return request<Scene>(
+      'DELETE',
+      `/api/projects/${projectId}/scenes/${sceneId}/shot-plan`,
+    );
+  },
+  evict(projectId: string, sceneId: string): Promise<{ evicted: true }> {
+    return request<{ evicted: true }>(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/shot-plan/evict`,
+    );
+  },
+};
