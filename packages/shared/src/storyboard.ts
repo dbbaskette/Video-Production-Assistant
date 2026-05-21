@@ -85,6 +85,35 @@ export type Review = z.infer<typeof ReviewSchema>;
 export const SceneTypeSchema = z.enum(['desktop', 'terminal', 'browser', 'slide']);
 export type SceneType = z.infer<typeof SceneTypeSchema>;
 
+/**
+ * Transition applied at the OUT-edge of this scene — i.e. when cutting from
+ * THIS scene to the NEXT one. Ported from the tanzu-video-pipeline project's
+ * SegmentTransition list. The actual ffmpeg xfade filter name is resolved at
+ * render time; this enum is just the user-facing label.
+ *
+ * `cut` (or undefined) means a hard concat — no blending. Anything else
+ * triggers an ffmpeg xfade pass that overlaps `transition_duration_sec`
+ * seconds of the two clips. Ignored on the final scene (nothing to
+ * transition to).
+ */
+export const SceneTransitionSchema = z.enum([
+  'cut',
+  'crossfade',
+  'fade-black',
+  'fade-white',
+  'wipe-left',
+  'wipe-right',
+  'slide-left',
+  'slide-right',
+  'slide-up',
+  'slide-down',
+  'circleopen',
+  'circleclose',
+  'radial',
+  'pixelize',
+]);
+export type SceneTransition = z.infer<typeof SceneTransitionSchema>;
+
 export const SceneSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
@@ -113,6 +142,18 @@ export const SceneSchema = z.object({
       z.string().regex(/^#[0-9a-fA-F]{6}$/),
     ])
     .optional(),
+  /**
+   * Transition to apply at the OUT-edge of this scene (i.e. when cutting to
+   * the next scene). `cut` or undefined = hard concat. Anything else triggers
+   * an ffmpeg xfade pass at render time. Ignored on the final scene.
+   */
+  transition: SceneTransitionSchema.optional(),
+  /**
+   * How long the transition overlap lasts, in seconds. Default 0.5s when a
+   * transition is set. Range 0.1–5s. Ignored when transition is `cut` /
+   * undefined.
+   */
+  transition_duration_sec: z.number().min(0.1).max(5).optional(),
   /**
    * Cached path (relative to the project) of the framed video — the result of
    * compositing the (optionally lower-thirds-burned) recording into the chosen

@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi } from '../lib/api.js';
+import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi, framesApi } from '../lib/api.js';
+import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { ShotPlanSection } from '../components/ShotPlanSection.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
+import { TransitionPicker, type SceneTransition } from '../components/TransitionPicker.js';
 import { ScenePreview } from '../components/ScenePreview.js';
 import { SceneRenderSection } from '../components/SceneRenderSection.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { estimateTtsCost, formatUsd } from '../lib/tts-pricing.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
 import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
-import { RefreshCcw, Sparkles } from 'lucide-react';
+import { RefreshCcw, Sparkles, Upload } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 
@@ -111,6 +113,8 @@ export function ScenePage(props: ScenePageProps = {}) {
   // scene has a recording — see effect below. User can untick to fall back
   // to the (faster, cheaper) text-only path.
   const [groundInVideo, setGroundInVideo] = useState(true);
+  const [showReplaceUpload, setShowReplaceUpload] = useState(false);
+  const generateAbortRef = useRef<AbortController | null>(null);
   // Local edit buffer for the user-authored "what is this scene
   // demonstrating?" string. Hydrated from the storyboard scene; saved on
   // blur via saveIntentMutation.
@@ -137,8 +141,14 @@ export function ScenePage(props: ScenePageProps = {}) {
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => recordingsApi.uploadForScene(projectId!, sceneId!, file),
-    onSuccess: () => {
+    onSuccess: (_data, file) => {
+      setShowReplaceUpload(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      ui.showToast({
+        message: 'Recording replaced',
+        detail: file.name,
+        tone: 'success',
+      });
     },
   });
 
@@ -198,20 +208,58 @@ export function ScenePage(props: ScenePageProps = {}) {
     },
   });
 
-  const generateScriptMutation = useMutation({
-    mutationFn: () =>
-      scriptApi.generate(projectId!, sceneId!, {
-        // Server only honours this when active provider is Gemini + recording exists,
-        // so toggling true on a non-Gemini provider is harmless (falls back to text).
-        groundInVideo: groundInVideo && canGroundInVideo,
+  // Saves the per-scene out-transition picked in the Recording tab. `cut` and
+  // `null` durations are normalised so the server can clear the fields cleanly.
+  const saveTransitionMutation = useMutation({
+    mutationFn: (patch: { transition: string; transition_duration_sec: number | null }) =>
+      recordingsApi.saveSceneMetadata(projectId!, sceneId!, {
+        transition: patch.transition === 'cut' ? null : patch.transition,
+        transition_duration_sec: patch.transition === 'cut' ? null : patch.transition_duration_sec,
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
+  });
+
+  // Per-scene frame style + background. Each can be cleared independently
+  // (null on the wire = clear override, fall back to project default).
+  const saveFrameMutation = useMutation({
+    mutationFn: (patch: {
+      frame_style?: string | null;
+      frame_background?: string | null;
+    }) => recordingsApi.saveSceneMetadata(projectId!, sceneId!, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    },
+  });
+
+  // Frame template catalogue — cached app-wide so opening multiple scenes
+  // doesn't re-fetch. Shared with the project-default picker on /render.
+  const framesQuery = useQuery({
+    queryKey: ['frames'],
+    queryFn: () => framesApi.list(),
+  });
+
+  const generateScriptMutation = useMutation({
+    mutationFn: () => {
+      const controller = new AbortController();
+      generateAbortRef.current = controller;
+      return scriptApi.generate(projectId!, sceneId!, {
+        groundInVideo: groundInVideo && canGroundInVideo,
+        signal: controller.signal,
+      });
+    },
     onSuccess: (data) => {
+      generateAbortRef.current = null;
       setEditingScript(data.script);
-      setEditingDialogScript(null); // refetch dialog from narrationState
+      setEditingDialogScript(null);
       setScriptDirty(false);
       setDialogEditDirty(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+    },
+    onError: () => {
+      generateAbortRef.current = null;
     },
   });
 
@@ -800,6 +848,206 @@ export function ScenePage(props: ScenePageProps = {}) {
                 ingested_at={scene.recording.ingested_at}
               />
 
+              {/* Replace recording — lets the user swap the video file without
+                  deleting the scene. The backend's ingestRecording already
+                  overwrites the existing file, so this just exposes the
+                  upload dropzone again. */}
+              <div style={{ marginTop: 12 }}>
+                {!showReplaceUpload ? (
+                  <button
+                    onClick={() => setShowReplaceUpload(true)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '7px 14px',
+                      background: 'var(--surface)',
+                      color: 'var(--fg-muted)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    <Upload size={13} strokeWidth={1.8} aria-hidden />
+                    Replace recording
+                  </button>
+                ) : (
+                  <div
+                    style={{
+                      padding: 14,
+                      background: 'var(--bg-elev)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--fg-muted)',
+                        textTransform: 'uppercase',
+                        letterSpacing: 1,
+                        marginBottom: 10,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Upload replacement
+                    </div>
+                    <RecordingUpload
+                      multiple={false}
+                      isUploading={uploadMutation.isPending}
+                      onFilesSelected={(files) => {
+                        if (files[0]) uploadMutation.mutate(files[0]);
+                      }}
+                    />
+                    {uploadMutation.isError && (
+                      <p style={{ color: 'var(--danger)', marginTop: 8, fontSize: 13 }}>
+                        Upload failed:{' '}
+                        {uploadMutation.error instanceof Error
+                          ? uploadMutation.error.message
+                          : 'Unknown error'}
+                      </p>
+                    )}
+                    <button
+                      onClick={() => {
+                        setShowReplaceUpload(false);
+                        uploadMutation.reset();
+                      }}
+                      disabled={uploadMutation.isPending}
+                      style={{
+                        marginTop: 10,
+                        padding: '6px 14px',
+                        background: 'transparent',
+                        color: 'var(--fg-muted)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        cursor: uploadMutation.isPending ? 'wait' : 'pointer',
+                        fontSize: 12,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Per-scene out-transition. Hidden when this is the final scene
+                  (nothing to transition into). Defaults to `cut` (hard concat).
+                  Anything else triggers an ffmpeg xfade pass at render time. */}
+              <div style={{ marginTop: 12 }}>
+                <TransitionPicker
+                  value={scene.transition as SceneTransition | undefined}
+                  durationSec={scene.transition_duration_sec}
+                  isLastScene={
+                    !!storyboard &&
+                    storyboard.scenes[storyboard.scenes.length - 1]?.id === scene.id
+                  }
+                  isSaving={saveTransitionMutation.isPending}
+                  onChange={(transition, durationSec) => {
+                    saveTransitionMutation.mutate({
+                      transition,
+                      transition_duration_sec: durationSec ?? null,
+                    });
+                  }}
+                />
+                {saveTransitionMutation.isError && (
+                  <p style={{ color: 'var(--danger)', marginTop: 8, fontSize: 12 }}>
+                    Save failed:{' '}
+                    {saveTransitionMutation.error instanceof Error
+                      ? saveTransitionMutation.error.message
+                      : 'Unknown error'}
+                  </p>
+                )}
+              </div>
+
+              {/* Per-scene frame override. The render pipeline already prefers
+                  scene-level values over project defaults (storyboard.defaults
+                  is the fallback); the picker just exposes that override at
+                  the scene level. Empty selection = inherit project default. */}
+              {framesQuery.data && framesQuery.data.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: 14,
+                    background: 'var(--bg-elev)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--fg-muted)',
+                      textTransform: 'uppercase',
+                      letterSpacing: 1,
+                      marginBottom: 8,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Frame style (this scene)
+                  </div>
+                  <FrameStylePicker
+                    frames={framesQuery.data}
+                    value={{
+                      // Scene-level override; falls through to project default
+                      // visually so the user can see what's effectively applied.
+                      frameStyle:
+                        scene.frame_style ?? storyboard?.defaults?.frame_style ?? null,
+                      frameBackground:
+                        scene.frame_background ??
+                        storyboard?.defaults?.frame_background ??
+                        null,
+                    }}
+                    onChange={(next) => {
+                      const projectStyle = storyboard?.defaults?.frame_style ?? null;
+                      const projectBg = storyboard?.defaults?.frame_background ?? null;
+                      // If the chosen value matches the project default, clear
+                      // the override (null on the wire). Otherwise persist it.
+                      saveFrameMutation.mutate({
+                        frame_style:
+                          next.frameStyle === projectStyle ? null : next.frameStyle ?? null,
+                        frame_background:
+                          next.frameBackground === projectBg ? null : next.frameBackground ?? null,
+                      });
+                    }}
+                  />
+                  <p
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--fg-muted)',
+                      margin: '8px 0 0',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {scene.frame_style || scene.frame_background ? (
+                      <>
+                        Override active for this scene. Pick the project default to
+                        clear it.
+                      </>
+                    ) : (
+                      <>
+                        Inheriting project default ({storyboard?.defaults?.frame_style ?? 'none'}
+                        ). Pick a different style to override for this scene only.
+                      </>
+                    )}
+                  </p>
+                  {saveFrameMutation.isPending && (
+                    <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6, marginBottom: 0 }}>
+                      Saving…
+                    </p>
+                  )}
+                  {saveFrameMutation.isError && (
+                    <p style={{ color: 'var(--danger)', marginTop: 6, fontSize: 12 }}>
+                      Save failed:{' '}
+                      {saveFrameMutation.error instanceof Error
+                        ? saveFrameMutation.error.message
+                        : 'Unknown error'}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Two-card layout. The previous design crammed scene
                   metadata + the Re-analyze action into a single card
                   titled "Scene description", which buried the action.
@@ -1070,9 +1318,13 @@ export function ScenePage(props: ScenePageProps = {}) {
             }
             hint={
               groundInVideo && canGroundInVideo
-                ? 'Video upload + Gemini analysis usually takes 30–60s on top of the LLM calls. Please don\'t navigate away.'
-                : "Two LLM calls run in sequence. Please don't navigate away."
+                ? 'Video upload + Gemini analysis usually takes 30–60s on top of the LLM calls.'
+                : 'Two LLM calls run in sequence.'
             }
+            onCancel={() => {
+              generateAbortRef.current?.abort();
+              generateAbortRef.current = null;
+            }}
           />
 
           {/* Scene intent — the user's "north star" for this scene. The

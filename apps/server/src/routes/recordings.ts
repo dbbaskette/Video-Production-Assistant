@@ -12,7 +12,7 @@ import { loadStoryboard, saveStoryboard, createStoryboard, addScene, updateScene
 import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
-import { SceneSchema, type Scene } from '@vpa/shared';
+import { SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
 
 interface Deps {
@@ -551,6 +551,14 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       name?: string;
       description?: string;
       type?: 'desktop' | 'terminal' | 'browser' | 'slide';
+      transition?: SceneTransition | null;
+      transition_duration_sec?: number | null;
+      // Per-scene frame overrides. Either field can be:
+      //   • a string (apply this value as the scene-level override)
+      //   • null (clear the override — fall back to the project default)
+      //   • undefined / missing (leave the existing value alone)
+      frame_style?: string | null;
+      frame_background?: string | null;
     };
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -575,13 +583,65 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     if (typeof body.description === 'string') patch.description = body.description;
     if (body.type) patch.type = body.type;
 
+    // Transition fields — `null` clears the value, undefined leaves it alone.
+    if (body.transition !== undefined) {
+      if (body.transition === null || body.transition === 'cut') {
+        patch.transition = undefined;
+        patch.transition_duration_sec = undefined;
+      } else {
+        const parsed = SceneTransitionSchema.safeParse(body.transition);
+        if (!parsed.success) {
+          return reply.status(400).send({ error: `invalid transition: ${body.transition}`, code: 'invalid_request' });
+        }
+        patch.transition = parsed.data;
+      }
+    }
+    if (body.transition_duration_sec !== undefined) {
+      if (body.transition_duration_sec === null) {
+        patch.transition_duration_sec = undefined;
+      } else if (
+        typeof body.transition_duration_sec !== 'number' ||
+        body.transition_duration_sec < 0.1 ||
+        body.transition_duration_sec > 5
+      ) {
+        return reply.status(400).send({ error: 'transition_duration_sec must be 0.1–5', code: 'invalid_request' });
+      } else {
+        patch.transition_duration_sec = body.transition_duration_sec;
+      }
+    }
+
+    // Frame style / background — `null` clears the per-scene override and
+    // makes the scene fall back to the storyboard default; `undefined` leaves
+    // the existing value alone.
+    if (body.frame_style !== undefined) {
+      patch.frame_style = body.frame_style === null ? undefined : body.frame_style;
+    }
+    if (body.frame_background !== undefined) {
+      const bg = body.frame_background;
+      if (bg === null) {
+        patch.frame_background = undefined;
+      } else if (bg === 'brand' || bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(bg)) {
+        patch.frame_background = bg as 'brand' | 'transparent' | `#${string}`;
+      } else {
+        return reply.status(400).send({
+          error: 'frame_background must be "brand", "transparent", or a #RRGGBB hex',
+          code: 'invalid_request',
+        });
+      }
+    }
+
     const updated = updateScene(sb, sceneId, patch);
     await saveStoryboard(entry.path, updated);
+    const next = updated.scenes.find((s) => s.id === sceneId);
     return {
       sceneId,
-      name: updated.scenes.find((s) => s.id === sceneId)?.name,
-      description: updated.scenes.find((s) => s.id === sceneId)?.description,
-      type: updated.scenes.find((s) => s.id === sceneId)?.type,
+      name: next?.name,
+      description: next?.description,
+      type: next?.type,
+      transition: next?.transition,
+      transition_duration_sec: next?.transition_duration_sec,
+      frame_style: next?.frame_style,
+      frame_background: next?.frame_background,
     };
   });
 }

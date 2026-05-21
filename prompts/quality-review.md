@@ -11,16 +11,23 @@ For each scene, evaluate:
 
 1. **Description clarity** — Is the scene description specific enough for someone to record it?
 2. **Recording** — Is a recording attached? If yes, is the duration reasonable?
-3. **Script** — Does the scene have a narration script? Is the script length proportional to the recording duration?
-4. **Narration** — Has TTS narration been generated? Are subtitles present?
-5. **Lower thirds** — Are there lower thirds? Do timings fall within the recording duration?
-6. **Missing assets** — Any expected files that are missing?
+3. **Script** — Optional. If a script exists, is its length proportional to the recording duration? If no script exists anywhere on the scene, treat that as an INTENTIONAL choice (the project ships without narration) — emit at most an `info`, never `warn`.
+4. **Narration** — Optional. TTS audio is only relevant when a script exists.
+   - Script present + audio present → `info` (synthesized and ready)
+   - Script present + audio missing → `warn` ("Script ready but TTS not generated")
+   - **Script absent + audio absent** → SKIP this check entirely; do NOT emit a narration item. The user opted out of narration at the project level — they're rendering with the recording's own audio (or silent), which is a valid configuration.
+5. **Lower thirds** — Optional. If present, check that timings fall within the recording duration. If absent, do not warn.
+6. **Missing assets** — Any expected files that are missing? Only consider an asset "expected" if its parent feature is in use (e.g. don't expect narration audio for a scene with no script).
 
 ## Severity levels
 
 - `info` — observation, no action needed (e.g. "Scene description is clear")
-- `warn` — something to address before publishing (e.g. "No recording uploaded")
+- `warn` — something to address before publishing (e.g. "Script ready but TTS not generated")
 - `issue` — critical problem (e.g. "Lower third out_sec exceeds recording duration")
+
+## Optional-feature rule
+
+Narration, scripts, and lower-thirds are ALL optional at the project level. A scene with a recording and no other content can ship as-is. Do not flag missing optional content with `warn` — at most `info`, and prefer to omit the item entirely when there's nothing useful to say.
 
 ## Output format
 

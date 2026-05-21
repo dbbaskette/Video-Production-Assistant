@@ -61,6 +61,7 @@ export function createOpenAICompatLlm(config: OpenAICompatConfig): LlmClient {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(3 * 60_000),
       });
 
       if (!res.ok && opts.responseFormat === 'json') {
@@ -72,6 +73,7 @@ export function createOpenAICompatLlm(config: OpenAICompatConfig): LlmClient {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
+            signal: AbortSignal.timeout(3 * 60_000),
           });
         } else {
           throw new Error(

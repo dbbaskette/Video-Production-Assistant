@@ -20,7 +20,7 @@ import { reviewSummaryLabel, type ReviewStatus } from './palette.js';
 export type PipelineStepStatus = 'done' | 'next' | 'todo';
 
 export interface PipelineStep {
-  key: 'storyboard' | 'recordings' | 'narration' | 'lower-thirds' | 'render' | 'review';
+  key: 'storyboard' | 'recordings' | 'script' | 'narration' | 'lower-thirds' | 'render' | 'review';
   /** Short name for the sidebar; the Pipeline component uses the same label. */
   label: string;
   to: string;
@@ -62,6 +62,13 @@ export function usePipelineSteps(projectId: string | undefined): Result {
   const sceneCount = storyboard?.scenes?.length ?? 0;
   const hasStoryboard = !!storyboard && sceneCount > 0;
   const recordingCount = storyboard?.scenes?.filter((s) => s.recording).length ?? 0;
+  // A scene "has a script" when narration.script (or either of the legacy
+  // monologue / dialog snapshots) is non-empty. Same predicate the script
+  // overview page uses.
+  const scriptCount = storyboard?.scenes?.filter((s) => {
+    const n = s.narration;
+    return !!(n?.script || n?.monologueScript || n?.dialogScript);
+  }).length ?? 0;
   const narrationCount = storyboard?.scenes?.filter((s) => s.narration?.audio).length ?? 0;
   const lowerThirdCount =
     storyboard?.scenes?.filter((s) => (s.lower_thirds?.length ?? 0) > 0).length ?? 0;
@@ -90,25 +97,44 @@ export function usePipelineSteps(projectId: string | undefined): Result {
       done: hasStoryboard && recordingCount === sceneCount,
     },
     {
+      key: 'script',
+      label: 'Script',
+      // Project-wide script overview — same pattern as Narration / Lower
+      // Thirds. Each row deep-links to the scene's Script tab.
+      to: `/project/${projectId}/script`,
+      // Scripts are optional — the user can ship a silent video. Pragmatic
+      // done-rule mirrors narration / lower-thirds: marked done once
+      // recordings are in.
+      detail: scriptCount > 0 ? `${scriptCount}/${sceneCount}` : 'Optional',
+      done: hasStoryboard && recordingCount === sceneCount,
+    },
+    {
       key: 'narration',
       label: 'Narration',
-      to: `/project/${projectId}/storyboard`,
-      detail: hasStoryboard ? `${narrationCount}/${sceneCount}` : '—',
-      done: hasStoryboard && narrationCount === sceneCount,
+      // Cross-scene narration overview — replaces the old dead-link to
+      // /storyboard. Each row deep-links into its scene's Narration tab.
+      to: `/project/${projectId}/narration`,
+      // Narration is OPTIONAL — the user can render with the recording's
+      // original audio or render silent. Pragmatic done-rule: marked done
+      // once all recordings are in.
+      detail: narrationCount > 0 ? `${narrationCount}/${sceneCount}` : 'Optional',
+      done: hasStoryboard && recordingCount === sceneCount,
     },
     {
       key: 'lower-thirds',
       label: 'Lower Thirds',
-      to: `/project/${projectId}/storyboard`,
+      to: `/project/${projectId}/lower-thirds`,
       detail: lowerThirdCount > 0 ? `${lowerThirdCount}/${sceneCount}` : 'Optional',
-      // Same pragmatic done-rule as the inline Pipeline: as soon as
-      // narration is finished we stop blocking on LTs (they're optional).
-      done: hasStoryboard && narrationCount === sceneCount,
+      // Optional — done once recordings are in.
+      done: hasStoryboard && recordingCount === sceneCount,
     },
     {
       key: 'render',
       label: 'Render',
-      to: `/project/${projectId}`,
+      // Dedicated page — matches the Narration / Lower Thirds pattern.
+      // Previously this was a scroll-down section on the overview which
+      // confused users ("nothing happened when I clicked Render").
+      to: `/project/${projectId}/render`,
       detail: finalRendered ? 'Done' : 'final.mp4',
       done: finalRendered,
     },

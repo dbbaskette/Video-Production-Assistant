@@ -41,6 +41,7 @@ export function createAnthropicLlm(apiKey: string, model?: string): LlmClient {
           'anthropic-version': API_VERSION,
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(3 * 60_000),
       });
 
       if (!res.ok) {

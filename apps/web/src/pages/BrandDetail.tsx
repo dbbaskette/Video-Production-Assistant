@@ -171,37 +171,344 @@ function LogoUploadCard({
 
 function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: string; onRefresh: () => void }) {
   const vpa = data.doc.frontMatter.vpa;
+  const audio = vpa?.audio as
+    | {
+        bumper_intro?: string | null;
+        bumper_outro?: string | null;
+        default_music_track?: string | null;
+      }
+    | undefined;
   return (
-    <div>
-      <h3>Logos</h3>
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <LogoUploadCard
-          label="Primary Logo"
-          currentPath={vpa?.logo.primary}
-          slug={slug}
-          field="primary"
-          onUploaded={onRefresh}
-        />
-        <LogoUploadCard
-          label="Mono Logo"
-          currentPath={vpa?.logo.mono}
-          slug={slug}
-          field="mono"
-          onUploaded={onRefresh}
-        />
+    <div style={{ display: 'grid', gap: 32 }}>
+      {/* ── Logos ────────────────────────────────────────────── */}
+      <div>
+        <h3 style={{ margin: '0 0 14px' }}>Logos</h3>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <LogoUploadCard
+            label="Primary Logo"
+            currentPath={vpa?.logo.primary}
+            slug={slug}
+            field="primary"
+            onUploaded={onRefresh}
+          />
+          <LogoUploadCard
+            label="Mono Logo"
+            currentPath={vpa?.logo.mono}
+            slug={slug}
+            field="mono"
+            onUploaded={onRefresh}
+          />
+        </div>
+        <p className="hint" style={{ marginTop: 14 }}>
+          Supported formats: PNG, JPG, SVG, WebP
+        </p>
       </div>
-      <p className="hint" style={{ marginTop: 14 }}>
-        Supported formats: PNG, JPG, SVG, WebP
+
+      {/* ── Bumpers ──────────────────────────────────────────────
+          Start/end bumper videos — applied to every project render
+          that uses this brand. The render pipeline normalises them
+          to the project's scene dimensions before concat, so file
+          shape doesn't have to match exactly. */}
+      <div>
+        <h3 style={{ margin: '0 0 4px' }}>Bumpers</h3>
+        <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 14px' }}>
+          Short video clips that play at the start and end of every render. Scaled
+          to fit the project's scene size.
+        </p>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <MediaUploadCard
+            kind="video"
+            label="Start bumper"
+            currentPath={audio?.bumper_intro ?? null}
+            slug={slug}
+            field="bumper-intro"
+            accept="video/mp4,video/quicktime,.mp4,.mov"
+            onChange={onRefresh}
+          />
+          <MediaUploadCard
+            kind="video"
+            label="End bumper"
+            currentPath={audio?.bumper_outro ?? null}
+            slug={slug}
+            field="bumper-outro"
+            accept="video/mp4,video/quicktime,.mp4,.mov"
+            onChange={onRefresh}
+          />
+        </div>
+      </div>
+
+      {/* ── Default music ────────────────────────────────────────
+          Optional background track applied when a project doesn't
+          pick its own. Project-level music selections still override. */}
+      <div>
+        <h3 style={{ margin: '0 0 4px' }}>Default music</h3>
+        <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 14px' }}>
+          Looped under narration on every render using this brand. Projects can
+          override per-render.
+        </p>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <MediaUploadCard
+            kind="audio"
+            label="Music track"
+            currentPath={audio?.default_music_track ?? null}
+            slug={slug}
+            field="default-music"
+            accept="audio/mpeg,audio/wav,audio/mp4,.mp3,.wav,.m4a"
+            onChange={onRefresh}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Generic upload card for video or audio brand assets. Renders the existing
+ * media (preview <video>/<audio>) if any, plus Upload / Replace and Remove
+ * buttons that drive the brandsApi.uploadAsset / deleteAsset endpoints.
+ */
+function MediaUploadCard({
+  kind,
+  label,
+  currentPath,
+  slug,
+  field,
+  accept,
+  onChange,
+}: {
+  kind: 'video' | 'audio';
+  label: string;
+  currentPath: string | null;
+  slug: string;
+  field: 'bumper-intro' | 'bumper-outro' | 'default-music' | 'sonic-logo';
+  accept: string;
+  onChange: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<'upload' | 'delete' | null>(null);
+  const [error, setError] = useState('');
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy('upload');
+    setError('');
+    try {
+      await brandsApi.uploadAsset(slug, field, file);
+      onChange();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setBusy(null);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const handleRemove = async () => {
+    setBusy('delete');
+    setError('');
+    try {
+      await brandsApi.deleteAsset(slug, field);
+      onChange();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Remove failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mediaUrl = currentPath ? brandsApi.assetUrl(slug, currentPath) : null;
+  const filename = currentPath ? currentPath.split('/').pop() : null;
+
+  return (
+    <div className="card" style={{ minWidth: 280, flex: 1, textAlign: 'center' }}>
+      <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 14px', color: 'var(--fg-muted)' }}>
+        {label}
       </p>
+      {mediaUrl ? (
+        kind === 'video' ? (
+          <video
+            key={mediaUrl}
+            src={mediaUrl}
+            controls
+            playsInline
+            preload="metadata"
+            style={{
+              width: '100%',
+              maxWidth: 280,
+              borderRadius: 6,
+              background: '#000',
+              aspectRatio: '16 / 9',
+            }}
+          />
+        ) : (
+          <audio
+            key={mediaUrl}
+            src={mediaUrl}
+            controls
+            preload="metadata"
+            style={{ width: '100%', maxWidth: 280 }}
+          />
+        )
+      ) : (
+        <div
+          style={{
+            width: '100%',
+            maxWidth: 280,
+            margin: '0 auto',
+            aspectRatio: kind === 'video' ? '16 / 9' : 'auto',
+            minHeight: kind === 'audio' ? 60 : undefined,
+            borderRadius: 8,
+            border: '2px dashed var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--fg-dim)',
+            fontSize: 13,
+          }}
+        >
+          {kind === 'video' ? 'No bumper' : 'No track'}
+        </div>
+      )}
+      {filename && (
+        <p
+          style={{
+            fontSize: 11,
+            color: 'var(--fg-muted)',
+            margin: '8px 0 0',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {filename}
+        </p>
+      )}
+      <div style={{ marginTop: 12, display: 'inline-flex', gap: 8 }}>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          style={{ display: 'none' }}
+          onChange={handleFile}
+        />
+        <button
+          className="btn--outline-accent"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy !== null}
+          style={{ fontSize: 12 }}
+        >
+          {busy === 'upload' ? 'Uploading…' : mediaUrl ? 'Replace' : 'Upload'}
+        </button>
+        {mediaUrl && (
+          <button
+            onClick={handleRemove}
+            disabled={busy !== null}
+            style={{
+              fontSize: 12,
+              padding: '6px 12px',
+              background: 'transparent',
+              color: 'var(--danger)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              cursor: busy ? 'wait' : 'pointer',
+            }}
+          >
+            {busy === 'delete' ? 'Removing…' : 'Remove'}
+          </button>
+        )}
+      </div>
+      {error && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{error}</p>}
     </div>
   );
 }
 
 function UsagePane({ slug }: { slug: string }) {
+  // Queries the same `GET /api/brands/:slug/projects` endpoint that the brand
+  // deletion check uses — projects are matched by `brand.id === slug` on each
+  // project.yaml. Empty state = "no project currently uses this brand".
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['brand-projects', slug],
+    queryFn: () => brandsApi.listProjects(slug),
+    enabled: !!slug,
+  });
+
+  if (isLoading) {
+    return <div className="empty-state">Loading projects…</div>;
+  }
+  if (error) {
+    return (
+      <div className="empty-state" style={{ color: 'var(--danger)' }}>
+        Failed to load: {error instanceof Error ? error.message : 'unknown error'}
+      </div>
+    );
+  }
+
+  const projects = data?.projects ?? [];
+  if (projects.length === 0) {
+    return (
+      <div className="empty-state">
+        No projects use brand <strong>{slug}</strong> yet. Pick this brand on a project's
+        Overview to link it.
+      </div>
+    );
+  }
+
   return (
-    <div className="empty-state">
-      Projects using brand <strong>{slug}</strong> will be listed here once project-brand
-      linking is implemented.
+    <div>
+      <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 14px' }}>
+        {projects.length} project{projects.length === 1 ? '' : 's'} use{' '}
+        <strong>{slug}</strong>:
+      </p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {projects.map((p) => (
+          <Link
+            key={p.id}
+            to={`/project/${p.id}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: '12px 14px',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              textDecoration: 'none',
+              color: 'inherit',
+              transition: 'border-color 120ms',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: 'var(--fg-muted)',
+                  marginTop: 2,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {p.path}
+              </div>
+            </div>
+            <span
+              style={{
+                fontSize: 12,
+                color: 'var(--fg-muted)',
+                padding: '4px 10px',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              Open
+            </span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }

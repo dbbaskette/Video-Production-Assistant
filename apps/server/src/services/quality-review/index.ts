@@ -40,18 +40,31 @@ function buildStoryboardContext(sb: Storyboard): string {
       lines.push('Recording: none');
     }
 
-    if (scene.narration?.script) {
-      const wordCount = scene.narration.script.split(/\s+/).length;
+    // Script + narration status. We emit clear signals so the prompt's
+    // "optional-feature rule" can trust the data:
+    //   • "Script: none (optional, not in use)" → don't warn
+    //   • "Narration audio: none (script absent — narration not in use)"
+    //     → skip the narration check entirely
+    //   • "Narration audio: none (script present)" → warn (TTS missing)
+    const hasScript = !!(scene.narration?.script || scene.narration?.monologueScript || scene.narration?.dialogScript);
+    if (hasScript) {
+      const text = scene.narration?.script ?? scene.narration?.monologueScript ?? scene.narration?.dialogScript ?? '';
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
       lines.push(`Script: ${wordCount} words`);
     } else {
-      lines.push('Script: none');
+      lines.push('Script: none (optional, not in use)');
     }
 
-    if (scene.narration?.audio) {
-      lines.push(`Narration audio: ${scene.narration.audio}`);
-      if (scene.narration.subtitles?.srt) lines.push(`Subtitles: SRT + VTT`);
+    const hasNarrationAudio = !!scene.narration?.audio || (scene.narration?.chunks?.some((c) => !!c.audio) ?? false);
+    if (hasNarrationAudio) {
+      lines.push(`Narration audio: ${scene.narration?.audio ?? `${scene.narration?.chunks?.length} chunks`}`);
+      if (scene.narration?.subtitles?.srt) lines.push('Subtitles: SRT + VTT');
+    } else if (hasScript) {
+      // Script written but not synthesised — this is genuinely worth a warn.
+      lines.push('Narration audio: none (script present — TTS not yet generated)');
     } else {
-      lines.push('Narration audio: none');
+      // No script either — narration is intentionally off for this scene.
+      lines.push('Narration audio: none (script absent — narration not in use)');
     }
 
     const ltCount = scene.lower_thirds?.length ?? 0;

@@ -64,31 +64,35 @@ a developer-experience extra.
 
 ### Workflow
 
-1. **Ideate** — Chat with AI to plan a demo storyboard (or upload recordings and let AI generate one)
-2. **Record** — Record each scene as an MP4 against the storyboard
-3. **Script** — AI generates per-paragraph narration scripts; monologue and dialog modes are edited independently with restore-previous backup
-4. **Voices (optional)** — Record or upload a voice clone in-browser; use it with Fish Audio (local) or register it as an xAI custom voice
-5. **Narrate** — TTS engine produces per-paragraph MP3 chunks + SRT/VTT subtitles. Per-mode chunks survive monologue↔dialog toggling
-6. **Lower Thirds** — AI recommends on-screen title overlays; render them onto video with ffmpeg
-7. **Review** — AI quality review catches missing assets, unclear descriptions, timing issues
-8. **Render** — Stitch everything into a single `final.mp4` (per-scene mux + concat) with optional subtitle burn-in
-9. **Export** (optional) — Collect all scene assets into an editor-ready bundle for external editing apps
+The left sidebar lays out the workflow as a sequence of dedicated phase pages. Every per-scene operation (narration, lower thirds, frame style, transition) is reachable from either the per-scene Recording tab OR the project-wide overview page for that phase — pick whichever fits the moment.
+
+1. **Storyboard** — Chat with AI to plan a demo storyboard (or upload recordings and let AI generate one)
+2. **Recordings** — Upload one MP4 per scene; the **Replace recording** button on the scene's Recording tab swaps files cleanly and invalidates the lower-thirds / frame caches
+3. **Script** *(optional)* — Project-wide `/script` page shows every scene's script status with word count and inline preview. Click into any scene to write or AI-generate a draft. Monologue and dialog modes are edited independently with restore-previous backup.
+4. **Voices** *(optional)* — Record or upload a voice clone in-browser; use it with Fish Audio (local) or register it as an xAI custom voice
+5. **Narration** *(optional)* — Project-wide `/narration` page shows per-scene script + audio status. TTS engine produces per-paragraph MP3 chunks + SRT/VTT subtitles. Per-mode chunks survive monologue↔dialog toggling.
+6. **Lower Thirds** *(optional)* — Project-wide `/lower-thirds` page shows LT counts + first titles + time ranges per scene. AI recommends overlays per scene; ffmpeg burns them onto video.
+7. **Render** — Dedicated `/render` page with brand-asset visibility, per-toggle opt-outs (narration, lower-thirds, brand bumpers, brand music), background music selector, and project-wide / per-scene frame style. Three-stage ffmpeg pipeline; SSE progress + inline playback.
+8. **Quality Review** — AI inspection of the storyboard. Stale-cache banner reminds you to re-run after major changes. Optional features (narration, scripts, lower-thirds) are not flagged when absent.
+9. **Export** *(optional)* — Collect all scene assets into an editor-ready bundle for external editing apps
 
 ### Features
 
 | Feature | Description |
 |---|---|
-| **Brand Library** | Create reusable brand profiles from PDFs, URLs, or free text. Stored as `design.md` files. |
-| **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand |
+| **Brand Library** | Create reusable brand profiles from PDFs, URLs, or free text. Stored as `design.md` files. **Brand Assets** tab supports logos, **start/end bumpers** (videos), **default music** track, and other media — auto-applied to every render using that brand. **Usage** tab lists every project linked to the brand. **Download** produces a zip of the whole brand (design.md + assets/). |
+| **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand. The Render page displays which brand assets will be applied + per-render opt-out checkboxes. |
 | **Voices Library** | Record or upload voice clones in-browser; ffmpeg transcodes to canonical 24 kHz mono WAV. Use them with Fish Audio (local) or register them as xAI custom voices |
 | **AI Ideation** | Chat-based storyboard planning with scene proposals and refinement |
-| **Recording Ingestion** | Upload per-scene MP4s, or upload one long recording and split it at AI-proposed boundaries |
-| **Script Generation** | AI writes narration scripts with emotive tags from scene context. Monologue and dialog modes are independent. |
+| **Recording Ingestion** | Upload per-scene MP4s, or upload one long recording and split it at AI-proposed boundaries. **Replace recording** swaps a scene's video and automatically invalidates the cached lower-thirds bake + framed video. |
+| **Script Generation** | AI writes narration scripts with emotive tags from scene context. Monologue and dialog modes are independent. Project-wide `/script` page lists every scene with word count + preview. |
 | **TTS Narration** | Per-paragraph chunked TTS with multiple engines/voices, word-level timing, SRT/VTT subtitles. Cloned voices appear automatically in the engine voice picker. |
 | **Scene Preview** | Combined recording + narration + lower-thirds preview, played inline without rendering |
-| **Lower Thirds** | AI-recommended title overlays with style/timing controls and ffmpeg rendering |
-| **Quality Review** | AI inspection of the full storyboard with severity-graded issue punch list |
-| **Final Render** | Three-stage ffmpeg pipeline (audio concat → per-scene mux → multi-scene concat) with progress UI and inline playback |
+| **Lower Thirds** | AI-recommended title overlays with style/timing controls and ffmpeg rendering. Project-wide `/lower-thirds` page shows counts + first titles + time ranges per scene. |
+| **Scene Transitions** | Per-scene out-transitions ported from `tanzu-video-pipeline`: cut (default), crossfade, fade-black, fade-white, wipe-left/right, slide-left/right/up/down, circleopen/close, radial, pixelize. Configurable duration 0.1–5s. Render applies them via ffmpeg `xfade`. |
+| **Per-scene Frame Style** | Each scene can override the project-default device frame (laptop / tablet / browser / none) and background (brand color / transparent / custom hex). |
+| **Quality Review** | AI inspection of the full storyboard with severity-graded issue punch list. Optional features (narration, scripts, lower-thirds) are not flagged when absent. Stale-cache banner with one-click re-run when the project has changed since the last review. |
+| **Final Render** | Three-stage ffmpeg pipeline (audio concat → per-scene mux → multi-scene concat with xfade) with progress UI, brand-bumper prepend/append, brand default music fallback, per-render opt-outs for narration / lower-thirds / brand assets, and forced normalisation (scale + pad + setsar + settb) so mixed-source inputs always concat cleanly. **Download** button returns a `Content-Disposition: attachment` mp4 named after the project. |
 | **Setup Health** | In-app probes for ffmpeg/drawtext, ffprobe, LLM connectivity, TTS providers, env vars, and `VPA_HOME` |
 | **Export** | Bundle all scene assets into an organized directory with manifest for external editing apps |
 
@@ -204,14 +208,19 @@ docs/superpowers/     Design specs and implementation plans
 
 ## Brand Library
 
-Create reusable brand profiles from documents (PDF, markdown, URL, free text). Each brand is stored as a `design.md` file with VPA-specific extensions.
+Create reusable brand profiles from documents (PDF, markdown, URL, free text). Each brand is stored as a `design.md` file with VPA-specific extensions, plus a folder of asset files.
 
 - Brand directories: `<VPA_HOME>/brands/<slug>/design.md`
+- Brand assets: `<VPA_HOME>/brands/<slug>/assets/`
+  - Logos: `assets/<filename>.{png,svg,jpg,webp}`
+  - **Bumpers**: `assets/bumpers/<filename>.mp4` — start + end videos automatically prepended/appended at render time
+  - **Default music**: `assets/music/<filename>.{mp3,wav,mp4}` — fallback background track when a project hasn't picked its own
+  - Source docs: `assets/source-docs/`
 - Registry: `<VPA_HOME>/brands.json`
 - Voice profiles: `<VPA_HOME>/voices/*.yaml`
 - Voice clones: `<VPA_HOME>/voice-clones/<slug>/`
 
-Each project's `project.yaml` carries an applied brand reference (`brand: { id, applied_version }`); the active brand surfaces in the project sidebar and Overview.
+Each project's `project.yaml` carries an applied brand reference (`brand: { id, applied_version }`); the active brand surfaces in the project sidebar and Overview. The brand-detail page has tabs for **Overview**, **Tokens**, **Markdown**, **Assets** (logos + bumpers + music upload UI with inline preview / remove), and **Usage** (every project linked to this brand). The **Download** button produces a zip of the entire brand for backup or sharing.
 
 ## Voices
 
@@ -224,11 +233,22 @@ The `/voices` page lets you record in-browser (`MediaRecorder` → server transc
 
 ## Final Render
 
-The Project Overview has a **Render Final Video** button that runs a three-stage ffmpeg pipeline:
+The dedicated **/render** page runs a multi-stage ffmpeg pipeline:
 
-1. Concatenate per-paragraph narration chunks into a single audio track per scene
-2. Mux each scene's audio with its recording (and optional rendered lower-thirds overlay), with audio-mode = "replace original" or "mix narration over recording at -20dB" and optional subtitle burn-in
-3. Concat all scene mp4s into `<project>/renders/final.mp4`
+1. **Bake** per-scene lower-thirds overlays on demand (cached at `overlays/<sceneId>-lower-thirds.mp4` and invalidated when the recording changes)
+2. **Concatenate** per-paragraph narration chunks into a single audio track per scene (skipped entirely when **Include narration** is off — output is silent, recording's original audio is dropped)
+3. **Mux** each scene's audio + overlay + optional device frame into `<project>/renders/<seq>-<slug>.mp4`. Audio mode = "replace original" or "mix narration over recording at -20dB" (only when narration is included). Optional subtitle burn-in.
+4. **Normalise + concat** all scene mp4s — including any brand intro / outro bumpers — via a unified filter graph. Per-input `scale + pad + setsar + fps + settb=1/90000` ensures mixed-source clips (different fps, timebase, resolution) join cleanly. `xfade` is used at every scene boundary that has a configured transition; `concat` for cuts.
+5. **Mix music** if a track is selected or the brand has a `default_music_track` (looped under narration at the configured volume; default −20 dB)
+
+Per-render opt-outs surface as checkboxes on the Render page:
+
+- **Include narration** — when off, the final video is silent regardless of what's been generated
+- **Include lower thirds** — when off, ignores the baked overlay even if it exists on disk
+- **Include bumpers** — start / end bumpers from the linked brand
+- **Use brand default music** — falls back to the brand's music when no project track is picked
+
+The **Download** link uses `?download=1&filename=<project>.mp4` so the browser saves a real file (cross-origin `download` attribute alone is ignored).
 
 Progress streams over SSE (`/api/jobs/:jobId/stream`); the page shows a live progress bar and plays the result inline once done.
 
