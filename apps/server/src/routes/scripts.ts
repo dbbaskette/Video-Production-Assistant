@@ -7,6 +7,7 @@ import { loadStoryboard, saveStoryboard, updateScene } from '../services/storybo
 import { generateScript } from '../services/script/index.js';
 import { convertToDialog } from '../services/script/convert-to-dialog.js';
 import { generateVideoGroundedScript } from '../services/video-narration/index.js';
+import { tightenScript } from '../services/script/tighten.js';
 
 interface Deps {
   store: ProjectStore;
@@ -232,10 +233,90 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const narration = { ...(scene.narration ?? {}), script, monologueScript: script };
+    // Wipe TTS-derived artefacts: any rendered audio chunks pointed at the
+    // PREVIOUS script's paragraphs, so re-using them would play the wrong
+    // narration over the new wording. Same rationale (and same field list)
+    // as POST /script/generate. The user has to regenerate TTS on the
+    // Narration tab — Generate All becomes a one-click recovery.
+    const narration = {
+      ...(scene.narration ?? {}),
+      script,
+      monologueScript: script,
+      chunks: undefined,
+      audio: undefined,
+      subtitles: undefined,
+      timings: undefined,
+    };
     const updated = updateScene(sb, sceneId, { narration: narration as any });
     await saveStoryboard(projectPath, updated);
 
     return { sceneId, script };
+  });
+
+  // POST /api/projects/:id/scenes/:sceneId/script/tighten — propose a shorter
+  // script that fits the recording duration. Returns the proposal WITHOUT
+  // saving; the client decides whether to accept and PUT it back.
+  // Used by the Quality Review page when a "narration too long for the clip"
+  // warning lands — the actionable fix is to tighten the script, not to
+  // tweak TTS speed on the Narration tab.
+  app.post('/api/projects/:id/scenes/:sceneId/script/tighten', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as { targetDurationSec?: number };
+    const projectPath = await resolveProjectPath(store, id);
+
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+
+    const currentScript =
+      scene.narration?.script ?? scene.narration?.monologueScript ?? '';
+    if (!currentScript.trim()) {
+      return reply.status(400).send({
+        error: 'Scene has no script to tighten',
+        code: 'no_script',
+      });
+    }
+
+    const targetDurationSec =
+      typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0
+        ? body.targetDurationSec
+        : scene.recording?.duration_sec;
+    if (!targetDurationSec || targetDurationSec <= 0) {
+      return reply.status(400).send({
+        error: 'No target duration available — upload a recording or pass targetDurationSec',
+        code: 'no_duration',
+      });
+    }
+
+    try {
+      const result = await tightenScript(
+        {
+          currentScript,
+          targetDurationSec,
+          sceneName: scene.name,
+          sceneIntent: scene.intent,
+        },
+        llm,
+        workspaceRoot,
+      );
+      return {
+        sceneId,
+        currentScript,
+        proposedScript: result.proposedScript,
+        currentWords: result.currentWords,
+        targetWords: result.targetWords,
+        proposedWords: result.proposedWords,
+        targetDurationSec,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      app.log.error({ err: msg, sceneId }, 'script tighten failed');
+      return reply.status(500).send({
+        error: `Script tighten failed: ${msg}`,
+        code: 'tighten_failed',
+      });
+    }
   });
 }

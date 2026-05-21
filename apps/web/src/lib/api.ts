@@ -449,6 +449,31 @@ export const scriptApi = {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/script`, { script });
   },
   /**
+   * Ask the LLM to propose a shorter version of the current script that
+   * fits inside `targetDurationSec` at ~150 wpm. Returns the proposal
+   * WITHOUT saving — the caller decides whether to PUT it back via save().
+   */
+  async tighten(
+    projectId: string,
+    sceneId: string,
+    opts: { targetDurationSec?: number } = {},
+  ): Promise<{
+    sceneId: string;
+    currentScript: string;
+    proposedScript: string;
+    currentWords: number;
+    targetWords: number;
+    proposedWords: number;
+    targetDurationSec: number;
+  }> {
+    return request(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/script/tighten`,
+      opts,
+      { timeoutMs: 2 * 60_000 },
+    );
+  },
+  /**
    * Save the user-authored "what is this scene demonstrating?" string.
    * Empty string clears it. The script generator uses this as the north
    * star (auth: 1), with project objective + source-docs as supporting
