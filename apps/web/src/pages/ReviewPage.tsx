@@ -126,11 +126,33 @@ function TightenScriptModal({
 
         {data && (
           <>
-            {/* The model sometimes returns a script that's the same length
-                or LONGER than the current one — typically when the original
-                already fits the target. Flag this so the user doesn't
-                accept a non-improvement by reflex. */}
-            {data.proposedWords >= data.currentWords && (
+            {/* The server already classified the outcome:
+                  - 'already_fits': the script is under the target word count;
+                    the tightener skipped the LLM call entirely.
+                  - 'no_safe_cut': the LLM produced a same-or-longer rewrite
+                    twice in a row, so the server gave up and returned the
+                    original.
+                In either case the "proposal" is identical to the current
+                script — there's nothing useful to accept. */}
+            {data.reason === 'already_fits' && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  background: 'var(--info-bg, rgba(122, 162, 247, 0.12))',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: 'var(--fg)',
+                  lineHeight: 1.5,
+                }}
+              >
+                <strong>No tightening needed.</strong> The script ({data.currentWords} words) is
+                already at or under the target ({data.targetWords} words for {data.targetDurationSec.toFixed(1)}s
+                at ~150 wpm). The Quality Review warning may be a false positive — close this dialog
+                and leave the script alone.
+              </div>
+            )}
+            {data.reason === 'no_safe_cut' && (
               <div
                 style={{
                   padding: '10px 14px',
@@ -142,17 +164,22 @@ function TightenScriptModal({
                   lineHeight: 1.5,
                 }}
               >
-                <strong>Heads up:</strong> the proposed script ({data.proposedWords} words) isn't shorter
-                than the current one ({data.currentWords} words). This usually means the script already
-                fits — the narration timing concern may be a false positive. You can still accept the
-                rewrite if you prefer the new wording, or close this dialog and leave the script alone.
+                <strong>Couldn't find a safe cut.</strong> The model couldn't shorten this script
+                without dropping facts (target was {data.targetWords} words, current is {data.currentWords}).
+                You can <em>Try again</em> to re-roll, or close this dialog and tighten by hand on the
+                Script tab.
               </div>
             )}
-            <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--fg-muted)' }}>
-              <span>Target: <strong style={{ color: 'var(--fg)' }}>{data.targetWords} words</strong> (~{data.targetDurationSec.toFixed(1)}s at 150 wpm)</span>
+            <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--fg-muted)', flexWrap: 'wrap' }}>
+              <span>Target: <strong style={{ color: 'var(--fg)' }}>{data.targetWords} words</strong> (~{data.targetDurationSec.toFixed(1)}s at {data.wpm} wpm)</span>
               <span>Current: <strong style={{ color: 'var(--fg)' }}>{data.currentWords} words</strong></span>
-              <span>Proposed: <strong style={{ color: data.proposedWords >= data.currentWords ? 'var(--warn, #d4a017)' : 'var(--accent)' }}>{data.proposedWords} words</strong></span>
+              <span>Proposed: <strong style={{ color: data.reason ? 'var(--fg-muted)' : 'var(--accent)' }}>{data.proposedWords} words</strong></span>
             </div>
+            <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: 0 }}>
+              {data.wpmIsMeasured
+                ? `Rate is measured from your project's ${data.wpmSampleChunks} generated TTS chunks — not a default.`
+                : `Rate is the 150 wpm default (no narration generated yet). Once you generate TTS, this will use your engine's actual speed.`}
+            </p>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <ScriptColumn label="Current" body={data.currentScript} />
@@ -198,23 +225,23 @@ function TightenScriptModal({
               </button>
               <button
                 onClick={() => saveMutation.mutate(data.proposedScript)}
-                disabled={saveMutation.isPending}
+                disabled={saveMutation.isPending || !!data.reason}
                 style={{
                   padding: '8px 16px',
-                  background: data.proposedWords >= data.currentWords ? 'var(--surface)' : 'var(--accent)',
-                  border: data.proposedWords >= data.currentWords ? '1px solid var(--border)' : 'none',
+                  background: data.reason ? 'var(--surface)' : 'var(--accent)',
+                  border: data.reason ? '1px solid var(--border)' : 'none',
                   borderRadius: 6,
-                  color: data.proposedWords >= data.currentWords ? 'var(--fg)' : '#fff',
-                  cursor: saveMutation.isPending ? 'wait' : 'pointer',
+                  color: data.reason ? 'var(--fg-muted)' : '#fff',
+                  cursor: saveMutation.isPending ? 'wait' : data.reason ? 'not-allowed' : 'pointer',
                   fontSize: 13,
                   fontWeight: 600,
-                  opacity: saveMutation.isPending ? 0.7 : 1,
+                  opacity: saveMutation.isPending || data.reason ? 0.6 : 1,
                 }}
               >
                 {saveMutation.isPending
                   ? 'Saving…'
-                  : data.proposedWords >= data.currentWords
-                    ? 'Accept anyway'
+                  : data.reason
+                    ? 'Nothing to save'
                     : 'Accept & save'}
               </button>
             </div>

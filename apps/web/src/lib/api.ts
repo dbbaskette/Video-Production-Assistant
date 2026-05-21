@@ -465,6 +465,15 @@ export const scriptApi = {
     targetWords: number;
     proposedWords: number;
     targetDurationSec: number;
+    /** Set when the server didn't actually produce a tighter script — UI
+     *  should treat the "proposal" as identical to current and inform the
+     *  user accordingly instead of offering to overwrite. */
+    reason?: 'already_fits' | 'no_safe_cut';
+    /** Project's measured TTS rate in words per minute. Empirical when
+     *  `wpmIsMeasured` is true, otherwise the 150 wpm fallback. */
+    wpm: number;
+    wpmIsMeasured: boolean;
+    wpmSampleChunks: number;
   }> {
     return request(
       'POST',

@@ -1,6 +1,7 @@
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/prompts.js';
 import type { Storyboard } from '@vpa/shared';
+import { computeProjectWpm } from '../script/wpm.js';
 
 export interface ReviewItem {
   sceneId: string;
@@ -22,10 +23,18 @@ export interface ReviewResult {
 }
 
 function buildStoryboardContext(sb: Storyboard): string {
+  // Empirical TTS rate — measured from existing chunks. Falls back to 150 wpm
+  // when no narration has been generated yet. Both the per-scene script
+  // verdict (below) and the Tighten action read from the same source.
+  const wpmInfo = computeProjectWpm(sb);
   const lines: string[] = [
     `Project: ${sb.project.name}`,
     `Objective: ${sb.project.objective ?? 'Not set'}`,
     `Scenes: ${sb.scenes.length}`,
+    `Narration rate: ${wpmInfo.wpm} wpm` +
+      (wpmInfo.isMeasured
+        ? ` (measured from ${wpmInfo.sampleChunks} generated chunk${wpmInfo.sampleChunks === 1 ? '' : 's'})`
+        : ` (default — no narration generated yet)`),
     '',
   ];
 
@@ -50,7 +59,27 @@ function buildStoryboardContext(sb: Storyboard): string {
     if (hasScript) {
       const text = scene.narration?.script ?? scene.narration?.monologueScript ?? scene.narration?.dialogScript ?? '';
       const wordCount = text.split(/\s+/).filter(Boolean).length;
-      lines.push(`Script: ${wordCount} words`);
+      // Pre-compute the target word count at the project's canonical 150 wpm
+      // (same rate `prompts/narration-writer.md` and the Tighten action use).
+      // Surfacing the math here keeps the LLM from inventing its own slower
+      // rate — earlier the model defaulted to ~80 wpm and warned about
+      // scripts that were actually well under target.
+      const durSec = scene.recording?.duration_sec;
+      if (durSec && durSec > 0) {
+        const targetWords = Math.round((durSec / 60) * wpmInfo.wpm);
+        const ratio = wordCount / targetWords;
+        let verdict: string;
+        if (ratio > 1.15) verdict = `TOO LONG (over target by ${wordCount - targetWords} words)`;
+        else if (ratio < 0.5) verdict = `unusually short (well under target)`;
+        else verdict = 'within target';
+        lines.push(
+          `Script: ${wordCount} words ` +
+          `(target ≤${targetWords} at ${wpmInfo.wpm} wpm for ${durSec.toFixed(0)}s; ${verdict}). ` +
+          `Only warn about narration length when verdict says TOO LONG.`,
+        );
+      } else {
+        lines.push(`Script: ${wordCount} words (no recording duration available — skip length check)`);
+      }
     } else {
       lines.push('Script: none (optional, not in use)');
     }

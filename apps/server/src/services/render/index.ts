@@ -19,6 +19,7 @@ import {
 } from '../frame/resolve.js';
 import { renderLowerThirdsOverlay } from '../overlay/render.js';
 import { resolveLtColors } from '../overlay/colors.js';
+import { buildTransitionClip } from './transition-clip.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -247,15 +248,18 @@ export async function renderFinalVideo(
   // Build the join plan: each entry is the rendered scene mp4 + the transition
   // that should play at its OUT-edge. The final scene's transition is ignored
   // (nothing to transition into) — concatScenes handles that.
-  const joinPlan: Array<{ path: string; transition?: SceneTransition; durationSec: number }> =
-    renderableScenes.map((rs, i) => {
-      const scene = sb.scenes.find((s) => s.id === rs.id)!;
-      return {
-        path: scenePaths[i]!,
-        transition: scene.transition,
-        durationSec: scene.transition_duration_sec ?? 0.5,
-      };
-    });
+  const joinPlan: JoinEntry[] = renderableScenes.map((rs, i) => {
+    const scene = sb.scenes.find((s) => s.id === rs.id)!;
+    return {
+      path: scenePaths[i]!,
+      transition: scene.transition,
+      durationSec: scene.transition_duration_sec ?? 0.5,
+      kind: 'scene',
+      // Tag with the scene id so the inserted transition clip's tmp file
+      // name is deterministic (lets future caching key on these).
+      sceneId: rs.id,
+    };
+  });
 
   // Prepend / append brand bumpers if the caller supplied them. Bumpers come
   // from the project's brand (resolved by the render route) — they're optional
@@ -272,13 +276,13 @@ export async function renderFinalVideo(
       const normalised = await normaliseBumper(
         opts.bumperIntro, targetW, targetH, includeNarration, tmpDir, 'intro',
       );
-      joinPlan.unshift({ path: normalised, durationSec: 0.5 });
+      joinPlan.unshift({ path: normalised, durationSec: 0.5, kind: 'bumper' });
     }
     if (opts.bumperOutro && existsSync(opts.bumperOutro)) {
       const normalised = await normaliseBumper(
         opts.bumperOutro, targetW, targetH, includeNarration, tmpDir, 'outro',
       );
-      joinPlan.push({ path: normalised, durationSec: 0.5 });
+      joinPlan.push({ path: normalised, durationSec: 0.5, kind: 'bumper' });
     }
   }
 
@@ -607,28 +611,66 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   const args: string[] = ['-y', '-i', videoSrc];
   if (audioPath) args.push('-i', audioPath);
 
-  // Optional subtitle burn-in
+  // Detect narration overrun — TTS audio is often a fraction of a second
+  // longer than the recording, especially on the last paragraph. With the
+  // old `-shortest` pattern, that tail got clipped mid-word (a real bug
+  // report: scene-02's "[excited] Now, you have a solid foundation…" cut
+  // at "have"). Fix: pad the video by holding the last frame for the
+  // overrun so audio plays through cleanly.
+  let videoPadSec = 0;
+  if (audioPath) {
+    const [vDur, aDur] = await Promise.all([
+      probeDuration(videoSrc),
+      probeDuration(audioPath),
+    ]);
+    const overrun = aDur - vDur;
+    // 50 ms threshold — ignore sub-frame fudge from probe rounding.
+    if (overrun > 0.05) videoPadSec = overrun;
+  }
+
+  // Build the video filter chain. tpad + subtitles compose into one
+  // -filter_complex when either is needed; otherwise we keep -c copy on
+  // the video for the fast path.
+  const vFilters: string[] = [];
   if (burnSubtitles && scene.narration?.subtitles?.srt) {
     const srt = join(projectPath, scene.narration.subtitles.srt);
     if (existsSync(srt)) {
-      args.push('-vf', `subtitles=${escapeForFilter(srt)}`);
+      vFilters.push(`subtitles=${escapeForFilter(srt)}`);
     }
+  }
+  if (videoPadSec > 0) {
+    // stop_mode=clone holds the last decoded frame for stop_duration
+    // seconds. Must run AFTER subtitles so the pad shows whatever the
+    // last burnt-in subtitle was (subs are typically gone by then).
+    vFilters.push(`tpad=stop_mode=clone:stop_duration=${videoPadSec.toFixed(3)}`);
+  }
+  const needsVideoReencode = vFilters.length > 0;
+
+  if (needsVideoReencode) {
+    args.push('-filter_complex', `[0:v]${vFilters.join(',')}[v]`);
   }
 
   // Audio routing
   if (audioPath) {
     if (audioMode === 'replace') {
-      // Drop original audio, use only narration. Map the narration audio
-      // and trim/pad it to the video's length so duration matches.
-      args.push('-map', '0:v:0', '-map', '1:a:0');
-      args.push('-c:v', burnSubtitles ? 'libx264' : 'copy');  // re-encode if filtering
+      // Drop original audio, use only narration.
+      args.push('-map', needsVideoReencode ? '[v]' : '0:v:0', '-map', '1:a:0');
+      args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
-      args.push('-shortest');
+      // We deliberately do NOT pass `-shortest` here. When videoPadSec > 0
+      // the freeze-pad extends video to match audio so both streams end
+      // together. When videoPadSec === 0 audio is already ≤ video — the
+      // container will just stop at the natural end of the shorter stream
+      // without trimming the longer one.
     } else {
       // Mix narration over original audio (narration full volume, recording -20dB)
-      args.push('-filter_complex', '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]');
-      args.push('-map', '0:v:0', '-map', '[aout]');
-      args.push('-c:v', burnSubtitles ? 'libx264' : 'copy');
+      const audioFilter = '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]';
+      const filterComplex = needsVideoReencode
+        ? `[0:v]${vFilters.join(',')}[v];${audioFilter}`
+        : audioFilter;
+      args.push('-filter_complex', filterComplex);
+      args.push('-map', needsVideoReencode ? '[v]' : '0:v:0', '-map', '[aout]');
+      args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
     }
   } else {
@@ -637,7 +679,10 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     // (screen-recording system sounds, mouse clicks, etc.) — surprising users
     // who unchecked "Include narration" expecting silence. Audio from the
     // source recording is dropped via `-an`; video copies as before.
-    args.push('-c:v', burnSubtitles ? 'libx264' : 'copy', '-an');
+    args.push(
+      '-map', needsVideoReencode ? '[v]' : '0:v:0',
+      '-c:v', needsVideoReencode ? 'libx264' : 'copy', '-an',
+    );
   }
 
   args.push(outputPath);
@@ -650,10 +695,19 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
 
 interface JoinEntry {
   path: string;
-  /** Transition at the OUT-edge of this scene (ignored on the last entry). */
+  /** Transition at the OUT-edge of this scene (ignored on the last entry,
+   *  and ignored when the next entry is a bumper — bumpers always come in
+   *  on a hard cut). */
   transition?: SceneTransition;
-  /** Overlap duration in seconds. Used when transition is set. */
+  /** Transition duration in seconds — i.e. the length of the inserted
+   *  freeze-frame transition clip. */
   durationSec: number;
+  /** Tells the expansion step whether a transition clip is allowed at the
+   *  OUT-edge. Bumpers never get one. Defaults to 'scene' on caller side. */
+  kind?: 'scene' | 'bumper';
+  /** Scene id when kind === 'scene'. Used to name the transition clip in
+   *  the tmp dir so concurrent builds don't collide. */
+  sceneId?: string;
 }
 
 /**
@@ -692,8 +746,69 @@ async function concatScenes(scenes: JoinEntry[], outputPath: string, tmpDir: str
     return;
   }
 
-  // If no scene has a non-cut transition, take the fast path: concat demuxer
-  // with -c copy (no re-encode). This is the original behaviour.
+  // Expand non-cut transitions into inserted freeze-frame transition clips.
+  // Each transition clip = last frame of A + first frame of B + xfade across
+  // the full duration. The source scenes themselves play in full and are
+  // joined to the transition clip with hard cuts. See transition-clip.ts for
+  // the full rationale (TL;DR: ffmpeg `xfade` directly between scene mp4s
+  // eats the last N seconds of A and first N seconds of B, which kills the
+  // narration tail / next-scene opening on a demo video).
+  //
+  // Bumpers (kind: 'bumper') deliberately stay as hard cuts — the user
+  // wants the intro/outro to come in / out cleanly with no transition
+  // dress-up.
+  const expanded: JoinEntry[] = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const cur = scenes[i]!;
+    // Drop the transition off the original entry — every join in the
+    // expanded plan is a hard cut now.
+    expanded.push({ ...cur, transition: undefined });
+    const next = scenes[i + 1];
+    const shouldInsert =
+      next &&
+      cur.transition &&
+      cur.transition !== 'cut' &&
+      cur.kind !== 'bumper' &&
+      next.kind !== 'bumper' &&
+      cur.durationSec > 0;
+    if (next && shouldInsert) {
+      const transClipPath = join(tmpDir, `transition-${cur.sceneId ?? i}.mp4`);
+      // Probe the FROM scene for both video size and audio params. The
+      // transition clip MUST match both — mismatched audio sample rate or
+      // channel count silently corrupts the concat-demuxer output (the
+      // player sees 0:0.0 even though ffprobe says the file is fine).
+      const [size, audio] = await Promise.all([
+        probeVideoSize(cur.path),
+        opts.hasAudio ? probeAudioParams(cur.path) : Promise.resolve({ sampleRate: 0, channels: 0, channelLayout: '' }),
+      ]);
+      const w = size.width || 1920;
+      const h = size.height || 1080;
+      await buildTransitionClip({
+        fromScenePath: cur.path,
+        toScenePath: next.path,
+        transition: cur.transition as Exclude<SceneTransition, 'cut'>,
+        durationSec: cur.durationSec,
+        width: w,
+        height: h,
+        hasAudio: opts.hasAudio,
+        audioSampleRate: audio.sampleRate || 44100,
+        audioChannelLayout: audio.channelLayout || (audio.channels === 1 ? 'mono' : 'stereo'),
+        outputPath: transClipPath,
+        tmpDir,
+        cacheTag: cur.sceneId ?? `i${i}`,
+      });
+      expanded.push({
+        path: transClipPath,
+        durationSec: 0,
+        kind: 'scene',
+      });
+    }
+  }
+  scenes = expanded;
+
+  // After expansion every join is a cut → fast path. The slow-path xfade
+  // chain below is dead code for the user-driven render flow; kept for
+  // safety if a future caller passes a joinPlan with raw transitions in.
   const hasTransitions = scenes.slice(0, -1).some(
     (s) => s.transition && s.transition !== 'cut',
   );
@@ -824,11 +939,35 @@ async function concatScenes(scenes: JoinEntry[], outputPath: string, tmpDir: str
  * while narration continues).
  */
 async function concatScenesPlain(scenePaths: string[], outputPath: string, tmpDir: string, opts: ConcatOpts = { hasAudio: true }): Promise<void> {
-  // Probe all scene dimensions to detect mismatches up-front. Even a 2-pixel
-  // delta (3456x2232 vs 3456x2234) breaks the fast path silently.
-  const sizes = await Promise.all(scenePaths.map((p) => probeVideoSize(p)));
+  // Probe all scene dimensions AND time bases AND audio params up-front.
+  // The concat demuxer's `-c copy` fast path fails silently when any of
+  // these differ between inputs — the output looks valid by ffprobe
+  // (duration is right, streams exist) but downstream tools see a
+  // duplicated moov atom, NAL unit corruption, or AAC channel duplication.
+  // The user reports as "render plays as a black box at 0:0.0".
+  //
+  // The mux step writes different video time bases depending on input frame
+  // rate (a 30fps recording becomes 1/15360, a 60fps recording 1/60000),
+  // so a multi-scene project nearly always has mixed time bases even when
+  // dimensions match. We need to detect this and route to the re-encode
+  // path which normalises every input to a single time base via the filter
+  // graph.
+  const [sizes, timeBases, audioParams] = await Promise.all([
+    Promise.all(scenePaths.map((p) => probeVideoSize(p))),
+    Promise.all(scenePaths.map((p) => probeVideoTimeBase(p))),
+    opts.hasAudio
+      ? Promise.all(scenePaths.map((p) => probeAudioParams(p)))
+      : Promise.resolve([] as { sampleRate: number; channels: number; channelLayout: string }[]),
+  ]);
   const first = sizes[0];
-  const uniform = !!first && sizes.every((s) => s.width === first.width && s.height === first.height);
+  const firstTb = timeBases[0];
+  const firstAudio = audioParams[0];
+  const dimsMatch = !!first && sizes.every((s) => s.width === first.width && s.height === first.height);
+  const tbMatch = !!firstTb && timeBases.every((tb) => tb === firstTb);
+  const audioMatch = !opts.hasAudio || !firstAudio || audioParams.every(
+    (a) => a.sampleRate === firstAudio.sampleRate && a.channels === firstAudio.channels,
+  );
+  const uniform = dimsMatch && tbMatch && audioMatch;
 
   if (uniform) {
     const concatList = join(tmpDir, 'scenes-list.txt');
@@ -921,6 +1060,58 @@ export async function probeDuration(path: string): Promise<number> {
     return Number.parseFloat(stdout.trim()) || 0;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Probe a video's primary audio stream parameters. Used by the transition-clip
+ * builder so the inserted clip's silent audio track matches the surrounding
+ * scenes — without this, the concat-demuxer fast path with `-c copy` produces
+ * a file whose audio streams can't be assembled by some players (they fall
+ * back to 0:0.0). Returns sample_rate, channels, channel_layout, codec_name;
+ * empty values when the file has no audio stream.
+ */
+export async function probeAudioParams(path: string): Promise<{
+  sampleRate: number;
+  channels: number;
+  channelLayout: string;
+}> {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'a:0',
+      '-show_entries', 'stream=sample_rate,channels,channel_layout',
+      '-of', 'csv=p=0:s=x',
+      path,
+    ], { timeout: 30_000 });
+    const parts = stdout.trim().split('x');
+    const sampleRate = Number.parseInt(parts[0] ?? '0', 10) || 0;
+    const channels = Number.parseInt(parts[1] ?? '0', 10) || 0;
+    const channelLayout = parts[2] || '';
+    return { sampleRate, channels, channelLayout };
+  } catch {
+    return { sampleRate: 0, channels: 0, channelLayout: '' };
+  }
+}
+
+/**
+ * Probe a video's primary stream time base (e.g. "1/15360"). Used by the
+ * fast-path concat check — the concat demuxer with `-c copy` corrupts the
+ * output when inputs have different time bases, even if dimensions match.
+ * Returns the raw fraction string; "" on failure.
+ */
+async function probeVideoTimeBase(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=time_base',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      path,
+    ], { timeout: 30_000 });
+    return stdout.trim();
+  } catch {
+    return '';
   }
 }
 
