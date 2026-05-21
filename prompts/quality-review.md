@@ -11,7 +11,7 @@ For each scene, evaluate:
 
 1. **Description clarity** — Is the scene description specific enough for someone to record it?
 2. **Recording** — Is a recording attached? If yes, is the duration reasonable?
-3. **Script** — Optional. If a script exists, is its length proportional to the recording duration? If no script exists anywhere on the scene, treat that as an INTENTIONAL choice (the project ships without narration) — emit at most an `info`, never `warn`.
+3. **Script** — Optional. The header includes the project's actual narration rate (e.g. `Narration rate: 154 wpm (measured from N chunks)` or `Narration rate: 150 wpm (default)`). The context line for each scene already includes a precomputed verdict ("within target", "TOO LONG", "unusually short") based on that rate. **Only warn about script length when the verdict says TOO LONG.** Do NOT invent your own wpm rate, and do NOT warn on scripts marked "within target" even if they feel slightly long to you. When you DO warn about TOO LONG, set `category: "narration"` (NOT `"script"`) — the actionable fix is to tighten the script so the narration fits, and the UI routes `narration`-category items to a one-click "Tighten script" recommend button. If no script exists anywhere on the scene, treat that as an INTENTIONAL choice (the project ships without narration) — emit at most an `info`, never `warn`.
 4. **Narration** — Optional. TTS audio is only relevant when a script exists.
    - Script present + audio present → `info` (synthesized and ready)
    - Script present + audio missing → `warn` ("Script ready but TTS not generated")

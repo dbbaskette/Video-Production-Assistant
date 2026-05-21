@@ -8,6 +8,7 @@ import { generateScript } from '../services/script/index.js';
 import { convertToDialog } from '../services/script/convert-to-dialog.js';
 import { generateVideoGroundedScript } from '../services/video-narration/index.js';
 import { tightenScript } from '../services/script/tighten.js';
+import { computeProjectWpm } from '../services/script/wpm.js';
 
 interface Deps {
   store: ProjectStore;
@@ -290,6 +291,12 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       });
     }
 
+    // Empirical wpm from this project's already-generated chunks. Falls
+    // back to 150 wpm when no narration has been generated yet. Same
+    // source of truth Quality Review uses, so the two never disagree on
+    // whether a script is "too long".
+    const wpmInfo = computeProjectWpm(sb);
+
     try {
       const result = await tightenScript(
         {
@@ -297,6 +304,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
           targetDurationSec,
           sceneName: scene.name,
           sceneIntent: scene.intent,
+          wpm: wpmInfo.wpm,
         },
         llm,
         workspaceRoot,
@@ -309,6 +317,10 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         targetWords: result.targetWords,
         proposedWords: result.proposedWords,
         targetDurationSec,
+        reason: result.reason,
+        wpm: wpmInfo.wpm,
+        wpmIsMeasured: wpmInfo.isMeasured,
+        wpmSampleChunks: wpmInfo.sampleChunks,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
