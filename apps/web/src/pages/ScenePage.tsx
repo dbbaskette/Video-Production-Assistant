@@ -2542,67 +2542,67 @@ export function ScenePage(props: ScenePageProps = {}) {
                   ? 'Re-recommend'
                   : 'Recommend Lower Thirds'}
             </button>
-            {editingLTs && editingLTs.length > 0 && (
-              <>
-                <button
-                  onClick={() => {
-                    setEditingLTs([
-                      ...editingLTs,
-                      { title: 'New Title', style: 'frosted', in_sec: 0, out_sec: 4 },
-                    ]);
-                    setLtDirty(true);
-                  }}
-                  style={{
-                    padding: '8px 16px',
-                    background: 'var(--surface)',
-                    color: 'var(--fg)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    fontSize: 13,
-                  }}
-                >
-                  + Add
-                </button>
-                <button
-                  onClick={() => {
-                    if (editingLTs) saveLTsMutation.mutate(editingLTs);
-                  }}
-                  disabled={!ltDirty || saveLTsMutation.isPending}
-                  style={{
-                    padding: '8px 16px',
-                    background: ltDirty ? 'var(--accent)' : 'var(--surface)',
-                    color: ltDirty ? '#fff' : 'var(--fg-muted)',
-                    border: ltDirty ? 'none' : '1px solid var(--border)',
-                    borderRadius: 6,
-                    cursor: !ltDirty ? 'default' : 'pointer',
-                    fontSize: 13,
-                    fontWeight: ltDirty ? 600 : 400,
-                    opacity: !ltDirty ? 0.5 : 1,
-                  }}
-                >
-                  {saveLTsMutation.isPending ? 'Saving...' : 'Save'}
-                </button>
-                {scene?.recording && !ltDirty && (
-                  <button
-                    onClick={() => overlayRenderMutation.mutate()}
-                    disabled={overlayRenderMutation.isPending}
-                    style={{
-                      padding: '8px 16px',
-                      background: overlayRenderMutation.isPending ? 'var(--surface)' : STATUS_COLOR.success,
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: 6,
-                      cursor: overlayRenderMutation.isPending ? 'wait' : 'pointer',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      opacity: overlayRenderMutation.isPending ? 0.7 : 1,
-                    }}
-                  >
-                    {overlayRenderMutation.isPending ? 'Rendering...' : 'Render Overlay'}
-                  </button>
-                )}
-              </>
+            {editingLTs && (
+              <button
+                onClick={() => {
+                  setEditingLTs([
+                    ...editingLTs,
+                    { title: 'New Title', style: 'frosted', in_sec: 0, out_sec: 4 },
+                  ]);
+                  setLtDirty(true);
+                }}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--surface)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                + Add
+              </button>
+            )}
+            {/* Save is gated on ltDirty (not array length) so deleting the
+                last entry — or all entries — can still be persisted. The
+                empty array is a valid saved state. */}
+            {ltDirty && editingLTs && (
+              <button
+                onClick={() => saveLTsMutation.mutate(editingLTs)}
+                disabled={saveLTsMutation.isPending}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                {saveLTsMutation.isPending ? 'Saving...' : 'Save'}
+              </button>
+            )}
+            {scene?.recording && !ltDirty && editingLTs && editingLTs.length > 0 && (
+              <button
+                onClick={() => overlayRenderMutation.mutate()}
+                disabled={overlayRenderMutation.isPending}
+                style={{
+                  padding: '8px 16px',
+                  background: overlayRenderMutation.isPending ? 'var(--surface)' : STATUS_COLOR.success,
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: overlayRenderMutation.isPending ? 'wait' : 'pointer',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  opacity: overlayRenderMutation.isPending ? 0.7 : 1,
+                }}
+              >
+                {overlayRenderMutation.isPending ? 'Rendering...' : 'Render Overlay'}
+              </button>
             )}
           </div>
 
@@ -2906,9 +2906,6 @@ export function ScenePage(props: ScenePageProps = {}) {
                   </div>
                 </div>
               ))}
-              {ltDirty && (
-                <p style={{ color: 'var(--warn)', fontSize: 12 }}>Unsaved changes</p>
-              )}
             </div>
           ) : (
             <div
@@ -2922,9 +2919,14 @@ export function ScenePage(props: ScenePageProps = {}) {
             >
               <p style={{ fontSize: 14, marginBottom: 4 }}>No lower thirds yet.</p>
               <p style={{ fontSize: 12 }}>
-                Click <strong>Recommend Lower Thirds</strong> to get AI-suggested overlays.
+                {ltDirty
+                  ? <>You've removed all entries. Click <strong>Save</strong> above to commit the empty list, or <strong>Recommend</strong> to start over.</>
+                  : <>Click <strong>Recommend Lower Thirds</strong> to get AI-suggested overlays.</>}
               </p>
             </div>
+          )}
+          {ltDirty && (
+            <p style={{ color: 'var(--warn)', fontSize: 12, marginTop: 12 }}>Unsaved changes</p>
           )}
         </div>
       )}

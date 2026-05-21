@@ -1,12 +1,44 @@
 import { join } from 'node:path';
+import { unlink } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
 import type { ModelRegistry } from '../services/llm/model-registry.js';
-import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
+import { loadStoryboard, saveStoryboard } from '../services/storyboard/index.js';
 import { recommendLowerThirds } from '../services/lower-thirds/index.js';
 import { recommendLowerThirdsWithVideo } from '../services/lower-thirds/video-grounded.js';
-import type { LowerThird } from '@vpa/shared';
+import type { LowerThird, Scene, Storyboard } from '@vpa/shared';
+
+/**
+ * Replace a scene's lower_thirds AND invalidate the caches that depend on
+ * them — the baked `overlay_render` video (LTs burned in) and the
+ * `frame_render` video downstream of it. Both are kept on disk to speed up
+ * subsequent renders; their freshness is checked by existence only, not
+ * content, so we have to drop them whenever the LT data is replaced.
+ * Without this, the next render reuses the cached overlay and the user
+ * sees the LTs they just deleted.
+ */
+async function updateLowerThirds(
+  sb: Storyboard,
+  projectPath: string,
+  scene: Scene,
+  lowerThirds: LowerThird[],
+): Promise<Storyboard> {
+  if (scene.overlay_render) {
+    await unlink(join(projectPath, scene.overlay_render)).catch(() => {});
+  }
+  if (scene.frame_render) {
+    await unlink(join(projectPath, scene.frame_render)).catch(() => {});
+  }
+  // Build the replacement scene with the cache pointers stripped — we can't
+  // pass `undefined` through updateScene because the YAML dump trips on
+  // explicit undefined values.
+  const { overlay_render: _o, frame_render: _f, ...rest } = scene;
+  void _o; void _f;
+  const replacement: Scene = { ...rest, lower_thirds: lowerThirds };
+  const scenes = sb.scenes.map((s) => (s.id === scene.id ? replacement : s));
+  return { ...sb, scenes };
+}
 
 interface Deps {
   store: ProjectStore;
@@ -126,8 +158,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
       });
     }
 
-    // Save to storyboard
-    const updated = updateScene(sb, sceneId, { lower_thirds: lowerThirds });
+    const updated = await updateLowerThirds(sb, projectPath, scene, lowerThirds);
     await saveStoryboard(projectPath, updated);
 
     return { sceneId, lowerThirds, mode };
@@ -150,7 +181,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const updated = updateScene(sb, sceneId, { lower_thirds: lowerThirds });
+    const updated = await updateLowerThirds(sb, projectPath, scene, lowerThirds);
     await saveStoryboard(projectPath, updated);
 
     return { sceneId, lowerThirds };

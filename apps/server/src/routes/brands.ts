@@ -616,6 +616,9 @@ export async function registerBrandRoutes(
         };
         const vpa = fm.vpa ?? defaultVpa;
         const [group, key] = cfg.updates.split('.') as ['logo' | 'audio', string];
+        // Capture the file the field used to point at, before we overwrite the
+        // pointer — so we can unlink the orphan after the new file is in place.
+        const previousPath = (vpa[group] as Record<string, unknown> | undefined)?.[key];
         const updatedVpa = {
           ...vpa,
           [group]: { ...(vpa[group] ?? defaultVpa[group]), [key]: relPath },
@@ -628,6 +631,41 @@ export async function registerBrandRoutes(
           frontMatter: nextFm,
           body: current.doc.body,
         });
+
+        // Best-effort delete the previous file when it's a) actually different
+        // from the new one (same-name uploads were overwritten in place by
+        // writeFile above), and b) not referenced by any other vpa pointer
+        // (primary + mono can legitimately share the same image). Without this
+        // the brand `assets/` directory accumulates orphans that ride along in
+        // the download.zip bundle.
+        if (
+          typeof previousPath === 'string' &&
+          previousPath.startsWith('assets/') &&
+          previousPath !== relPath
+        ) {
+          const u = updatedVpa as {
+            logo?: { primary?: unknown; mono?: unknown };
+            audio?: {
+              bumper_intro?: unknown;
+              bumper_outro?: unknown;
+              default_music_track?: unknown;
+              sonic_logo?: unknown;
+            };
+          };
+          const stillReferenced = [
+            u.logo?.primary,
+            u.logo?.mono,
+            u.audio?.bumper_intro,
+            u.audio?.bumper_outro,
+            u.audio?.default_music_track,
+            u.audio?.sonic_logo,
+          ].some((v) => v === previousPath);
+          if (!stillReferenced) {
+            const abs = join(paths.assetsDir(slug), previousPath.replace(/^assets\//, ''));
+            const { unlink } = await import('node:fs/promises');
+            await unlink(abs).catch(() => {});
+          }
+        }
       }
 
       return reply.code(201).send({ path: relPath });
