@@ -18,6 +18,10 @@ import { ScenePage } from './pages/ScenePage.js';
 import { SceneRedirect } from './pages/SceneRedirect.js';
 import { ReviewPage } from './pages/ReviewPage.js';
 import { RecordingsPage } from './pages/RecordingsPage.js';
+import { ScriptPage } from './pages/ScriptPage.js';
+import { NarrationPage } from './pages/NarrationPage.js';
+import { LowerThirdsPage } from './pages/LowerThirdsPage.js';
+import { RenderPage } from './pages/RenderPage.js';
 import { Settings } from './pages/Settings.js';
 import { ShotPlanPrintView } from './pages/ShotPlanPrintView.js';
 import { ShotPlanProjectPrintView } from './pages/ShotPlanProjectPrintView.js';
@@ -48,6 +52,13 @@ export function App() {
               mounted directly — Storyboard embeds it. */}
           <Route path="scene/:sceneId" element={<SceneRedirect />} />
           <Route path="recordings" element={<RecordingsPage />} />
+          {/* Project-wide phase views — sidebar links land here. The actual
+              editing for each scene still happens via the scene tabs (these
+              pages deep-link into them). */}
+          <Route path="script" element={<ScriptPage />} />
+          <Route path="narration" element={<NarrationPage />} />
+          <Route path="lower-thirds" element={<LowerThirdsPage />} />
+          <Route path="render" element={<RenderPage />} />
           <Route path="review" element={<ReviewPage />} />
         </Route>
         <Route

@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 
 /**
  * A simple collapsible group with a clickable header. The header always
@@ -15,11 +16,28 @@ interface Props {
   subtitle?: ReactNode;
   /** Whether the section opens expanded. Default true. */
   defaultOpen?: boolean;
+  /** When set, this section auto-opens whenever the URL hash matches.
+   *  Pass strings WITHOUT the leading "#". Comma-separated for multiple
+   *  anchors (e.g. a section that hosts both #render and #export). */
+  anchorHash?: string;
   children: ReactNode;
 }
 
-export function CollapsibleSection({ title, subtitle, defaultOpen = true, children }: Props) {
+export function CollapsibleSection({ title, subtitle, defaultOpen = true, anchorHash, children }: Props) {
   const [open, setOpen] = useState(defaultOpen);
+  const location = useLocation();
+
+  // When the URL hash matches one of this section's anchors, force-open so
+  // the deep-linked content actually renders into the DOM (children unmount
+  // when collapsed, which breaks scrollIntoView on inner ids).
+  useEffect(() => {
+    if (!anchorHash) return;
+    const target = (location.hash || '').replace(/^#/, '');
+    if (!target) return;
+    const wanted = anchorHash.split(',').map((s) => s.trim());
+    if (wanted.includes(target)) setOpen(true);
+  }, [anchorHash, location.hash, location.key]);
+
   return (
     <section style={{ marginTop: 32 }}>
       <button

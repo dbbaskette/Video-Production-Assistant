@@ -234,6 +234,8 @@ export async function registerBrandRoutes(
   );
 
   // ──────────────────── GET /api/brands/:slug/download ────────────────────
+  // Markdown-only download (preserved for backwards compat / quick access).
+  // The frontend uses the zip endpoint below by default.
   app.get<{ Params: { slug: string } }>(
     '/api/brands/:slug/download',
     async (req, reply) => {
@@ -249,6 +251,68 @@ export async function registerBrandRoutes(
       reply.header('Content-Type', 'text/markdown; charset=utf-8');
       reply.header('Content-Disposition', `attachment; filename="${slug}-design.md"`);
       return reply.send(createReadStream(designPath));
+    },
+  );
+
+  // ──────────────────── GET /api/brands/:slug/download.zip ────────────────────
+  // Bundles the entire brand directory (design.md + parent.json + assets/)
+  // into a zip and streams it back. We shell out to the system `zip` binary
+  // — already a dependency of macOS / common Linux distros, avoids pulling
+  // in a Node zip library. The zip is built in a tmp file, streamed, and
+  // unlinked when the response finishes.
+  app.get<{ Params: { slug: string } }>(
+    '/api/brands/:slug/download.zip',
+    async (req, reply) => {
+      const { slug } = req.params;
+      try {
+        await readBrand(paths, registryFile, slug);
+      } catch {
+        return reply.code(404).send({ error: `Brand "${slug}" not found` });
+      }
+      const brandDir = paths.brandDir(slug);
+      try {
+        const s = await stat(brandDir);
+        if (!s.isDirectory()) {
+          return reply.code(404).send({ error: `Brand directory missing for "${slug}"` });
+        }
+      } catch {
+        return reply.code(404).send({ error: `Brand directory missing for "${slug}"` });
+      }
+
+      const { tmpdir } = await import('node:os');
+      const { randomUUID } = await import('node:crypto');
+      const { execFile } = await import('node:child_process');
+      const { unlink } = await import('node:fs/promises');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+
+      const zipPath = join(tmpdir(), `vpa-brand-${slug}-${randomUUID()}.zip`);
+      try {
+        // `zip -r -q out.zip BRAND_FOLDER` — recursive, quiet. We cd into the
+        // parent of brandDir so the archive's top-level entry is the brand
+        // slug, not the full filesystem path.
+        const parentDir = join(brandDir, '..');
+        const folderName = slug;
+        await execFileAsync('zip', ['-r', '-q', zipPath, folderName], {
+          cwd: parentDir,
+          timeout: 60_000,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await unlink(zipPath).catch(() => {});
+        return reply.code(500).send({ error: `Failed to build zip: ${msg}` });
+      }
+
+      reply.header('Content-Type', 'application/zip');
+      reply.header('Content-Disposition', `attachment; filename="${slug}-brand.zip"`);
+      const stream = createReadStream(zipPath);
+      stream.on('close', () => {
+        // Best-effort cleanup once the file has been streamed (or the client
+        // disconnected). We don't await — the response has already been sent.
+        unlink(zipPath).catch(() => {});
+      });
+      return reply.send(stream);
     },
   );
 
@@ -388,6 +452,10 @@ export async function registerBrandRoutes(
   );
 
   // ──────────────────── GET /api/brands/:slug/assets/:filename ───────────
+  // Wildcard so we can serve assets in subdirectories (e.g. bumpers/intro.mp4).
+  // The pre-existing single-segment route still matches `assets/foo.png` and is
+  // kept for backwards compat; this catches deeper paths like
+  // `assets/bumpers/intro.mp4`.
   app.get<{ Params: { slug: string; filename: string } }>(
     '/api/brands/:slug/assets/:filename',
     async (req, reply) => {
@@ -406,6 +474,48 @@ export async function registerBrandRoutes(
         '.svg': 'image/svg+xml',
         '.webp': 'image/webp',
         '.gif': 'image/gif',
+        '.mp4': 'video/mp4',
+        '.mov': 'video/quicktime',
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
+      };
+      reply.header('Content-Type', mimeMap[ext] ?? 'application/octet-stream');
+      return reply.send(createReadStream(filePath));
+    },
+  );
+
+  // Subpath variant — serves assets from sub-folders (bumpers/, music/, etc.).
+  // Bare `/assets/:filename` only matches one segment, so this catches the rest.
+  app.get<{ Params: { slug: string; '*': string } }>(
+    '/api/brands/:slug/assets/*',
+    async (req, reply) => {
+      const { slug } = req.params;
+      // Reconstruct the wildcard portion — fastify exposes it on req.params['*'].
+      const rest = (req.params as Record<string, string | undefined>)['*'] ?? '';
+      // Reject any traversal attempts.
+      if (!rest || rest.includes('..')) {
+        return reply.code(400).send({ error: 'Invalid path' });
+      }
+      const filePath = join(paths.assetsDir(slug), rest);
+      try {
+        await stat(filePath);
+      } catch {
+        return reply.code(404).send({ error: 'Asset not found' });
+      }
+      const ext = extname(rest).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.mp4': 'video/mp4',
+        '.mov': 'video/quicktime',
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.m4a': 'audio/mp4',
       };
       reply.header('Content-Type', mimeMap[ext] ?? 'application/octet-stream');
       return reply.send(createReadStream(filePath));
@@ -448,36 +558,67 @@ export async function registerBrandRoutes(
         }
       }
 
-      if (!field || !['primary', 'mono', 'other'].includes(field)) {
-        return reply.code(400).send({ error: 'field must be "primary", "mono", or "other"' });
+      // Asset categories — each maps to a subdirectory under assets/ and
+      // updates a different field in the brand's vpa.* front-matter.
+      const FIELD_CONFIG: Record<
+        string,
+        { subdir: string; updates: 'logo.primary' | 'logo.mono' | 'audio.bumper_intro' | 'audio.bumper_outro' | 'audio.default_music_track' | 'audio.sonic_logo' | 'none' }
+      > = {
+        primary: { subdir: '', updates: 'logo.primary' },
+        mono: { subdir: '', updates: 'logo.mono' },
+        'bumper-intro': { subdir: 'bumpers', updates: 'audio.bumper_intro' },
+        'bumper-outro': { subdir: 'bumpers', updates: 'audio.bumper_outro' },
+        'default-music': { subdir: 'music', updates: 'audio.default_music_track' },
+        'sonic-logo': { subdir: 'sounds', updates: 'audio.sonic_logo' },
+        other: { subdir: '', updates: 'none' },
+      };
+      const cfg = field ? FIELD_CONFIG[field] : undefined;
+      if (!cfg) {
+        return reply.code(400).send({
+          error: `field must be one of: ${Object.keys(FIELD_CONFIG).join(', ')}`,
+        });
       }
 
       if (!fileData || !filename) {
         return reply.code(400).send({ error: 'file is required' });
       }
 
-      // Save file to assets directory
+      // Save file to assets directory (or subdirectory for video/audio assets).
       const assetsDir = paths.assetsDir(slug);
-      await mkdir(assetsDir, { recursive: true });
-      const destPath = join(assetsDir, filename);
+      const destDir = cfg.subdir ? join(assetsDir, cfg.subdir) : assetsDir;
+      await mkdir(destDir, { recursive: true });
+      // Sanitise the filename — keep alphanumerics, dash, underscore, dot.
+      // Prevents shell-special chars and ensures the path round-trips through
+      // URLs cleanly.
+      const safeName = filename.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200) || 'upload';
+      const destPath = join(destDir, safeName);
       await writeFile(destPath, fileData);
 
-      const relPath = `assets/${filename}`;
+      const relPath = cfg.subdir ? `assets/${cfg.subdir}/${safeName}` : `assets/${safeName}`;
 
-      // If primary or mono, update the vpa.logo in design.md
-      if (field === 'primary' || field === 'mono') {
+      // Update the relevant vpa.* field in design.md if this asset's category
+      // is tied to one. `other` uploads are free-form and don't touch the
+      // front-matter; the user can reference them manually.
+      if (cfg.updates !== 'none') {
         const fm = current.doc.frontMatter;
         const defaultVpa = {
           voice: { tone: '', avoid: [] as string[] },
-          audio: { music_mood: null, sonic_logo: null },
+          audio: {
+            music_mood: null,
+            sonic_logo: null,
+            bumper_intro: null,
+            bumper_outro: null,
+            default_music_track: null,
+          },
           logo: { primary: null, mono: null, safe_zone_ratio: 0.25 },
           lower_thirds: { template: 'bar-left-accent' as const, bg: '{colors.primary}', fg: '{colors.surface}' },
           taglines: [] as string[],
         };
         const vpa = fm.vpa ?? defaultVpa;
+        const [group, key] = cfg.updates.split('.') as ['logo' | 'audio', string];
         const updatedVpa = {
           ...vpa,
-          logo: { ...vpa.logo, [field]: relPath },
+          [group]: { ...(vpa[group] ?? defaultVpa[group]), [key]: relPath },
         };
         const nextFm = {
           ...fm,
@@ -490,6 +631,80 @@ export async function registerBrandRoutes(
       }
 
       return reply.code(201).send({ path: relPath });
+    },
+  );
+
+  // ──────────────────── DELETE /api/brands/:slug/assets/* ────────────────────
+  // Clear a brand asset by category. Removes the front-matter pointer and the
+  // file on disk. Used by the "Remove" button next to each uploadable slot in
+  // the Brand Assets tab.
+  app.delete<{ Params: { slug: string }; Querystring: { field?: string } }>(
+    '/api/brands/:slug/assets',
+    async (req, reply) => {
+      const { slug } = req.params;
+      const field = req.query.field;
+      const FIELD_TO_PATH: Record<string, ['logo' | 'audio', string]> = {
+        primary: ['logo', 'primary'],
+        mono: ['logo', 'mono'],
+        'bumper-intro': ['audio', 'bumper_intro'],
+        'bumper-outro': ['audio', 'bumper_outro'],
+        'default-music': ['audio', 'default_music_track'],
+        'sonic-logo': ['audio', 'sonic_logo'],
+      };
+      const target = field ? FIELD_TO_PATH[field] : undefined;
+      if (!target) {
+        return reply.code(400).send({
+          error: `field must be one of: ${Object.keys(FIELD_TO_PATH).join(', ')}`,
+        });
+      }
+      let current;
+      try {
+        current = await readBrand(paths, registryFile, slug);
+      } catch {
+        return reply.code(404).send({ error: `Brand "${slug}" not found` });
+      }
+      const fm = current.doc.frontMatter;
+      const vpa = fm.vpa;
+      if (!vpa) return reply.send({ cleared: true });
+      const [group, key] = target;
+      const groupObj = vpa[group] as Record<string, unknown> | undefined;
+      const currentPath = groupObj?.[key];
+      const updatedGroup = { ...(groupObj ?? {}), [key]: null };
+      await updateBrandDoc(paths, registryFile, slug, {
+        frontMatter: { ...fm, vpa: { ...vpa, [group]: updatedGroup } },
+        body: current.doc.body,
+      });
+      // Best-effort delete the file too — we don't want orphaned bumpers on
+      // disk. Failure is harmless (front-matter pointer is gone, render won't
+      // find it).
+      if (typeof currentPath === 'string' && currentPath.startsWith('assets/')) {
+        try {
+          const abs = join(paths.assetsDir(slug), currentPath.replace(/^assets\//, ''));
+          const { unlink } = await import('node:fs/promises');
+          await unlink(abs).catch(() => {});
+        } catch { /* ignore */ }
+      }
+      return reply.send({ cleared: true });
+    },
+  );
+
+  // ──────────────────── GET /api/brands/:slug/projects ────────────────────
+  // Lists every project whose project.yaml has brand.id === slug. Powers the
+  // brand-detail "Usage" tab. Quietly returns [] when there's no tracker
+  // configured rather than 500-ing — the Usage tab handles that.
+  app.get<{ Params: { slug: string } }>(
+    '/api/brands/:slug/projects',
+    async (req, reply) => {
+      const { slug } = req.params;
+      try {
+        await readBrand(paths, registryFile, slug);
+      } catch {
+        return reply.code(404).send({ error: `Brand "${slug}" not found` });
+      }
+      const trackerFile = opts.trackerPath;
+      if (!trackerFile) return reply.send({ projects: [] });
+      const projects = await listReferencingProjects(trackerFile, slug);
+      return reply.send({ projects });
     },
   );
 

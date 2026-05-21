@@ -44,6 +44,8 @@ function classify(err: unknown): Classification {
   if (status === 429) return '429';
   if (status !== null && status >= 500 && status < 600) return '5xx';
   if (status !== null && status >= 400 && status < 500) return 'permanent';
+  const errName = err instanceof Error ? err.name : '';
+  if (errName === 'TimeoutError') return 'network';
   if (/fetch failed|ECONN|ETIMED|ENOTFOUND|aborted|socket hang up|reset by peer/i.test(message)) {
     return 'network';
   }

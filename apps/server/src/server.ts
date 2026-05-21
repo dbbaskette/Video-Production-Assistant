@@ -26,6 +26,7 @@ import { registerOverlayRoutes } from './routes/overlay.js';
 import { registerExportRoutes } from './routes/export.js';
 import { registerFramesRoutes } from './routes/frames.js';
 import { ProjectStore } from './services/project/store.js';
+import { trackerPath } from './services/project/paths.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
@@ -135,6 +136,9 @@ export async function buildServer() {
     paths: bPaths,
     registryFile: bPaths.registryFile,
     workspaceRoot: wsRoot,
+    // Needed so GET /api/brands/:slug/projects can list projects referencing
+    // a brand (powers the Brand Usage tab + brand-delete safety check).
+    trackerPath: trackerPath(config.vpaHome),
     llm,
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
@@ -165,6 +169,9 @@ export async function buildServer() {
       store,
       vpaHome: config.vpaHome,
       workspaceRoot: wsRoot,
+      // Lets the render route resolve a project's brand → bumper / default
+      // music track paths before kicking off ffmpeg.
+      registryFile: bPaths.registryFile,
     }),
   );
   await app.register(async (instance) =>

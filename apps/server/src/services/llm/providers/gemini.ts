@@ -40,6 +40,7 @@ export function createGeminiLlm(apiKey: string, model?: string): LlmClient {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(3 * 60_000),
       });
 
       if (!res.ok) {

@@ -16,12 +16,34 @@ import {
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? 120_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (opts?.signal) {
+    opts.signal.addEventListener('abort', () => controller.abort());
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) {
+      throw new Error(opts?.signal?.aborted ? 'Request cancelled' : `Request timed out after ${timeoutMs / 1000}s`);
+    }
+    throw err;
+  }
+  clearTimeout(timer);
   const text = await res.text();
   const json = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
@@ -124,10 +146,30 @@ export const brandsApi = {
   async deleteBrand(slug: string, force = false): Promise<void> {
     await request('DELETE', `/api/brands/${slug}${force ? '?force=true' : ''}`);
   },
+  /**
+   * Zip of the entire brand: design.md + parent.json + assets/ (logos,
+   * bumpers, music, source-docs). Server-side `Content-Disposition:
+   * attachment` forces a download. The `/download` markdown-only endpoint
+   * is preserved as `markdownDownloadUrl` for callers that still want it.
+   */
   downloadUrl(slug: string): string {
+    return `${BASE}/api/brands/${slug}/download.zip`;
+  },
+  markdownDownloadUrl(slug: string): string {
     return `${BASE}/api/brands/${slug}/download`;
   },
-  async uploadAsset(slug: string, field: 'primary' | 'mono' | 'other', file: File): Promise<{ path: string }> {
+  async uploadAsset(
+    slug: string,
+    field:
+      | 'primary'
+      | 'mono'
+      | 'bumper-intro'
+      | 'bumper-outro'
+      | 'default-music'
+      | 'sonic-logo'
+      | 'other',
+    file: File,
+  ): Promise<{ path: string }> {
     const form = new FormData();
     form.append('field', field);
     form.append('file', file);
@@ -135,10 +177,23 @@ export const brandsApi = {
     if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`, res.status, await res.json().catch(() => null));
     return res.json();
   },
+  async deleteAsset(
+    slug: string,
+    field: 'primary' | 'mono' | 'bumper-intro' | 'bumper-outro' | 'default-music' | 'sonic-logo',
+  ): Promise<{ cleared: true }> {
+    return request('DELETE', `/api/brands/${slug}/assets?field=${encodeURIComponent(field)}`);
+  },
   assetUrl(slug: string, relativePath: string): string {
-    // relativePath is "assets/filename.png" — extract just the filename
-    const filename = relativePath.replace(/^assets\//, '');
-    return `${BASE}/api/brands/${slug}/assets/${encodeURIComponent(filename)}`;
+    // relativePath looks like "assets/filename.png" or "assets/bumpers/intro.mp4".
+    // We strip the leading "assets/" and then encode each path segment
+    // individually so subdirectories survive (single encodeURIComponent on
+    // the whole thing would mangle the slashes).
+    const stripped = relativePath.replace(/^assets\//, '');
+    const encodedPath = stripped.split('/').map(encodeURIComponent).join('/');
+    return `${BASE}/api/brands/${slug}/assets/${encodedPath}`;
+  },
+  async listProjects(slug: string): Promise<{ projects: Array<{ id: string; name: string; path: string }> }> {
+    return request('GET', `/api/brands/${slug}/projects`);
   },
 };
 
@@ -290,7 +345,9 @@ export const recordingsApi = {
         mode: 'text' | 'video';
       }
   > {
-    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts);
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts, {
+      timeoutMs: 5 * 60_000,
+    });
   },
 
   /**
@@ -300,8 +357,25 @@ export const recordingsApi = {
   async saveSceneMetadata(
     projectId: string,
     sceneId: string,
-    patch: { name?: string; description?: string; type?: string },
-  ): Promise<{ sceneId: string; name?: string; description?: string; type?: string }> {
+    patch: {
+      name?: string;
+      description?: string;
+      type?: string;
+      transition?: string | null;
+      transition_duration_sec?: number | null;
+      frame_style?: string | null;
+      frame_background?: string | null;
+    },
+  ): Promise<{
+    sceneId: string;
+    name?: string;
+    description?: string;
+    type?: string;
+    transition?: string;
+    transition_duration_sec?: number;
+    frame_style?: string;
+    frame_background?: string;
+  }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/metadata`, patch);
   },
 
@@ -363,9 +437,13 @@ export const scriptApi = {
   async generate(
     projectId: string,
     sceneId: string,
-    opts: { groundInVideo?: boolean } = {},
+    opts: { groundInVideo?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ sceneId: string; script: string; dialogScript?: string; mode: 'text' | 'video' }> {
-    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`, opts);
+    const { signal, ...body } = opts;
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`, body, {
+      timeoutMs: 5 * 60_000,
+      signal,
+    });
   },
   async save(projectId: string, sceneId: string, script: string): Promise<{ sceneId: string; script: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/script`, { script });
@@ -838,10 +916,21 @@ export interface RenderStartResult {
 export interface RenderOptions {
   audioMode?: 'replace' | 'mix';
   burnSubtitles?: boolean;
+  /** Include scene narration in the final render. When false, the recording's
+   *  original audio is used and audioMode/burnSubtitles become no-ops. Default true. */
+  includeNarration?: boolean;
+  /** Burn lower-thirds overlays into the final render. When false, the raw
+   *  recording flows through without overlays even if they were edited. Default true. */
+  includeLowerThirds?: boolean;
   /** Optional generated music track id to mix under the video. */
   musicTrackId?: string | null;
   /** Music gain offset in dB (negative = ducked under narration). Default -20. */
   musicVolumeDb?: number;
+  /** When false, ignore the brand's bumper_intro / bumper_outro on this render. */
+  useBrandBumpers?: boolean;
+  /** When false, ignore the brand's default_music_track even when no project
+   *  music is selected. Default true. */
+  useBrandMusic?: boolean;
 }
 
 export interface MusicTrack {
@@ -896,6 +985,16 @@ export const renderApi = {
   },
   videoUrl(projectId: string): string {
     return `${BASE}/api/projects/${projectId}/render/video`;
+  },
+  /**
+   * URL that forces a download via `Content-Disposition: attachment`. The
+   * plain `download` HTML attribute is ignored across origins (web on :5173,
+   * API on :3000) so we have to set the header server-side via `?download=1`.
+   */
+  downloadUrl(projectId: string, filename?: string): string {
+    const params = new URLSearchParams({ download: '1' });
+    if (filename) params.set('filename', filename);
+    return `${BASE}/api/projects/${projectId}/render/video?${params.toString()}`;
   },
   /** Subscribe to SSE events for a render job. Returns a close function. */
   subscribe(jobId: string, onEvent: (event: { type: string; data?: unknown }) => void): () => void {

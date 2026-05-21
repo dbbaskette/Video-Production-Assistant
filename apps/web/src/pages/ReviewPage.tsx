@@ -152,6 +152,54 @@ export function ReviewPage() {
         </div>
       )}
 
+      {/* Staleness hint — the review is a snapshot of the storyboard at
+          `reviewedAt`. Any change since then (a new recording upload,
+          generated narration, edited lower-thirds, etc.) means this review
+          may be out of date. We don't have a server-side mtime for the
+          storyboard so we can't be precise — instead we always remind the
+          user when a review exists. Hidden when the review is less than a
+          minute old (just-ran case). */}
+      {review?.reviewedAt && Date.now() - Date.parse(review.reviewedAt) > 60_000 && (
+        <div
+          style={{
+            padding: '10px 14px',
+            background: 'var(--bg-elev)',
+            border: '1px dashed var(--border)',
+            borderRadius: 6,
+            marginBottom: 16,
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <span>
+            This review reflects the storyboard as of{' '}
+            <strong>{new Date(review.reviewedAt).toLocaleString()}</strong>. If you've
+            generated narration, uploaded recordings, or edited content since then, the
+            findings may be out of date.
+          </span>
+          <button
+            onClick={() => runMutation.mutate()}
+            disabled={runMutation.isPending}
+            style={{
+              padding: '4px 12px',
+              fontSize: 12,
+              background: 'transparent',
+              color: 'var(--accent)',
+              border: '1px solid var(--accent)',
+              borderRadius: 4,
+              cursor: runMutation.isPending ? 'wait' : 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            Re-run
+          </button>
+        </div>
+      )}
+
       {/* No review yet */}
       {(!review?.status) && (
         <div

@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
-import type { Scene, Storyboard, StoryboardDefaults } from '@vpa/shared';
+import type { Scene, SceneTransition, Storyboard, StoryboardDefaults } from '@vpa/shared';
 import {
   loadFrameManifest,
   defaultAssetsDir,
@@ -17,6 +17,8 @@ import {
   defaultBrandColorResolver,
   type BrandColorResolver,
 } from '../frame/resolve.js';
+import { renderLowerThirdsOverlay } from '../overlay/render.js';
+import { resolveLtColors } from '../overlay/colors.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -35,6 +37,23 @@ export interface RenderOptions {
   /** Burn subtitles into the video instead of writing only the sidecar SRT. */
   burnSubtitles?: boolean;
   /**
+   * When false, ignores any narration the scenes might have and renders with
+   * the recording's original audio (or no audio if the recording is silent).
+   * Useful when the user only narrated a subset of scenes and would rather
+   * ship the original audio across the board.
+   *
+   * Default: true (existing behaviour — narration is used when present).
+   */
+  includeNarration?: boolean;
+  /**
+   * When false, ignores the burned lower-thirds overlay even if it exists on
+   * disk and renders the raw recording instead. Lets the user keep edited
+   * lower-thirds in the project without forcing them into the final video.
+   *
+   * Default: true (existing behaviour — overlay used when present).
+   */
+  includeLowerThirds?: boolean;
+  /**
    * Optional background music track. When provided, the music is looped
    * across the full video and mixed under the narration at `musicVolumeDb`
    * (default -20). The music is added in a final stage after scene concat.
@@ -43,6 +62,17 @@ export interface RenderOptions {
     audioPath: string;          // absolute path to the music file (mp3/wav)
     volumeDb?: number;          // gain offset in dB; -20 = quiet bed, 0 = full volume
   };
+  /**
+   * Optional brand bumper videos. Prepended / appended to the scene chain at
+   * concat time so the final video opens with `bumperIntro` and ends with
+   * `bumperOutro`. Either may be omitted; both bypass when not set. Absolute
+   * paths — the caller (render route) resolves the brand's asset path.
+   *
+   * Bumpers go through the same xfade/concat normalisation as regular scenes,
+   * so size mismatches with the rest of the project are handled.
+   */
+  bumperIntro?: string;
+  bumperOutro?: string;
   /**
    * VPA install root — needed only when scenes/defaults request
    * `frame_background: 'brand'`, so the brand's primary color can be resolved.
@@ -79,6 +109,8 @@ export async function renderFinalVideo(
 
   const audioMode = opts.audioMode ?? 'replace';
   const burnSubtitles = opts.burnSubtitles ?? false;
+  const includeNarration = opts.includeNarration ?? true;
+  const includeLowerThirds = opts.includeLowerThirds ?? true;
 
   const renderableScenes = sb.scenes.filter((s) => s.recording?.source);
   if (renderableScenes.length === 0) {
@@ -111,11 +143,16 @@ export async function renderFinalVideo(
   await mkdir(rendersDir, { recursive: true });
   await mkdir(tmpDir, { recursive: true });
 
+  // Resolve lower-thirds colour palette once per render. Only needed when at
+  // least one scene actually has LTs AND the user wants them included; we lazy-
+  // init in the loop below to avoid the brand-resolution work otherwise.
+  let ltColors: Awaited<ReturnType<typeof resolveLtColors>> | null = null;
+
   const scenePaths: string[] = [];
   for (let i = 0; i < renderableScenes.length; i++) {
     // Refresh scene reference from the (possibly updated) storyboard so the
     // frame_render path persisted on a prior iteration is visible here.
-    const scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
+    let scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
     onProgress?.({
       type: 'step',
       step: 'concat-audio',
@@ -125,7 +162,42 @@ export async function renderFinalVideo(
       message: `Preparing audio for scene ${i + 1}/${renderableScenes.length}`,
     });
 
-    const sceneAudioPath = await prepareSceneAudio(projectPath, scene, tmpDir);
+    // Skip narration entirely when the user opted out at render time. Falls
+    // through to the no-audio-override branch in muxScene (uses original
+    // recording audio).
+    const sceneAudioPath = includeNarration
+      ? await prepareSceneAudio(projectPath, scene, tmpDir)
+      : null;
+
+    // Bake lower-thirds into a per-scene overlay file ON DEMAND. Previously
+    // the project-level render assumed `scene.overlay_render` was already set
+    // by a prior per-scene render, but most users only ever hit the project
+    // "Render full project" button — so LTs they added in the UI silently got
+    // dropped at render time. Now we run the same bake step the per-scene
+    // render uses, gated on `includeLowerThirds` and on actual LT data.
+    if (includeLowerThirds && (scene.lower_thirds?.length ?? 0) > 0) {
+      const overlayPath = scene.overlay_render
+        ? join(projectPath, scene.overlay_render)
+        : null;
+      if (!overlayPath || !existsSync(overlayPath)) {
+        if (!ltColors) {
+          ltColors = await resolveLtColors(projectPath, {
+            vpaHome: opts.vpaHome ?? '',
+            workspaceRoot: opts.workspaceRoot ?? '',
+          });
+        }
+        const baked = await renderLowerThirdsOverlay({
+          projectPath,
+          sceneId: scene.id,
+          recordingPath: join(projectPath, scene.recording!.source),
+          lowerThirds: scene.lower_thirds!,
+          colors: ltColors,
+        });
+        sb = updateScene(sb, scene.id, { overlay_render: baked.outputPath });
+        await saveStoryboard(projectPath, sb);
+        scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
+      }
+    }
 
     onProgress?.({
       type: 'step',
@@ -149,6 +221,7 @@ export async function renderFinalVideo(
       vpaHome: opts.vpaHome ?? '',
       workspaceRoot: opts.workspaceRoot ?? '',
       frameDeps,
+      includeLowerThirds,
     });
     // Save per-scene so a crash mid-loop leaves the cached frame_render
     // paths persisted — the next render skips work already done.
@@ -170,7 +243,50 @@ export async function renderFinalVideo(
   // If we're going to overlay music, write the concat result to a temp file
   // first so we can run a 2-input ffmpeg pass into the real final.mp4.
   const concatOutPath = opts.music ? join(tmpDir, 'concat.mp4') : finalPath;
-  await concatScenes(scenePaths, concatOutPath, tmpDir);
+
+  // Build the join plan: each entry is the rendered scene mp4 + the transition
+  // that should play at its OUT-edge. The final scene's transition is ignored
+  // (nothing to transition into) — concatScenes handles that.
+  const joinPlan: Array<{ path: string; transition?: SceneTransition; durationSec: number }> =
+    renderableScenes.map((rs, i) => {
+      const scene = sb.scenes.find((s) => s.id === rs.id)!;
+      return {
+        path: scenePaths[i]!,
+        transition: scene.transition,
+        durationSec: scene.transition_duration_sec ?? 0.5,
+      };
+    });
+
+  // Prepend / append brand bumpers if the caller supplied them. Bumpers come
+  // from the project's brand (resolved by the render route) — they're optional
+  // and arbitrary in shape, so we normalise each one to match the rest of the
+  // chain (dimensions, fps, audio profile) before concat. The normalised
+  // copies live in tmpDir alongside everything else and get cleaned up at end
+  // of the function. Cuts (transition: undefined) between bumpers and scenes
+  // are intentional — bumpers come in/out cleanly, no fancy xfade.
+  if (opts.bumperIntro || opts.bumperOutro) {
+    const firstSize = await probeVideoSize(scenePaths[0]!);
+    const targetW = firstSize.width || 1920;
+    const targetH = firstSize.height || 1080;
+    if (opts.bumperIntro && existsSync(opts.bumperIntro)) {
+      const normalised = await normaliseBumper(
+        opts.bumperIntro, targetW, targetH, includeNarration, tmpDir, 'intro',
+      );
+      joinPlan.unshift({ path: normalised, durationSec: 0.5 });
+    }
+    if (opts.bumperOutro && existsSync(opts.bumperOutro)) {
+      const normalised = await normaliseBumper(
+        opts.bumperOutro, targetW, targetH, includeNarration, tmpDir, 'outro',
+      );
+      joinPlan.push({ path: normalised, durationSec: 0.5 });
+    }
+  }
+
+  // When narration is excluded, the per-scene mp4s have no audio track (see
+  // muxScene's `-an` branch). Tell concatScenes so its filter graph requests
+  // a=0 instead of a=1 — otherwise ffmpeg errors out trying to read audio
+  // streams that don't exist.
+  await concatScenes(joinPlan, concatOutPath, tmpDir, { hasAudio: includeNarration });
 
   // Stage 4: optional background music overlay
   if (opts.music) {
@@ -434,6 +550,10 @@ interface MuxOpts {
   vpaHome: string;
   workspaceRoot: string;
   frameDeps: FramePrepDeps;
+  /** When false, ignore the lower-thirds overlay even if `scene.overlay_render`
+   *  points at a baked file. Allows the user to keep edited lower-thirds in
+   *  the project but ship the final video without them. */
+  includeLowerThirds?: boolean;
 }
 
 interface MuxResult {
@@ -455,11 +575,16 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     vpaHome,
     workspaceRoot,
     frameDeps,
+    includeLowerThirds = true,
   } = opts;
 
-  // Use the rendered overlay video (with lower thirds) if available;
-  // otherwise the raw recording.
-  const overlay = scene.overlay_render ? join(projectPath, scene.overlay_render) : null;
+  // Use the rendered overlay video (with lower thirds) if available AND the
+  // caller wants lower-thirds in this render; otherwise fall back to the raw
+  // recording. The `includeLowerThirds=false` flag lets the user opt out at
+  // render time without losing their edited lower-thirds data.
+  const overlay = includeLowerThirds && scene.overlay_render
+    ? join(projectPath, scene.overlay_render)
+    : null;
   const rec = scene.recording!.source;
   const recPath = join(projectPath, rec);
   const upstreamVideo = overlay && existsSync(overlay) ? overlay : recPath;
@@ -507,8 +632,12 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
       args.push('-c:a', 'aac', '-b:a', '192k');
     }
   } else {
-    // No narration — just remux the video
-    args.push('-c', 'copy');
+    // No narration audio for this scene → render with NO audio track. We
+    // previously did `-c copy` which preserved the recording's original audio
+    // (screen-recording system sounds, mouse clicks, etc.) — surprising users
+    // who unchecked "Include narration" expecting silence. Audio from the
+    // source recording is dropped via `-an`; video copies as before.
+    args.push('-c:v', burnSubtitles ? 'libx264' : 'copy', '-an');
   }
 
   args.push(outputPath);
@@ -519,39 +648,246 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
 
 // ── Stage 3: multi-scene concat ──────────────────────────────────────
 
-async function concatScenes(scenePaths: string[], outputPath: string, tmpDir: string): Promise<void> {
-  if (scenePaths.length === 1) {
-    // Single-scene "concat" is just a copy — but use ffmpeg to re-mux into final.mp4
-    // so the output filename and structure is consistent.
-    await runFfmpeg(['-y', '-i', scenePaths[0]!, '-c', 'copy', outputPath]);
+interface JoinEntry {
+  path: string;
+  /** Transition at the OUT-edge of this scene (ignored on the last entry). */
+  transition?: SceneTransition;
+  /** Overlap duration in seconds. Used when transition is set. */
+  durationSec: number;
+}
+
+/**
+ * Map our user-facing transition labels to ffmpeg `xfade` filter names. Ported
+ * from the tanzu-video-pipeline project's xfade mapping. Audio is crossfaded
+ * with `acrossfade` over the same duration.
+ *
+ * Keep `cut` out of this map — `cut` triggers the concat-demuxer fast path
+ * with no xfade pass.
+ */
+const XFADE_FILTER_MAP: Record<Exclude<SceneTransition, 'cut'>, string> = {
+  'crossfade': 'fade',
+  'fade-black': 'fadeblack',
+  'fade-white': 'fadewhite',
+  'wipe-left': 'wipeleft',
+  'wipe-right': 'wiperight',
+  'slide-left': 'slideleft',
+  'slide-right': 'slideright',
+  'slide-up': 'slideup',
+  'slide-down': 'slidedown',
+  'circleopen': 'circleopen',
+  'circleclose': 'circleclose',
+  'radial': 'radial',
+  'pixelize': 'pixelize',
+};
+
+interface ConcatOpts {
+  /** Set true when the per-scene mp4s have an audio stream. When false, the
+   *  filter graphs request a=0 / drop audio mapping. */
+  hasAudio: boolean;
+}
+
+async function concatScenes(scenes: JoinEntry[], outputPath: string, tmpDir: string, opts: ConcatOpts = { hasAudio: true }): Promise<void> {
+  if (scenes.length === 1) {
+    await runFfmpeg(['-y', '-i', scenes[0]!.path, '-c', 'copy', outputPath]);
     return;
   }
 
-  const concatList = join(tmpDir, 'scenes-list.txt');
-  const lines = scenePaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-  await writeFile(concatList, lines);
+  // If no scene has a non-cut transition, take the fast path: concat demuxer
+  // with -c copy (no re-encode). This is the original behaviour.
+  const hasTransitions = scenes.slice(0, -1).some(
+    (s) => s.transition && s.transition !== 'cut',
+  );
+  if (!hasTransitions) {
+    return concatScenesPlain(scenes.map((s) => s.path), outputPath, tmpDir, opts);
+  }
 
-  // The concat demuxer requires matching codecs. Our scenes use h264 + AAC after
-  // muxScene runs, so `-c copy` works in the common case.
-  // Fallback: if -c copy fails (mismatched codecs/dimensions), retry with re-encode.
-  try {
-    await runFfmpeg([
-      '-y', '-f', 'concat', '-safe', '0', '-i', concatList,
-      '-c', 'copy', outputPath,
-    ]);
-  } catch (err) {
-    if (err instanceof RenderError && /Non-monotonous|invalid|codec|negative/i.test(err.message)) {
-      // Re-encode pass — slower but tolerates any mix
+  // Slow path: build a chained xfade + acrossfade filter graph. Each transition
+  // overlaps `durationSec` seconds of two scenes, so we need every scene's
+  // duration upfront to compute correct xfade `offset` values.
+  const [durations, sizes] = await Promise.all([
+    Promise.all(scenes.map((s) => probeDuration(s.path))),
+    Promise.all(scenes.map((s) => probeVideoSize(s.path))),
+  ]);
+
+  // xfade requires identical width × height on both sides. Real recordings
+  // often differ by a couple of pixels (frame baking, codec quirks). Pick a
+  // single target — the first scene's size — and prepend a scale+pad filter
+  // to every input that normalises to that target. We also force SAR=1:1 so
+  // xfade can't trip on display-aspect-ratio mismatches.
+  const targetW = sizes[0]?.width || 1920;
+  const targetH = sizes[0]?.height || 1080;
+  // Even dimensions are required by libx264 (yuv420p chroma subsampling).
+  const normW = targetW + (targetW % 2);
+  const normH = targetH + (targetH % 2);
+
+  const inputArgs: string[] = [];
+  for (const s of scenes) {
+    inputArgs.push('-i', s.path);
+  }
+
+  const videoFilters: string[] = [];
+  const audioFilters: string[] = [];
+
+  // Per-input normalisation filters — every scene goes through scale + pad
+  // (preserving aspect) so the xfade chain sees matching dimensions. We label
+  // the outputs [n0],[n1],... and reference those instead of [0:v],[1:v].
+  //
+  // `settb=1/90000` forces a uniform timebase across every input. Without it,
+  // xfade errors out with "main timebase do not match xfade timebase" when
+  // some inputs come from different sources — e.g. recorded scenes (1/1000000)
+  // mixed with normalised bumpers (1/15360). 90000 is the standard mpeg
+  // timebase and divides evenly for 30/60fps content. `fps=60` is included so
+  // every input also has a uniform frame rate; xfade's offset math relies on
+  // PTS being consistent across both inputs.
+  for (let i = 0; i < scenes.length; i++) {
+    videoFilters.push(
+      `[${i}:v]scale=${normW}:${normH}:force_original_aspect_ratio=decrease,` +
+      `pad=${normW}:${normH}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=60,settb=1/90000[n${i}]`,
+    );
+  }
+
+  let vTag = '[n0]';
+  let aTag = '[0:a]';
+  // Time position (in the output) of the END of the latest concatenated chunk.
+  // For the first scene this is its full duration; for each subsequent xfade
+  // it advances by next.duration - transition.durationSec (the overlap).
+  let runningEndSec = durations[0]!;
+
+  for (let i = 0; i < scenes.length - 1; i++) {
+    const outV = `[v${i + 1}]`;
+    const outA = `[a${i + 1}]`;
+    const trans = scenes[i]!.transition;
+    const dur = scenes[i]!.durationSec;
+    const nextDur = durations[i + 1]!;
+    const nextV = `[n${i + 1}]`;
+
+    // Both `concat` and `xfade` filters set their own output timebase, which
+    // tends to default to 1/AV_TIME_BASE (1/1000000). The NEXT filter in the
+    // chain then sees a timebase mismatch against the still-1/90000-tagged
+    // [n_i+1] input and errors with "main timebase do not match xfade
+    // timebase". Forcing `settb=1/90000` on every intermediate output keeps
+    // the whole chain on one timebase.
+    if (trans && trans !== 'cut') {
+      const xfadeName = XFADE_FILTER_MAP[trans as Exclude<SceneTransition, 'cut'>];
+      // xfade offset = start time of the overlap in the OUTPUT so far.
+      const offset = Math.max(0, runningEndSec - dur);
+      videoFilters.push(
+        `${vTag}${nextV}xfade=transition=${xfadeName}:duration=${dur.toFixed(3)}:offset=${offset.toFixed(3)},settb=1/90000${outV}`,
+      );
+      if (opts.hasAudio) {
+        audioFilters.push(
+          `${aTag}[${i + 1}:a]acrossfade=d=${dur.toFixed(3)}${outA}`,
+        );
+      }
+      runningEndSec = offset + nextDur;
+    } else {
+      // Hard cut between scenes inside a mixed (xfade + cut) chain. Use the
+      // `concat` filter to splice the next scene onto the accumulated chain
+      // — `xfade duration=0` looks right syntactically but actually drops the
+      // second input and silently truncates the output (verified on real
+      // recordings). concat=n=2:v=1:a=0 / a=1 cleanly extends by the full
+      // duration of the next clip.
+      videoFilters.push(`${vTag}${nextV}concat=n=2:v=1:a=0,settb=1/90000${outV}`);
+      if (opts.hasAudio) {
+        audioFilters.push(`${aTag}[${i + 1}:a]concat=n=2:v=0:a=1${outA}`);
+      }
+      runningEndSec += nextDur;
+    }
+    vTag = outV;
+    aTag = opts.hasAudio ? outA : aTag;
+  }
+
+  const filterComplex = [...videoFilters, ...audioFilters].join(';');
+
+  const ffmpegArgs = [
+    '-y',
+    ...inputArgs,
+    '-filter_complex', filterComplex,
+    '-map', vTag,
+    ...(opts.hasAudio ? ['-map', aTag] : []),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    ...(opts.hasAudio ? ['-c:a', 'aac', '-b:a', '192k'] : ['-an']),
+    '-movflags', '+faststart',
+    outputPath,
+  ];
+  await runFfmpeg(ffmpegArgs);
+}
+
+/**
+ * Fast-path concat — no transitions. Uses the demuxer with `-c copy` when ALL
+ * scenes have matching dimensions (the cheap, no-re-encode path). When any
+ * scene's resolution differs from the first, falls back to a re-encode that
+ * scales/pads each scene to a uniform size. Mismatched dimensions were
+ * previously the cause of a subtle bug: `-c copy` doesn't error on the
+ * mismatch but produces an output whose video stream silently truncates
+ * partway through (the audio still plays — the user sees a frozen frame
+ * while narration continues).
+ */
+async function concatScenesPlain(scenePaths: string[], outputPath: string, tmpDir: string, opts: ConcatOpts = { hasAudio: true }): Promise<void> {
+  // Probe all scene dimensions to detect mismatches up-front. Even a 2-pixel
+  // delta (3456x2232 vs 3456x2234) breaks the fast path silently.
+  const sizes = await Promise.all(scenePaths.map((p) => probeVideoSize(p)));
+  const first = sizes[0];
+  const uniform = !!first && sizes.every((s) => s.width === first.width && s.height === first.height);
+
+  if (uniform) {
+    const concatList = join(tmpDir, 'scenes-list.txt');
+    const lines = scenePaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+    await writeFile(concatList, lines);
+    try {
       await runFfmpeg([
         '-y', '-f', 'concat', '-safe', '0', '-i', concatList,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-        '-c:a', 'aac', '-b:a', '192k',
-        outputPath,
+        '-c', 'copy', outputPath,
       ]);
-    } else {
-      throw err;
+      return;
+    } catch (err) {
+      if (!(err instanceof RenderError) || !/Non-monotonous|invalid|codec|negative/i.test(err.message)) {
+        throw err;
+      }
+      // Fall through to the re-encode path below.
     }
   }
+
+  // Re-encode path. Normalise every scene to a uniform width × height via
+  // scale+pad (preserving aspect), then concat in the filter graph. Same
+  // normalisation pattern as the xfade slow path.
+  const targetW = first?.width || 1920;
+  const targetH = first?.height || 1080;
+  const normW = targetW + (targetW % 2);
+  const normH = targetH + (targetH % 2);
+
+  const inputArgs: string[] = [];
+  for (const p of scenePaths) inputArgs.push('-i', p);
+
+  const filters: string[] = [];
+  for (let i = 0; i < scenePaths.length; i++) {
+    // Same `fps=60,settb=1/90000` normalisation as the xfade slow path so
+    // mixed-source inputs (bumpers + scenes) don't trip the concat filter
+    // on timebase/framerate mismatches.
+    filters.push(
+      `[${i}:v]scale=${normW}:${normH}:force_original_aspect_ratio=decrease,` +
+      `pad=${normW}:${normH}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=60,settb=1/90000[n${i}]`,
+    );
+  }
+  // concat filter — when hasAudio, interleave v,a pairs; otherwise video only.
+  if (opts.hasAudio) {
+    const concatInputs = scenePaths.map((_p, i) => `[n${i}][${i}:a]`).join('');
+    filters.push(`${concatInputs}concat=n=${scenePaths.length}:v=1:a=1[outv][outa]`);
+  } else {
+    const concatInputs = scenePaths.map((_p, i) => `[n${i}]`).join('');
+    filters.push(`${concatInputs}concat=n=${scenePaths.length}:v=1:a=0[outv]`);
+  }
+
+  await runFfmpeg([
+    '-y',
+    ...inputArgs,
+    '-filter_complex', filters.join(';'),
+    '-map', '[outv]',
+    ...(opts.hasAudio ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '192k'] : ['-an']),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    '-movflags', '+faststart',
+    outputPath,
+  ]);
 }
 
 // ── ffmpeg helpers ───────────────────────────────────────────────────
@@ -586,6 +922,97 @@ export async function probeDuration(path: string): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Probe a video's primary stream width × height. Used by the xfade path so
+ * scenes with mismatched resolutions can be scaled to a common target before
+ * the filter graph runs (xfade refuses to merge streams of different sizes).
+ */
+async function probeVideoSize(path: string): Promise<{ width: number; height: number }> {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height',
+      '-of', 'csv=p=0:s=x',
+      path,
+    ], { timeout: 30_000 });
+    const [w, h] = stdout.trim().split('x').map((n) => Number.parseInt(n, 10));
+    return { width: w || 0, height: h || 0 };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
+
+/** Probe whether a media file has an audio stream. Used by the bumper
+ *  normaliser to decide whether to passthrough audio, transcode, or synthesise
+ *  a silent track. */
+async function probeHasAudio(path: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'a',
+      '-show_entries', 'stream=codec_type',
+      '-of', 'csv=p=0',
+      path,
+    ], { timeout: 30_000 });
+    return stdout.trim().split('\n').some((line) => line.includes('audio'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalise a brand bumper (intro/outro video) so it can join the project's
+ * concat chain without breaking the filter graph. Output matches the rest of
+ * the join inputs on resolution, pixel format, codec, and audio profile:
+ *
+ *   • Video: scaled + padded to target W×H, yuv420p, h264 (preset veryfast,
+ *     CRF 20), 60fps cap (matches per-scene mp4s in practice).
+ *   • Audio:
+ *       - When `hasAudio=false`, audio is stripped entirely (`-an`).
+ *       - When `hasAudio=true` and the bumper has an audio track, the track
+ *         is transcoded to aac 44.1 kHz stereo to match the per-scene mp4s.
+ *       - When `hasAudio=true` and the bumper has NO audio track, a silent
+ *         aac stream is synthesised via `anullsrc` so concat doesn't trip on
+ *         a missing audio input.
+ *
+ * Returns the path to the normalised mp4 in `tmpDir`.
+ */
+async function normaliseBumper(
+  bumperPath: string,
+  targetW: number,
+  targetH: number,
+  hasAudio: boolean,
+  tmpDir: string,
+  label: 'intro' | 'outro',
+): Promise<string> {
+  const outPath = join(tmpDir, `bumper-${label}.mp4`);
+  const hadAudio = hasAudio ? await probeHasAudio(bumperPath) : false;
+  const args: string[] = ['-y', '-i', bumperPath];
+  if (hasAudio && !hadAudio) {
+    // Synthesise a silent stereo track so the concat-with-audio path sees an
+    // audio stream on every input. `-shortest` makes the lavfi input stop
+    // when the video does (otherwise it'd stream forever).
+    args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+  }
+  args.push(
+    '-vf',
+    `scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=60`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+    '-pix_fmt', 'yuv420p',
+  );
+  if (!hasAudio) {
+    args.push('-an');
+  } else if (hadAudio) {
+    args.push('-map', '0:v:0', '-map', '0:a:0', '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2');
+  } else {
+    args.push('-map', '0:v:0', '-map', '1:a:0', '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2', '-shortest');
+  }
+  args.push('-movflags', '+faststart', outPath);
+  await runFfmpeg(args);
+  return outPath;
 }
 
 /** Map known ffmpeg stderr patterns to a human-readable fix hint. */

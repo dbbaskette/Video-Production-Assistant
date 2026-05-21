@@ -53,6 +53,23 @@ export const VpaExtensions = z.object({
   audio: z.object({
     music_mood: z.string().nullable(),
     sonic_logo: z.string().nullable(),
+    /**
+     * Optional bumper videos applied at render time. Paths are relative to
+     * `brands/{slug}/assets/` on disk (e.g. `bumpers/intro.mp4`). When set,
+     * the render pipeline prepends `bumper_intro` and/or appends `bumper_outro`
+     * to the project's scene chain. Empty / unset means no bumper for that
+     * edge.
+     */
+    bumper_intro: z.string().nullable().optional(),
+    bumper_outro: z.string().nullable().optional(),
+    /**
+     * Optional default background music track for projects that don't pick
+     * their own. Path relative to `brands/{slug}/assets/`. When the render
+     * route's `musicTrackId` is null AND this is set, the brand's track is
+     * used at the default `-20dB` volume. Project-level music selections
+     * still override.
+     */
+    default_music_track: z.string().nullable().optional(),
   }),
   logo: z.object({
     primary: z.string().nullable(),

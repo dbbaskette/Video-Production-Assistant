@@ -60,6 +60,7 @@ export async function uploadVideo(
     body: JSON.stringify({
       file: { display_name: displayName ?? basename(filePath) },
     }),
+    signal: AbortSignal.timeout(60_000),
   });
   if (!initRes.ok) {
     const txt = await initRes.text();
@@ -81,8 +82,8 @@ export async function uploadVideo(
       'X-Goog-Upload-Offset': '0',
       'X-Goog-Upload-Command': 'upload, finalize',
     },
-    // fetch() accepts Uint8Array bodies — Buffer is a Uint8Array subclass so this works.
     body: bytes,
+    signal: AbortSignal.timeout(3 * 60_000),
   });
   if (!uploadRes.ok) {
     const txt = await uploadRes.text();
@@ -112,7 +113,9 @@ export async function waitForFileActive(
   const pollIntervalMs = opts.pollIntervalMs ?? 2_000;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${API_BASE}/${fileName}?key=${apiKey}`);
+    const res = await fetch(`${API_BASE}/${fileName}?key=${apiKey}`, {
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!res.ok) {
       const txt = await res.text();
       throw new Error(`Gemini Files API: poll failed (${res.status}): ${txt}`);
@@ -183,6 +186,7 @@ export async function generateWithVideo(input: GenerateWithVideoInput): Promise<
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(3 * 60_000),
   });
   if (!res.ok) {
     const txt = await res.text();

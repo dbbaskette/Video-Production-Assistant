@@ -58,16 +58,17 @@ export function ProjectOverview() {
         <SourceDocsSection projectId={project.id} />
       </CollapsibleSection>
 
-      {/* ── Output — brand, music, finished video, export bundle ────
-          Collapsed by default until a storyboard exists; the user
-          doesn't need any of this before there are scenes. */}
+      {/* ── Brand — project-level brand selection / styling. Music + Render
+          used to live here too, but they now have a dedicated /render page
+          (sidebar "Render" entry lands there) so the overview stays focused
+          on setup and progress. */}
       <CollapsibleSection
-        title="Output"
+        title="Brand"
         defaultOpen={hasStoryboard}
-        subtitle="Brand · music · render · export"
+        subtitle="Project-level branding & styling"
+        anchorHash="brand"
       >
         <ProjectBrandSection projectId={project.id} />
-        <ProjectMusicAndRender projectId={project.id} hasStoryboard={hasStoryboard} />
       </CollapsibleSection>
 
       {/* ── Workflow guide — per-scene reference, collapsed by default ── */}
@@ -255,12 +256,14 @@ interface RenderProgressEvent {
 
 function RenderSection({
   projectId,
+  projectName,
   hasStoryboard,
   musicTrackId,
   musicVolumeDb,
   musicEnabled,
 }: {
   projectId: string;
+  projectName: string;
   hasStoryboard: boolean;
   musicTrackId: string | null;
   musicVolumeDb: number;
@@ -272,6 +275,17 @@ function RenderSection({
   const [error, setError] = useState<string | null>(null);
   const [audioMode, setAudioMode] = useState<'replace' | 'mix'>('replace');
   const [burnSubtitles, setBurnSubtitles] = useState(false);
+  // Narration & lower-thirds are OPTIONAL in the final render. The user can
+  // generate them for a subset of scenes (or none) and still ship the video
+  // using the recording's original audio / without burned overlays. Defaults
+  // are populated from the storyboard below: ON if any scene has the data,
+  // OFF if the project is bare. The user can flip either at render time.
+  const [includeNarration, setIncludeNarration] = useState<boolean | null>(null);
+  const [includeLowerThirds, setIncludeLowerThirds] = useState<boolean | null>(null);
+  // Brand asset toggles. Both default to true when the linked brand actually
+  // has the asset (smart default — match the narration / lower-thirds pattern).
+  const [useBrandBumpers, setUseBrandBumpers] = useState<boolean | null>(null);
+  const [useBrandMusic, setUseBrandMusic] = useState<boolean | null>(null);
   const closeStreamRef = useRef<(() => void) | null>(null);
 
   const status = useQuery({
@@ -287,6 +301,72 @@ function RenderSection({
     queryFn: () => storyboardApi.get(projectId),
     enabled: !!projectId,
   });
+
+  // Detect whether any scene actually has narration / lower-thirds. Used to
+  // (a) drive the smart default for the render-time toggles and (b) tell the
+  // user when a toggle is moot (no data to include in the first place).
+  const sb = storyboardQuery.data;
+  const hasAnyNarration = !!sb?.scenes?.some(
+    (s) => s.narration?.audio || (s.narration?.chunks?.length ?? 0) > 0,
+  );
+  const hasAnyLowerThirds = !!sb?.scenes?.some(
+    (s) => (s.lower_thirds?.length ?? 0) > 0,
+  );
+
+  // Project → brand → audio assets. We need to know what bumpers / default
+  // music the linked brand provides so we can render the Brand assets section
+  // with previews + Include toggles. Two queries: getProject (cheap; just
+  // gives us brand.id) then brandsApi.detail (loads the full design.md).
+  const projectQuery = useQuery({
+    queryKey: ['project', projectId],
+    queryFn: () => api.getProject(projectId),
+    enabled: !!projectId,
+  });
+  const brandSlug = projectQuery.data?.brand?.id ?? null;
+  const brandQuery = useQuery({
+    queryKey: ['brand', brandSlug],
+    queryFn: () => brandsApi.detail(brandSlug!),
+    enabled: !!brandSlug,
+  });
+  const brandAudio = brandQuery.data?.doc.frontMatter.vpa?.audio as
+    | {
+        bumper_intro?: string | null;
+        bumper_outro?: string | null;
+        default_music_track?: string | null;
+      }
+    | undefined;
+  const brandHasBumpers = !!(brandAudio?.bumper_intro || brandAudio?.bumper_outro);
+  const brandHasMusic = !!brandAudio?.default_music_track;
+
+  // Hydrate the include toggles once storyboard data is available. `null` is
+  // the "not yet decided" sentinel — we keep it null until the storyboard
+  // loads so the user's explicit choice (if any) is never overwritten.
+  useEffect(() => {
+    if (sb && includeNarration === null) {
+      setIncludeNarration(hasAnyNarration);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sb, hasAnyNarration]);
+  useEffect(() => {
+    if (sb && includeLowerThirds === null) {
+      setIncludeLowerThirds(hasAnyLowerThirds);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sb, hasAnyLowerThirds]);
+  // Same hydrate pattern for brand toggles — default ON when the brand has
+  // the asset; users can flip explicitly to opt out.
+  useEffect(() => {
+    if (brandQuery.data && useBrandBumpers === null) setUseBrandBumpers(brandHasBumpers);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandQuery.data, brandHasBumpers]);
+  useEffect(() => {
+    if (brandQuery.data && useBrandMusic === null) setUseBrandMusic(brandHasMusic);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandQuery.data, brandHasMusic]);
+  const effectiveIncludeNarration = includeNarration ?? hasAnyNarration;
+  const effectiveIncludeLowerThirds = includeLowerThirds ?? hasAnyLowerThirds;
+  const effectiveUseBrandBumpers = useBrandBumpers ?? brandHasBumpers;
+  const effectiveUseBrandMusic = useBrandMusic ?? brandHasMusic;
   const framesQuery = useQuery({
     queryKey: ['frames'],
     queryFn: () => framesApi.list(),
@@ -304,8 +384,12 @@ function RenderSection({
       renderApi.start(projectId, {
         audioMode,
         burnSubtitles,
+        includeNarration: effectiveIncludeNarration,
+        includeLowerThirds: effectiveIncludeLowerThirds,
         musicTrackId: musicEnabled ? musicTrackId : null,
         musicVolumeDb,
+        useBrandBumpers: effectiveUseBrandBumpers,
+        useBrandMusic: effectiveUseBrandMusic,
       }),
     onSuccess: ({ jobId }) => {
       setError(null);
@@ -378,27 +462,88 @@ function RenderSection({
       {/* Options */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 13 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={effectiveIncludeNarration}
+            onChange={(e) => setIncludeNarration(e.target.checked)}
+            disabled={isRunning || !hasAnyNarration}
+          />
+          <span>
+            Include narration
+            {!hasAnyNarration && (
+              <span style={{ color: 'var(--fg-muted)', marginLeft: 6 }}>(none generated)</span>
+            )}
+          </span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={effectiveIncludeLowerThirds}
+            onChange={(e) => setIncludeLowerThirds(e.target.checked)}
+            disabled={isRunning || !hasAnyLowerThirds}
+          />
+          <span>
+            Include lower thirds
+            {!hasAnyLowerThirds && (
+              <span style={{ color: 'var(--fg-muted)', marginLeft: 6 }}>(none added)</span>
+            )}
+          </span>
+        </label>
+        {/* Audio / subtitles options only matter when narration is included. */}
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            opacity: effectiveIncludeNarration ? 1 : 0.5,
+          }}
+        >
           Audio:
           <select
             value={audioMode}
             onChange={(e) => setAudioMode(e.target.value as 'replace' | 'mix')}
-            disabled={isRunning}
+            disabled={isRunning || !effectiveIncludeNarration}
             style={{ padding: '4px 8px', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4 }}
           >
             <option value="replace">replace original</option>
             <option value="mix">mix narration over original (-20dB)</option>
           </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            opacity: effectiveIncludeNarration ? 1 : 0.5,
+          }}
+        >
           <input
             type="checkbox"
             checked={burnSubtitles}
             onChange={(e) => setBurnSubtitles(e.target.checked)}
-            disabled={isRunning}
+            disabled={isRunning || !effectiveIncludeNarration}
           />
           Burn in subtitles
         </label>
       </div>
+
+      {/* Brand assets — shown only when the project is linked to a brand AND
+          the brand actually has bumpers / default music. Pure visibility +
+          opt-out: the render auto-applies these otherwise. */}
+      {brandSlug && (brandHasBumpers || brandHasMusic) && (
+        <BrandAssetsSection
+          slug={brandSlug}
+          bumperIntro={brandAudio?.bumper_intro ?? null}
+          bumperOutro={brandAudio?.bumper_outro ?? null}
+          defaultMusic={brandAudio?.default_music_track ?? null}
+          useBumpers={effectiveUseBrandBumpers}
+          useMusic={effectiveUseBrandMusic}
+          onChangeBumpers={setUseBrandBumpers}
+          onChangeMusic={setUseBrandMusic}
+          disabled={isRunning}
+          projectMusicSelected={musicEnabled && !!musicTrackId}
+        />
+      )}
 
       {/* Frame style — project-level default applied to all scenes unless overridden */}
       {framesQuery.data && (
@@ -442,7 +587,7 @@ function RenderSection({
                 </p>
               )}
               <p style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 0 }}>
-                Per-scene overrides will use this default unless overridden in the scene panel.
+                Applied to every scene unless overridden on the scene's Recording tab.
               </p>
             </>
           )}
@@ -471,9 +616,12 @@ function RenderSection({
         </button>
         {exists && (
           <>
+            {/* `download` HTML attribute alone is ignored cross-origin (web on
+                :5173, API on :3000). The server-side handler honours
+                `?download=1` by sending Content-Disposition: attachment, which
+                forces a download instead of inline playback. */}
             <a
-              href={renderApi.videoUrl(projectId)}
-              download="final.mp4"
+              href={renderApi.downloadUrl(projectId, `${projectName}.mp4`)}
               style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
             >
               Download
@@ -539,17 +687,213 @@ function RenderSection({
   );
 }
 
+/**
+ * Brand assets card on the Render page. Surfaces the bumpers + default music
+ * the linked brand will contribute to this render, with per-asset Include
+ * toggles. Hidden entirely when the project has no brand or the brand has
+ * none of these assets — there's nothing to show.
+ *
+ * The render route auto-applies these when set; this card just makes that
+ * visible and gives the user an opt-out for a given render.
+ */
+function BrandAssetsSection({
+  slug,
+  bumperIntro,
+  bumperOutro,
+  defaultMusic,
+  useBumpers,
+  useMusic,
+  onChangeBumpers,
+  onChangeMusic,
+  disabled,
+  projectMusicSelected,
+}: {
+  slug: string;
+  bumperIntro: string | null;
+  bumperOutro: string | null;
+  defaultMusic: string | null;
+  useBumpers: boolean;
+  useMusic: boolean;
+  onChangeBumpers: (v: boolean) => void;
+  onChangeMusic: (v: boolean) => void;
+  disabled: boolean;
+  /** Whether the user has explicitly picked a project-level music track. When
+   *  true, the brand's default music is overridden regardless of `useMusic`,
+   *  so we dim that toggle and explain. */
+  projectMusicSelected: boolean;
+}) {
+  const hasBumpers = !!(bumperIntro || bumperOutro);
+  const hasMusic = !!defaultMusic;
+
+  return (
+    <div
+      style={{
+        marginBottom: 16,
+        paddingTop: 14,
+        borderTop: '1px dashed var(--border)',
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: 'uppercase',
+          letterSpacing: 0.6,
+          color: 'var(--fg-muted)',
+          marginBottom: 10,
+        }}
+      >
+        Brand assets ({slug})
+      </div>
+
+      <div style={{ display: 'grid', gap: 14 }}>
+        {hasBumpers && (
+          <div>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 13,
+                marginBottom: 8,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={useBumpers}
+                onChange={(e) => onChangeBumpers(e.target.checked)}
+                disabled={disabled}
+              />
+              <span style={{ fontWeight: 500 }}>
+                Include bumpers
+                {bumperIntro && bumperOutro
+                  ? ' (start + end)'
+                  : bumperIntro
+                    ? ' (start only)'
+                    : ' (end only)'}
+              </span>
+            </label>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                gap: 10,
+                opacity: useBumpers ? 1 : 0.4,
+                transition: 'opacity 120ms',
+              }}
+            >
+              {bumperIntro && (
+                <BumperPreview slug={slug} relPath={bumperIntro} label="Start" />
+              )}
+              {bumperOutro && (
+                <BumperPreview slug={slug} relPath={bumperOutro} label="End" />
+              )}
+            </div>
+          </div>
+        )}
+
+        {hasMusic && (
+          <div>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 13,
+                marginBottom: 8,
+                opacity: projectMusicSelected ? 0.5 : 1,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={useMusic && !projectMusicSelected}
+                onChange={(e) => onChangeMusic(e.target.checked)}
+                disabled={disabled || projectMusicSelected}
+              />
+              <span style={{ fontWeight: 500 }}>
+                Use brand default music
+                {projectMusicSelected && (
+                  <span style={{ color: 'var(--fg-muted)', marginLeft: 6, fontWeight: 400 }}>
+                    (overridden by selected project track)
+                  </span>
+                )}
+              </span>
+            </label>
+            <audio
+              src={brandsApi.assetUrl(slug, defaultMusic!)}
+              controls
+              preload="metadata"
+              style={{
+                width: '100%',
+                maxWidth: 360,
+                opacity: useMusic && !projectMusicSelected ? 1 : 0.5,
+                transition: 'opacity 120ms',
+              }}
+            />
+            <p
+              style={{
+                fontSize: 11,
+                color: 'var(--fg-muted)',
+                margin: '6px 0 0',
+              }}
+            >
+              {defaultMusic!.split('/').pop()}
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Tiny inline video preview for a single bumper slot. */
+function BumperPreview({
+  slug,
+  relPath,
+  label,
+}: {
+  slug: string;
+  relPath: string;
+  label: string;
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>
+        {label} · {relPath.split('/').pop()}
+      </div>
+      <video
+        src={brandsApi.assetUrl(slug, relPath)}
+        controls
+        muted
+        playsInline
+        preload="metadata"
+        style={{
+          width: '100%',
+          aspectRatio: '16 / 9',
+          background: '#000',
+          borderRadius: 6,
+        }}
+      />
+    </div>
+  );
+}
+
 
 /**
  * Holds the shared music selection state so the BackgroundMusicSection (where
  * tracks are generated and picked) and the RenderSection (which mixes the
  * selected track in) stay in sync without prop-drilling through ProjectOverview.
+ *
+ * Exported so the dedicated /render page can reuse this assembly without
+ * duplicating the music/render plumbing.
  */
-function ProjectMusicAndRender({
+export function ProjectMusicAndRender({
   projectId,
+  projectName,
   hasStoryboard,
 }: {
   projectId: string;
+  projectName: string;
   hasStoryboard: boolean;
 }) {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
@@ -573,6 +917,7 @@ function ProjectMusicAndRender({
       />
       <RenderSection
         projectId={projectId}
+        projectName={projectName}
         hasStoryboard={hasStoryboard}
         musicTrackId={selectedTrackId}
         musicEnabled={musicEnabled && !!selectedTrackId}
