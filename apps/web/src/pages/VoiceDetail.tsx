@@ -416,7 +416,7 @@ function PreviewSection({ voice }: { voice: VoiceClone }) {
     <Section title="Preview voice" hint="Hear how this voice reads a short sentence — no project context needed.">
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value.slice(0, 400))}
+        onChange={(e) => setText(e.target.value.slice(0, 4000))}
         rows={2}
         placeholder={DEFAULT_SAMPLE}
         style={{
@@ -432,7 +432,7 @@ function PreviewSection({ voice }: { voice: VoiceClone }) {
         }}
       />
       <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
-        {text.length} / 400 chars
+        {text.length} / 4000 chars
       </div>
       {/*
         Preview button hierarchy: whichever provider is available is rendered as

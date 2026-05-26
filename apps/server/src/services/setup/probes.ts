@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { TtsService } from '../tts/index.js';
 import type { LlmClient } from '../llm/index.js';
 
@@ -189,10 +189,14 @@ async function probeFishAudio(): Promise<ProbeResult> {
       'Set FISH_AUDIO_MODEL to your model path, or download the model into the default location');
   }
 
-  // mlx_audio import check via subprocess
+  // mlx_audio import check via subprocess — prefer the workspace .venv python
+  // (matches what the Fish provider actually uses at runtime in server.ts).
+  const wsRoot = resolve(import.meta.dirname, '../../../../..');
+  const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
+  const pythonBin = existsSync(venvPython) ? venvPython : 'python3';
   try {
     await runWithTimeout(
-      'python3',
+      pythonBin,
       ['-c', 'import mlx_audio'],
       5000,
     );

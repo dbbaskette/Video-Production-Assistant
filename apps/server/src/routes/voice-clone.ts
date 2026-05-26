@@ -18,7 +18,7 @@ interface Deps {
 }
 
 /** Maximum preview text length in characters — keeps API spend predictable. */
-const PREVIEW_MAX_CHARS = 400;
+const PREVIEW_MAX_CHARS = 4000;
 const DEFAULT_PREVIEW_TEXT = "Hi, I'm a sample of how I sound. This is what I'd be like in your narration.";
 
 /** Mapping from XaiVoiceError.code → HTTP status. */

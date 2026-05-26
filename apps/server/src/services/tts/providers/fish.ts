@@ -78,7 +78,7 @@ export function createFishTtsProvider(): TtsProvider {
   const config = loadFishConfig();
 
   return {
-    id: 'fish-audio',
+    id: 'fish',
     displayName: 'Fish Audio S2 Pro (local)',
     // Fish S2 Pro supports rich inline tags — these map to the free-form tag system
     supportedEmotives: new Set([
