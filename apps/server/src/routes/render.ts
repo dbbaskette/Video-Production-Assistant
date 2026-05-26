@@ -1,14 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { stat, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
-import { renderFinalVideo, RenderError, type RenderOptions } from '../services/render/index.js';
+import { renderFinalVideo, RenderError, probeAudioParams, probeVideoSize, runFfmpeg, type RenderOptions } from '../services/render/index.js';
+import { buildTransitionClip } from '../services/render/transition-clip.js';
 import { jobQueue } from '../lib/job-queue.js';
 import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 import { readBrand } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
+import { loadStoryboard } from '../services/storyboard/index.js';
+import { SceneTransitionSchema } from '@vpa/shared';
 
 interface Deps {
   store: ProjectStore;
@@ -236,6 +239,177 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     reply.header('Accept-Ranges', 'bytes');
     reply.header('Content-Length', total);
     return reply.send(createReadStream(filePath));
+  });
+
+  // GET /api/projects/:id/scenes/:sceneId/transition/preview
+  // Build (or read from cache) the freeze-frame transition clip between
+  // this scene and the next one. Same logic the final-render pipeline uses,
+  // exposed standalone so users can iterate on transition style + duration
+  // in ~1.5s instead of waiting for a full project render.
+  app.get('/api/projects/:id/scenes/:sceneId/transition/preview', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const query = (req.query ?? {}) as { transition?: string; durationSec?: string };
+
+    let projectPath: string;
+    try {
+      projectPath = await resolveProjectPath(store, id);
+    } catch (err) {
+      const e = err as { statusCode?: number; message?: string };
+      return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
+    }
+
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'no_storyboard' });
+
+    const idx = sb.scenes.findIndex((s) => s.id === sceneId);
+    if (idx < 0) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    if (idx === sb.scenes.length - 1) {
+      return reply.status(400).send({ error: 'Last scene — no transition to preview', code: 'last_scene' });
+    }
+
+    const from = sb.scenes[idx]!;
+    const to = sb.scenes[idx + 1]!;
+    if (!from.recording?.source || !to.recording?.source) {
+      return reply.status(400).send({ error: 'Both scenes need a recording before a transition can be previewed', code: 'missing_recording' });
+    }
+
+    const wantedTransition = query.transition ?? from.transition ?? 'cut';
+    const parsed = SceneTransitionSchema.safeParse(wantedTransition);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: `Invalid transition: ${wantedTransition}`, code: 'invalid_transition' });
+    }
+    if (parsed.data === 'cut') {
+      return reply.status(400).send({ error: 'Cut has no preview — it is a hard concat', code: 'cut_has_no_preview' });
+    }
+    const durationSec = query.durationSec
+      ? Number.parseFloat(query.durationSec)
+      : (from.transition_duration_sec ?? 0.5);
+    if (!Number.isFinite(durationSec) || durationSec <= 0 || durationSec > 5) {
+      return reply.status(400).send({ error: 'durationSec must be between 0.1 and 5', code: 'invalid_duration' });
+    }
+
+    // Cache the clip under renders/.transition-previews/. Key includes
+    // transition + duration so changing either invalidates the cache.
+    const cacheDir = join(projectPath, 'renders', '.transition-previews');
+    await mkdir(cacheDir, { recursive: true });
+    const safeT = parsed.data.replace(/[^A-Za-z0-9_-]/g, '');
+    const cacheFile = join(cacheDir, `${sceneId}-to-${to.id}-${safeT}-${durationSec.toFixed(2)}s.mp4`);
+
+    if (!existsSync(cacheFile)) {
+      const fromPath = join(projectPath, from.recording.source);
+      const toPath = join(projectPath, to.recording.source);
+      const [size, audio] = await Promise.all([
+        probeVideoSize(fromPath),
+        probeAudioParams(fromPath),
+      ]);
+      try {
+        await buildTransitionClip({
+          fromScenePath: fromPath,
+          toScenePath: toPath,
+          transition: parsed.data,
+          durationSec,
+          width: size.width || 1920,
+          height: size.height || 1080,
+          hasAudio: audio.sampleRate > 0,
+          audioSampleRate: audio.sampleRate || 44100,
+          audioChannelLayout: audio.channelLayout || (audio.channels === 1 ? 'mono' : 'stereo'),
+          outputPath: cacheFile,
+          tmpDir: cacheDir,
+          cacheTag: `${sceneId}-${safeT}-${durationSec.toFixed(2)}`,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ error: `Preview build failed: ${msg}`, code: 'preview_failed' });
+      }
+    }
+
+    // Range-aware streaming so the <video> element can scrub.
+    const fileStat = await stat(cacheFile);
+    const total = fileStat.size;
+    const range = req.headers.range;
+    if (range) {
+      const m = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (!m) {
+        reply.header('Content-Range', `bytes */${total}`);
+        return reply.status(416).send();
+      }
+      const start = Number.parseInt(m[1]!, 10);
+      const end = m[2] && m[2].length > 0 ? Number.parseInt(m[2], 10) : total - 1;
+      reply.code(206);
+      reply.header('Content-Type', 'video/mp4');
+      reply.header('Accept-Ranges', 'bytes');
+      reply.header('Content-Range', `bytes ${start}-${end}/${total}`);
+      reply.header('Content-Length', end - start + 1);
+      return reply.send(createReadStream(cacheFile, { start, end }));
+    }
+    reply.header('Content-Type', 'video/mp4');
+    reply.header('Accept-Ranges', 'bytes');
+    reply.header('Content-Length', total);
+    return reply.send(createReadStream(cacheFile));
+  });
+
+  // GET /api/projects/:id/scenes/:sceneId/thumbnail
+  // Stream a single representative frame (jpeg) of the scene's recording.
+  // Used by the Render page's scene-strip so the user can glance at scene
+  // ordering before kicking off a multi-minute render. Cached on disk —
+  // re-extracted only when the recording's mtime is newer than the cache.
+  app.get('/api/projects/:id/scenes/:sceneId/thumbnail', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+
+    let projectPath: string;
+    try {
+      projectPath = await resolveProjectPath(store, id);
+    } catch (err) {
+      const e = err as { statusCode?: number; message?: string };
+      return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
+    }
+
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'no_storyboard' });
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: 'Scene not found', code: 'scene_not_found' });
+    if (!scene.recording?.source) {
+      return reply.status(404).send({ error: 'No recording for this scene', code: 'no_recording' });
+    }
+
+    const recPath = join(projectPath, scene.recording.source);
+    const cacheDir = join(projectPath, 'renders', '.thumbnails');
+    await mkdir(cacheDir, { recursive: true });
+    const cacheFile = join(cacheDir, `${sceneId}.jpg`);
+
+    // Re-extract only when the recording is newer than the cached thumb.
+    let needsExtract = !existsSync(cacheFile);
+    if (!needsExtract) {
+      try {
+        const [recStat, thumbStat] = await Promise.all([stat(recPath), stat(cacheFile)]);
+        if (recStat.mtimeMs > thumbStat.mtimeMs) needsExtract = true;
+      } catch {
+        needsExtract = true;
+      }
+    }
+    if (needsExtract) {
+      // Grab a frame ~1 second in (skips potentially-black opening
+      // frames common to screen recordings). Scaled down to keep the
+      // strip lightweight.
+      try {
+        await runFfmpeg([
+          '-y',
+          '-ss', '1.0',
+          '-i', recPath,
+          '-vframes', '1',
+          '-vf', 'scale=480:-2',
+          '-q:v', '4',
+          cacheFile,
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ error: `Thumbnail build failed: ${msg}`, code: 'thumb_failed' });
+      }
+    }
+
+    reply.header('Content-Type', 'image/jpeg');
+    reply.header('Cache-Control', 'public, max-age=3600');
+    return reply.send(createReadStream(cacheFile));
   });
 
   // GET /api/projects/:id/render/status — quick check whether a final.mp4 exists

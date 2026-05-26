@@ -1120,7 +1120,7 @@ async function probeVideoTimeBase(path: string): Promise<string> {
  * scenes with mismatched resolutions can be scaled to a common target before
  * the filter graph runs (xfade refuses to merge streams of different sizes).
  */
-async function probeVideoSize(path: string): Promise<{ width: number; height: number }> {
+export async function probeVideoSize(path: string): Promise<{ width: number; height: number }> {
   try {
     const { stdout } = await execFileAsync('ffprobe', [
       '-v', 'error',

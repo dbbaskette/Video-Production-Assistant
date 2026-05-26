@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { BASE as API_BASE } from '../lib/api.js';
 
 export type SceneTransition =
   | 'cut'
@@ -57,13 +58,20 @@ interface Props {
   onChange: (transition: SceneTransition, durationSec: number | undefined) => void;
   /** True while a save is in flight — disables the controls. */
   isSaving?: boolean;
+  /** Project + scene ids — when both are provided AND a non-cut transition
+   *  is selected, a Preview button is shown that builds the freeze-frame
+   *  transition clip and plays it inline. */
+  projectId?: string;
+  sceneId?: string;
 }
 
-export function TransitionPicker({ value, durationSec, isLastScene, onChange, isSaving }: Props) {
+export function TransitionPicker({ value, durationSec, isLastScene, onChange, isSaving, projectId, sceneId }: Props) {
   const current = value ?? 'cut';
   // Local draft for duration so the user can type freely without each
   // keystroke triggering a save. Committed onBlur.
   const [draftDuration, setDraftDuration] = useState<string>(String(durationSec ?? 0.5));
+  const [previewKey, setPreviewKey] = useState(0);
+  const [previewVisible, setPreviewVisible] = useState(false);
 
   useEffect(() => {
     setDraftDuration(String(durationSec ?? 0.5));
@@ -74,6 +82,19 @@ export function TransitionPicker({ value, durationSec, isLastScene, onChange, is
   }
 
   const showDuration = current !== 'cut';
+  const canPreview =
+    !!projectId &&
+    !!sceneId &&
+    current !== 'cut' &&
+    !isSaving &&
+    Number(draftDuration) >= 0.1 &&
+    Number(draftDuration) <= 5;
+  // Cache-busting key bumps every time the user clicks Preview so the
+  // browser re-fetches the (possibly rebuilt) clip from the API.
+  const previewSrc = canPreview
+    ? `${API_BASE}/api/projects/${projectId}/scenes/${sceneId}/transition/preview` +
+      `?transition=${current}&durationSec=${Number(draftDuration)}&v=${previewKey}`
+    : null;
 
   return (
     <div
@@ -155,10 +176,74 @@ export function TransitionPicker({ value, durationSec, isLastScene, onChange, is
             <span>sec</span>
           </label>
         )}
+
+        {canPreview && (
+          <button
+            type="button"
+            onClick={() => {
+              setPreviewVisible(true);
+              setPreviewKey((k) => k + 1);
+            }}
+            style={{
+              padding: '5px 12px',
+              background: 'var(--surface)',
+              color: 'var(--fg)',
+              border: '1px solid var(--accent)',
+              borderRadius: 6,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              marginLeft: 'auto',
+            }}
+            title="Build a standalone clip of this transition between the two scenes' boundary frames"
+          >
+            ▶ Preview transition
+          </button>
+        )}
       </div>
+
+      {previewVisible && previewSrc && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 8,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600 }}>
+              Preview
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
+              {current} · {draftDuration}s · last frame of this scene → first frame of next
+            </span>
+            <button
+              onClick={() => setPreviewVisible(false)}
+              style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--fg-muted)', cursor: 'pointer', fontSize: 14 }}
+              aria-label="Close preview"
+            >
+              ✕
+            </button>
+          </div>
+          <video
+            key={previewKey}
+            src={previewSrc}
+            controls
+            autoPlay
+            playsInline
+            style={{ width: '100%', maxHeight: 360, background: '#000', borderRadius: 4, display: 'block' }}
+          />
+          <p style={{ fontSize: 10, color: 'var(--fg-dim)', margin: '6px 0 0' }}>
+            First load builds the clip (~1–2 s). Subsequent loads with the same transition + duration are cached.
+          </p>
+        </div>
+      )}
+
       <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
-        Applied at render time via ffmpeg <code>xfade</code>. Hard cut is the default and is fastest
-        (no re-encode). Anything else triggers a re-encode pass for the final join.
+        Non-cut transitions render as freeze-frame clips inserted between scenes — the source clips
+        play to completion and the transition is purely additive time.
       </p>
     </div>
   );

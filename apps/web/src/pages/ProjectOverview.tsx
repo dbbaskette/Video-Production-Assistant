@@ -15,7 +15,7 @@ import {
   CircleCheck, ListChecks,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { ProjectTrackerEntry } from '@vpa/shared';
+import type { ProjectTrackerEntry, Storyboard } from '@vpa/shared';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -48,6 +48,15 @@ export function ProjectOverview() {
         projectId={project.id}
         hasStoryboard={hasStoryboard}
       />
+
+      {/* Granular action items — surfaces scene-level issues that the
+          high-level pipeline can't (e.g. "scene-04 narration overruns the
+          recording by 1.4s"). Renders below the pipeline so the workflow
+          stepper stays the main wayfinding signal; this is a focused punch
+          list for the specific scene the user should touch next. */}
+      {hasStoryboard && storyboard && projectId && (
+        <ActionItemsCard projectId={projectId} storyboard={storyboard} />
+      )}
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
       <CollapsibleSection
@@ -1395,6 +1404,148 @@ function ExportButton({ projectId }: { projectId: string }) {
           {exportMutation.error instanceof Error ? exportMutation.error.message : 'Export failed'}
         </span>
       )}
+    </div>
+  );
+}
+
+// ── ActionItemsCard ─────────────────────────────────────────────────
+//
+// Scene-granular "what's blocking you" punch list. The Pipeline above
+// answers at the workflow-step level ("you're on Script"); this answers
+// at the scene level ("scene-04 needs TTS regenerated"). Computes
+// items client-side from the storyboard so it's always live without
+// running Quality Review.
+//
+// Items render in priority order (most blocking first); we cap at 5 to
+// keep the card scannable. The card itself hides when there's nothing
+// actionable — Pipeline alone handles the happy path.
+
+interface ActionItem {
+  /** Scene id for the deep link. */
+  sceneId: string;
+  sceneName: string;
+  /** Which tab the user should land on. */
+  tab: 'Recording' | 'Script' | 'Narration' | 'Lower Thirds';
+  severity: 'warn' | 'issue';
+  message: string;
+}
+
+function computeActionItems(storyboard: Storyboard): ActionItem[] {
+  const items: ActionItem[] = [];
+  for (const scene of storyboard.scenes) {
+    const hasRecording = !!scene.recording?.source;
+    const hasScript = !!(scene.narration?.script || scene.narration?.monologueScript);
+    const chunks = scene.narration?.chunks ?? [];
+    const hasChunks = chunks.some((c) => !!c.audio);
+
+    // Missing recording is the highest-severity blocker.
+    if (!hasRecording) {
+      items.push({
+        sceneId: scene.id,
+        sceneName: scene.name,
+        tab: 'Recording',
+        severity: 'issue',
+        message: 'Upload a recording — required before script or narration.',
+      });
+      continue;
+    }
+
+    // Script written but TTS not generated → user needs to hit Generate.
+    if (hasScript && !hasChunks) {
+      items.push({
+        sceneId: scene.id,
+        sceneName: scene.name,
+        tab: 'Narration',
+        severity: 'warn',
+        message: 'Script ready but TTS not generated yet.',
+      });
+      continue;
+    }
+
+    // Narration overruns the recording. Freeze-pad still ships the
+    // audio in full now, but the user may want to tighten the script
+    // for a tighter visual.
+    const recDur = scene.recording?.duration_sec ?? 0;
+    if (hasChunks && recDur > 0) {
+      const audioDur = chunks.reduce((sum, c) => sum + (c.durationSec ?? 0), 0);
+      const overrun = audioDur - recDur;
+      if (overrun > 1.0) {
+        items.push({
+          sceneId: scene.id,
+          sceneName: scene.name,
+          tab: 'Script',
+          severity: 'warn',
+          message: `Narration runs ${overrun.toFixed(1)}s past the recording — consider tightening the script.`,
+        });
+      }
+    }
+  }
+  return items.slice(0, 5);
+}
+
+function ActionItemsCard({ projectId, storyboard }: { projectId: string; storyboard: Storyboard }) {
+  const items = computeActionItems(storyboard);
+  if (items.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: 16,
+        background: 'var(--bg-elev)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>Needs attention</h3>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+          {items.length} scene{items.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((item, idx) => (
+          <Link
+            key={`${item.sceneId}-${idx}`}
+            to={`/project/${projectId}/storyboard?scene=${encodeURIComponent(item.sceneId)}&tab=${encodeURIComponent(item.tab)}`}
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              padding: '8px 12px',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              textDecoration: 'none',
+              color: 'inherit',
+              fontSize: 12,
+              transition: 'border-color 120ms',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+          >
+            <span
+              style={{
+                fontSize: 9,
+                padding: '2px 6px',
+                borderRadius: 3,
+                background: item.severity === 'issue' ? 'var(--danger)' : 'var(--warn, #d4a017)',
+                color: '#fff',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {item.severity}
+            </span>
+            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{item.sceneName}</span>
+            <span style={{ color: 'var(--fg-muted)', flex: 1 }}>{item.message}</span>
+            <span style={{ color: 'var(--accent)', fontSize: 11, whiteSpace: 'nowrap' }}>
+              Open {item.tab} →
+            </span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }
