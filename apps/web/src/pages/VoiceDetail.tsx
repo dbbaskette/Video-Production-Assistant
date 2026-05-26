@@ -141,13 +141,9 @@ export function VoiceDetail() {
           <XaiNotRegistered
             consoleUrl={consoleUrlQuery.data?.url}
             hasTeamId={consoleUrlQuery.data?.hasTeamId ?? false}
-            onRegister={() => registerXai.mutate()}
-            registering={registerXai.isPending}
-            registerError={(registerXai.error as Error | null)?.message}
             onImport={(voiceId) => importXai.mutate(voiceId)}
             importing={importXai.isPending}
             importError={(importXai.error as Error | null)?.message}
-            disableRegister={!voice.hasAudio}
           />
         )}
       </Section>
@@ -308,68 +304,74 @@ function XaiRegistered({ voice, onUnregister, onReregister, unregistering, rereg
   );
 }
 
-function XaiNotRegistered({ consoleUrl, hasTeamId, onRegister, registering, registerError, onImport, importing, importError, disableRegister }: {
+function XaiNotRegistered({ consoleUrl, hasTeamId, onImport, importing, importError }: {
   consoleUrl?: string;
   hasTeamId: boolean;
-  onRegister: () => void;
-  registering: boolean;
-  registerError?: string;
   onImport: (voiceId: string) => void;
   importing: boolean;
   importError?: string;
-  disableRegister: boolean;
 }) {
+  // The API path (POST /v1/custom-voices) requires an Enterprise team, which
+  // most users don't have — the call returns "Custom voices are not enabled
+  // for this team." Rather than offer a button that almost always fails, we
+  // surface only the manual path: clone in the xAI console, paste the
+  // returned voice_id here. The console link lands in the user's team
+  // library when XAI_TEAM_ID is configured, falls back to the generic
+  // /voices page otherwise.
   const [voiceId, setVoiceId] = useState('');
   return (
     <div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-        <button
-          onClick={onRegister}
-          disabled={registering || disableRegister}
-          className="btn--accent"
-          style={{ padding: '8px 16px', fontSize: 13 }}
-          title={disableRegister ? 'Add an audio file first' : 'Upload your local recording to xAI'}
-        >
-          {registering ? 'Uploading to xAI…' : 'Register with xAI'}
-        </button>
-        {consoleUrl && (
-          <a href={consoleUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}>
-            Clone via xAI console →
-          </a>
-        )}
-        {!hasTeamId && (
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-            (set <code>XAI_TEAM_ID</code> for direct link to your library)
-          </span>
-        )}
-      </div>
-      {registerError && (
-        <p style={{ fontSize: 12, color: 'var(--danger)', margin: '0 0 12px' }}>
-          Register failed: {registerError}. Use manual import if your account isn't on Enterprise.
-        </p>
-      )}
-      <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8 }}>
-        <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 8px' }}>
-          Or paste a <code>voice_id</code> from the xAI console:
-        </p>
+      <ol style={{ margin: '0 0 12px', paddingLeft: 20, fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
+        <li>
+          {consoleUrl ? (
+            <>
+              Clone the voice in the{' '}
+              <a href={consoleUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                xAI console →
+              </a>
+              {!hasTeamId && (
+                <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
+                  {' '}(set <code>XAI_TEAM_ID</code> for a direct link to your library)
+                </span>
+              )}
+            </>
+          ) : (
+            <>Clone the voice in the xAI console.</>
+          )}
+        </li>
+        <li>
+          Copy the <code>voice_id</code> xAI returns (8 alphanumeric characters).
+        </li>
+        <li>Paste it below to wire the cloned voice into VPA's xAI engine picker.</li>
+      </ol>
+      <div style={{ padding: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8 }}>
+        <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+          voice_id from xAI
+        </label>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             value={voiceId}
             onChange={(e) => setVoiceId(e.target.value)}
-            placeholder="8-char voice_id"
-            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+            placeholder="e.g. ab12cd34"
+            spellCheck={false}
+            style={{ ...inputStyle, marginTop: 0, flex: 1, fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
           />
           <button
             onClick={() => onImport(voiceId.trim())}
             disabled={!voiceId.trim() || importing}
+            className="btn--accent"
             style={{ padding: '6px 16px', fontSize: 13 }}
           >
-            {importing ? 'Importing…' : 'Import'}
+            {importing ? 'Adding…' : 'Add to library'}
           </button>
         </div>
         {importError && (
           <p style={{ fontSize: 12, color: 'var(--danger)', margin: '8px 0 0' }}>{importError}</p>
         )}
+        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
+          The API-based upload path (<code>POST /v1/custom-voices</code>) requires an Enterprise xAI team
+          and isn't shown here. If you have that tier and want auto-registration, open an issue.
+        </p>
       </div>
     </div>
   );
