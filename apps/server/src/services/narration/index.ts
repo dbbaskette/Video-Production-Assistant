@@ -325,6 +325,12 @@ export async function generateAllChunks(
   let completed = 0;
   let failedCount = 0;
 
+  // In dialog mode, each chunk renders with its assigned speaker's
+  // engine/voice/speed (from narration.speakers[A|B|…]). The request's
+  // global engine/voice is the fallback for any chunk missing a speaker
+  // assignment or speaker config. Monologue mode always uses the global.
+  const speakersMap = (scene.narration as { speakers?: Record<string, { engine: string; voice: string; speed?: number }> }).speakers;
+
   for (const i of targetIndices) {
     if (isCancelled()) {
       onProgress({
@@ -337,6 +343,21 @@ export async function generateAllChunks(
       return { total, completed, failed: failedCount };
     }
     const text = paragraphs[i]!;
+    // Resolve per-chunk voice settings for dialog mode
+    let chunkEngine = engine;
+    let chunkVoice = voice;
+    let chunkSpeed = speed;
+    if (isDialog) {
+      const storedChunk = stored.find((s) => s.index === i);
+      const speakerKey = storedChunk?.speaker
+        ?? (text.match(/^\[Speaker ([A-Z])\]/)?.[1] ?? undefined);
+      const cfg = speakerKey ? speakersMap?.[speakerKey] : undefined;
+      if (cfg) {
+        chunkEngine = cfg.engine;
+        chunkVoice = cfg.voice;
+        chunkSpeed = cfg.speed ?? speed;
+      }
+    }
     onProgress({
       type: 'chunk-start',
       chunkIndex: i,
@@ -347,7 +368,7 @@ export async function generateAllChunks(
     });
     try {
       await generateChunkNarration(
-        { projectPath, sceneId, chunkIndex: i, text, engine, voice, speed },
+        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed },
         tts,
       );
       completed += 1;

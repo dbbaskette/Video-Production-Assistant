@@ -2037,7 +2037,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       />
                     </div>
                     <button
-                      onClick={() => generateAllChunks()}
+                      onClick={() => generateAllChunks('all')}
                       disabled={!!generateAllProgress || generatingChunks.size > 0}
                       style={{
                         padding: '7px 16px',
@@ -2222,7 +2222,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       ) : null;
                     })()}
                     <button
-                      onClick={() => generateAllChunks('missing')}
+                      onClick={() => generateAllChunks('all')}
                       disabled={!!generateAllProgress || generatingChunks.size > 0}
                       style={{
                         padding: '8px 20px',
