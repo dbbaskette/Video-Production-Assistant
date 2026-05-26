@@ -17,6 +17,9 @@ import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.j
 import { RefreshCcw, Sparkles, Upload } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
+import { TightenScriptModal } from '../components/TightenScriptModal.js';
+import { classifyFit, computeProjectWpm } from '../lib/wpm.js';
+import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -108,6 +111,8 @@ export function ScenePage(props: ScenePageProps = {}) {
   // Now one editor is visible at a time; Regenerate (top button) checks
   // both panes' dirty state before clobbering them.
   const [scriptViewTab, setScriptViewTab] = useState<'monologue' | 'dialog'>('monologue');
+  /** When true, the TightenScriptModal is mounted for this scene. */
+  const [tightenOpen, setTightenOpen] = useState(false);
   // Whether to ground the next script generation in the actual video (Gemini
   // Files API). Defaults to true when the active provider is Gemini and the
   // scene has a recording — see effect below. User can untick to fall back
@@ -270,6 +275,10 @@ export function ScenePage(props: ScenePageProps = {}) {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
       queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+      ui.showToast({ message: 'Monologue script saved. Existing TTS chunks were cleared.', tone: 'success' });
+    },
+    onError: (err) => {
+      ui.showToast({ message: `Save failed: ${err instanceof Error ? err.message : 'unknown error'}`, tone: 'error' });
     },
   });
 
@@ -280,6 +289,10 @@ export function ScenePage(props: ScenePageProps = {}) {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
       queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+      ui.showToast({ message: 'Dialog script saved. Existing TTS chunks were cleared.', tone: 'success' });
+    },
+    onError: (err) => {
+      ui.showToast({ message: `Save failed: ${err instanceof Error ? err.message : 'unknown error'}`, tone: 'error' });
     },
   });
 
@@ -723,15 +736,28 @@ export function ScenePage(props: ScenePageProps = {}) {
       setLtDirty(false);
       queryClient.invalidateQueries({ queryKey: ['lower-thirds', projectId, sceneId] });
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      ui.showToast({ message: `Recommended ${data.lowerThirds.length} lower thirds.`, tone: 'success' });
+    },
+    onError: (err) => {
+      ui.showToast({ message: `Recommend failed: ${err instanceof Error ? err.message : 'unknown error'}`, tone: 'error' });
     },
   });
 
   const saveLTsMutation = useMutation({
     mutationFn: (lts: LowerThirdItem[]) => lowerThirdsApi.save(projectId!, sceneId!, lts),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       setLtDirty(false);
       queryClient.invalidateQueries({ queryKey: ['lower-thirds', projectId, sceneId] });
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      ui.showToast({
+        message: vars.length === 0
+          ? 'Lower thirds cleared. Cached overlay invalidated.'
+          : `Saved ${vars.length} lower third${vars.length === 1 ? '' : 's'}. Cached overlay invalidated.`,
+        tone: 'success',
+      });
+    },
+    onError: (err) => {
+      ui.showToast({ message: `Save failed: ${err instanceof Error ? err.message : 'unknown error'}`, tone: 'error' });
     },
   });
 
@@ -739,6 +765,10 @@ export function ScenePage(props: ScenePageProps = {}) {
     mutationFn: () => overlayApi.render(projectId!, sceneId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      ui.showToast({ message: 'Overlay rendered.', tone: 'success' });
+    },
+    onError: (err) => {
+      ui.showToast({ message: `Render failed: ${err instanceof Error ? err.message : 'unknown error'}`, tone: 'error' });
     },
   });
 
@@ -944,6 +974,8 @@ export function ScenePage(props: ScenePageProps = {}) {
                     storyboard.scenes[storyboard.scenes.length - 1]?.id === scene.id
                   }
                   isSaving={saveTransitionMutation.isPending}
+                  projectId={projectId}
+                  sceneId={sceneId}
                   onChange={(transition, durationSec) => {
                     saveTransitionMutation.mutate({
                       transition,
@@ -1739,6 +1771,75 @@ export function ScenePage(props: ScenePageProps = {}) {
                       rewrite both monologue and dialog from the scene description.
                     </div>
                   )}
+
+                  {/* Live word-count + fit indicator. Mirrors the math the
+                      server uses for Quality Review and Tighten — same wpm
+                      (measured from this project's TTS chunks, or 150
+                      fallback), same ratio thresholds. Shown right above
+                      the action row so the user can self-correct length
+                      before generating TTS. */}
+                  {(() => {
+                    const activeText = (isMono ? editingScript : editingDialogScript) ?? '';
+                    const words = activeText.split(/\s+/).filter(Boolean).length;
+                    const durSec = scene?.recording?.duration_sec;
+                    if (!durSec || words === 0) return null;
+                    const wpmInfo = computeProjectWpm(storyboard ?? null);
+                    const fit = classifyFit(words, durSec, wpmInfo.wpm);
+                    const color =
+                      fit.verdict === 'over' ? 'var(--danger)'
+                      : fit.verdict === 'short' ? 'var(--warn, #d4a017)'
+                      : '#9bc572';
+                    const verdictLabel =
+                      fit.verdict === 'over' ? `TOO LONG — over by ${words - fit.targetWords}w`
+                      : fit.verdict === 'short' ? `unusually short — well under ${fit.targetWords}w target`
+                      : fit.verdict === 'within' ? `within target (~${fit.estimatedSec.toFixed(1)}s of ${durSec.toFixed(0)}s)`
+                      : `room to grow — ${fit.targetWords - words}w under target`;
+                    return (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                          marginTop: 12,
+                          padding: '8px 12px',
+                          background: 'var(--bg)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 6,
+                          fontSize: 12,
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color }} aria-hidden />
+                          <strong style={{ color: 'var(--fg)' }}>{words} words</strong>
+                          <span style={{ color: 'var(--fg-muted)' }}>· {verdictLabel}</span>
+                        </span>
+                        <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                          at {wpmInfo.wpm} wpm{wpmInfo.isMeasured ? ` (measured, ${wpmInfo.sampleChunks} chunks)` : ' (default)'}
+                        </span>
+                        {fit.verdict === 'over' && (
+                          <button
+                            onClick={() => setTightenOpen(true)}
+                            style={{
+                              marginLeft: 'auto',
+                              padding: '4px 10px',
+                              fontSize: 11,
+                              background: 'var(--accent)',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                              whiteSpace: 'nowrap',
+                            }}
+                            title="Ask the LLM to shorten the script so it fits the recording"
+                          >
+                            ✨ Tighten script
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Footer — Save / Discard / Restore + emotive-tag hint.
                       Only one set of buttons total; what they act on is the
@@ -2645,6 +2746,22 @@ export function ScenePage(props: ScenePageProps = {}) {
           )}
 
           {/* Lower thirds list */}
+          {/* Timeline overview — gives the user a visual on overlap +
+              ordering and a drag-to-position editor that complements the
+              precise numeric inputs in the cards below. Only shown when
+              we have a recording duration to scale the track by. */}
+          {editingLTs && editingLTs.length > 0 && scene?.recording?.duration_sec && (
+            <LowerThirdsTimeline
+              lts={editingLTs}
+              durationSec={scene.recording.duration_sec}
+              onChange={(idx, in_sec, out_sec) => {
+                const updated = editingLTs.map((lt, i) => (i === idx ? { ...lt, in_sec, out_sec } : lt));
+                setEditingLTs(updated);
+                setLtDirty(true);
+              }}
+            />
+          )}
+
           {editingLTs && editingLTs.length > 0 ? (
             // Each LT renders as a card with a clear header (number + Remove)
             // and the form fields stacked below as one visual unit. The
@@ -2944,6 +3061,25 @@ export function ScenePage(props: ScenePageProps = {}) {
           />
           <SceneRenderSection projectId={projectId} sceneId={scene.id} />
         </>
+      )}
+
+      {tightenOpen && projectId && sceneId && (
+        <TightenScriptModal
+          projectId={projectId}
+          sceneId={sceneId}
+          sceneName={scene?.name ?? sceneId}
+          onClose={() => setTightenOpen(false)}
+          onAccepted={() => {
+            // Server saved a new script + wiped TTS chunks. Drop our
+            // local edit buffer so the next render reads the new value
+            // from the storyboard query.
+            setEditingScript(null);
+            setScriptDirty(false);
+            queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+            queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+            queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+          }}
+        />
       )}
     </div>
   );
