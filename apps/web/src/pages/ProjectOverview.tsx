@@ -17,6 +17,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import type { ProjectTrackerEntry, Storyboard } from '@vpa/shared';
 import { computeActionItems } from '../lib/scene-health.js';
+import { SnapshotHistory } from '../components/SnapshotHistory.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -119,6 +120,16 @@ export function ProjectOverview() {
           </div>
         </CollapsibleSection>
       )}
+
+      {/* ── Snapshot history — rolling backups, restore on click ── */}
+      <CollapsibleSection
+        title="History"
+        defaultOpen={false}
+        subtitle="Roll back to a previous save"
+        anchorHash="history"
+      >
+        <SnapshotHistory projectId={project.id} />
+      </CollapsibleSection>
     </div>
   );
 }

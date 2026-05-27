@@ -25,6 +25,7 @@ import { registerQualityReviewRoutes } from './routes/quality-review.js';
 import { registerOverlayRoutes } from './routes/overlay.js';
 import { registerExportRoutes } from './routes/export.js';
 import { registerFramesRoutes } from './routes/frames.js';
+import { registerSnapshotRoutes } from './routes/snapshots.js';
 import { ProjectStore } from './services/project/store.js';
 import { trackerPath } from './services/project/paths.js';
 import { resolve } from 'node:path';
@@ -196,6 +197,7 @@ export async function buildServer() {
     registerExportRoutes(instance, { store }),
   );
   await app.register(async (instance) => registerFramesRoutes(instance, {}));
+  await app.register(async (instance) => registerSnapshotRoutes(instance, { store }));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
   return { app, config, store };

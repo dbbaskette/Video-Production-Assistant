@@ -1195,6 +1195,27 @@ export const settingsApi = {
   },
 };
 
+export interface SnapshotInfo {
+  id: string;
+  takenAt: string;
+  sizeBytes: number;
+}
+
+export const snapshotsApi = {
+  async list(projectId: string): Promise<{ snapshots: SnapshotInfo[] }> {
+    return request<{ snapshots: SnapshotInfo[] }>(
+      'GET',
+      `/api/projects/${projectId}/snapshots`,
+    );
+  },
+  async restore(projectId: string, snapshotId: string): Promise<{ restored: boolean; snapshotId: string }> {
+    return request(
+      'POST',
+      `/api/projects/${projectId}/snapshots/${encodeURIComponent(snapshotId)}/restore`,
+    );
+  },
+};
+
 export const jobsApi = {
   async get(id: string): Promise<Job> {
     return request<Job>('GET', `/api/jobs/${id}`);
