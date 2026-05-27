@@ -1195,9 +1195,38 @@ export const settingsApi = {
   },
 };
 
+export interface SnapshotInfo {
+  id: string;
+  takenAt: string;
+  sizeBytes: number;
+}
+
+export const snapshotsApi = {
+  async list(projectId: string): Promise<{ snapshots: SnapshotInfo[] }> {
+    return request<{ snapshots: SnapshotInfo[] }>(
+      'GET',
+      `/api/projects/${projectId}/snapshots`,
+    );
+  },
+  async restore(projectId: string, snapshotId: string): Promise<{ restored: boolean; snapshotId: string }> {
+    return request(
+      'POST',
+      `/api/projects/${projectId}/snapshots/${encodeURIComponent(snapshotId)}/restore`,
+    );
+  },
+};
+
 export const jobsApi = {
   async get(id: string): Promise<Job> {
     return request<Job>('GET', `/api/jobs/${id}`);
+  },
+  /** Lists jobs, optionally scoped to a project or filtered to active-only. */
+  async list(opts: { active?: boolean; projectId?: string } = {}): Promise<{ jobs: Job[] }> {
+    const params = new URLSearchParams();
+    if (opts.active) params.set('active', '1');
+    if (opts.projectId) params.set('projectId', opts.projectId);
+    const qs = params.toString();
+    return request<{ jobs: Job[] }>('GET', `/api/jobs${qs ? `?${qs}` : ''}`);
   },
   stream(id: string, onEvent: (event: { type: string; data?: unknown }) => void): () => void {
     const es = new EventSource(`${BASE}/api/jobs/${id}/stream`);

@@ -20,6 +20,7 @@ import type { ProjectTrackerEntry } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
 import { classifyFit, computeProjectWpm } from '../lib/wpm.js';
 import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
+import { confirmDestructiveSave } from '../lib/destructive-save.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -927,8 +928,15 @@ export function ScenePage(props: ScenePageProps = {}) {
                     <RecordingUpload
                       multiple={false}
                       isUploading={uploadMutation.isPending}
-                      onFilesSelected={(files) => {
-                        if (files[0]) uploadMutation.mutate(files[0]);
+                      onFilesSelected={async (files) => {
+                        const file = files[0];
+                        if (!file || !scene) return;
+                        const ok = await confirmDestructiveSave(ui, {
+                          scope: 'recording',
+                          scene,
+                        });
+                        if (!ok) return;
+                        uploadMutation.mutate(file);
                       }}
                     />
                     {uploadMutation.isError && (
@@ -1606,11 +1614,26 @@ export function ScenePage(props: ScenePageProps = {}) {
               const hasPrevious = isMono
                 ? !!narrationState?.hasPreviousMonologue
                 : !!narrationState?.hasPreviousDialog;
-              const onSave = () => {
+              const onSave = async () => {
+                if (!scene) return;
                 if (isMono) {
-                  if (editingScript) saveMonologueMutation.mutate(editingScript);
+                  if (!editingScript) return;
+                  const ok = await confirmDestructiveSave(ui, {
+                    scope: 'script',
+                    scene,
+                    slot: 'monologue',
+                  });
+                  if (!ok) return;
+                  saveMonologueMutation.mutate(editingScript);
                 } else {
-                  if (editingDialogScript) saveDialogMutation.mutate(editingDialogScript);
+                  if (!editingDialogScript) return;
+                  const ok = await confirmDestructiveSave(ui, {
+                    scope: 'script',
+                    scene,
+                    slot: 'dialog',
+                  });
+                  if (!ok) return;
+                  saveDialogMutation.mutate(editingDialogScript);
                 }
               };
               const onDiscard = () => {
@@ -2670,7 +2693,15 @@ export function ScenePage(props: ScenePageProps = {}) {
                 empty array is a valid saved state. */}
             {ltDirty && editingLTs && (
               <button
-                onClick={() => saveLTsMutation.mutate(editingLTs)}
+                onClick={async () => {
+                  if (!scene) return;
+                  const ok = await confirmDestructiveSave(ui, {
+                    scope: 'lower-thirds',
+                    scene,
+                  });
+                  if (!ok) return;
+                  saveLTsMutation.mutate(editingLTs);
+                }}
                 disabled={saveLTsMutation.isPending}
                 style={{
                   padding: '8px 16px',

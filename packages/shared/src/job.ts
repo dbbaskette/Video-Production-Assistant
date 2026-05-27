@@ -17,6 +17,15 @@ export const JobEvent = z.object({
 });
 export type JobEvent = z.infer<typeof JobEvent>;
 
+export const JobMeta = z.object({
+  /** Project this job belongs to, when applicable. Used by the client-side
+      job tray to scope visibility to the current project. */
+  projectId: z.string().optional(),
+  /** Human-readable one-liner shown in the tray. */
+  label: z.string().optional(),
+});
+export type JobMeta = z.infer<typeof JobMeta>;
+
 export const Job = z.object({
   id: z.string().uuid(),
   type: z.string(),
@@ -26,5 +35,6 @@ export const Job = z.object({
   events: z.array(JobEvent),
   result: z.unknown().optional(),
   error: z.string().optional(),
+  meta: JobMeta.optional(),
 });
 export type Job = z.infer<typeof Job>;

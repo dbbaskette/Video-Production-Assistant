@@ -2,6 +2,7 @@ import { useParams, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { ProjectSidebar } from '../components/ProjectSidebar.js';
+import { HealthRail } from '../components/HealthRail.js';
 
 export function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -37,8 +38,18 @@ export function ProjectWorkspace() {
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 52px)' }}>
       <ProjectSidebar projectName={project.name} />
-      <main style={{ flex: 1, overflowY: 'auto' }}>
-        <Outlet context={{ project }} />
+      <main
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div style={{ flex: 1 }}>
+          <Outlet context={{ project }} />
+        </div>
+        <HealthRail />
       </main>
     </div>
   );

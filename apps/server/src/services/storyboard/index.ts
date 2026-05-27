@@ -8,6 +8,7 @@ import {
 import { loadYaml, dumpYaml } from '../../lib/yaml.js';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { projectFiles } from '../project/paths.js';
+import { writeSnapshotFromCurrent, pruneSnapshots } from './snapshots.js';
 
 export async function loadStoryboard(projectRoot: string): Promise<Storyboard | null> {
   const files = projectFiles(projectRoot);
@@ -23,6 +24,15 @@ export async function loadStoryboard(projectRoot: string): Promise<Storyboard | 
 export async function saveStoryboard(projectRoot: string, storyboard: Storyboard): Promise<void> {
   const files = projectFiles(projectRoot);
   const validated = StoryboardSchema.parse(storyboard);
+  // Snapshot the pre-write state so we can roll back. Best-effort: a
+  // failure to write a backup must never block the user's save.
+  try {
+    await writeSnapshotFromCurrent(projectRoot);
+    await pruneSnapshots(projectRoot);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[storyboard] snapshot failed (proceeding with save):', err);
+  }
   await atomicWriteFile(files.storyboard, dumpYaml(validated));
 }
 

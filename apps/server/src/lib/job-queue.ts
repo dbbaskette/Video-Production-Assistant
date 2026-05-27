@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import type { Job, JobEvent, JobStatus } from '@vpa/shared';
+import type { Job, JobEvent, JobMeta, JobStatus } from '@vpa/shared';
 
 type Listener = (event: JobEvent) => void;
 
@@ -8,11 +8,18 @@ interface SubscribeOptions {
   replay?: boolean;
 }
 
+interface ListFilter {
+  /** Only include jobs that aren't in a terminal state. */
+  activeOnly?: boolean;
+  /** Scope to a single project, matching meta.projectId. */
+  projectId?: string;
+}
+
 export class JobQueue {
   private jobs = new Map<string, Job>();
   private emitters = new Map<string, EventEmitter>();
 
-  create(type: string): Job {
+  create(type: string, meta?: JobMeta): Job {
     const id = randomUUID();
     const now = new Date().toISOString();
     const job: Job = {
@@ -22,6 +29,7 @@ export class JobQueue {
       created: now,
       updated: now,
       events: [],
+      ...(meta ? { meta } : {}),
     };
     this.jobs.set(id, job);
     this.emitters.set(id, new EventEmitter());
@@ -30,6 +38,22 @@ export class JobQueue {
 
   get(id: string): Job | undefined {
     return this.jobs.get(id);
+  }
+
+  list(filter: ListFilter = {}): Job[] {
+    const all = Array.from(this.jobs.values());
+    return all.filter((j) => {
+      if (
+        filter.activeOnly &&
+        (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
+      ) {
+        return false;
+      }
+      if (filter.projectId && j.meta?.projectId !== filter.projectId) {
+        return false;
+      }
+      return true;
+    });
   }
 
   setStatus(id: string, status: JobStatus): void {

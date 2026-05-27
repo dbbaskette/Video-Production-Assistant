@@ -16,6 +16,8 @@ export interface ProjectFiles {
   narrationDir: string;
   overlaysDir: string;
   sourceDocsDir: string;
+  /** Rolling backups of storyboard.yaml, one per save. Pruned after 30. */
+  snapshotsDir: string;
 }
 
 export function projectFiles(root: string): ProjectFiles {
@@ -28,6 +30,7 @@ export function projectFiles(root: string): ProjectFiles {
     narrationDir: path.join(root, 'narration'),
     overlaysDir: path.join(root, 'overlays'),
     sourceDocsDir: path.join(root, 'source-docs'),
+    snapshotsDir: path.join(root, '.snapshots'),
   };
 }
 

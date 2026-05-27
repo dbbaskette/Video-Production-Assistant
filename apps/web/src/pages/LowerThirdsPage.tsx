@@ -15,6 +15,7 @@ import { CheckCircle2, Circle, Tag } from 'lucide-react';
 import { storyboardApi } from '../lib/api.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry, Scene } from '@vpa/shared';
+import { LastSavedBadge } from '../components/ui/LastSavedBadge.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -42,7 +43,10 @@ export function LowerThirdsPage() {
 
   return (
     <div style={{ padding: '40px 48px', maxWidth: 900 }}>
-      <h1 style={{ margin: 0, fontSize: 24 }}>Lower Thirds</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <h1 style={{ margin: 0, fontSize: 24 }}>Lower Thirds</h1>
+        <LastSavedBadge />
+      </div>
       <p style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: 13 }}>
         {!hasStoryboard
           ? 'Build a storyboard first — lower-thirds attach to each scene.'
