@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ProjectTrackerEntry, Storyboard } from '@vpa/shared';
+import { computeActionItems } from '../lib/scene-health.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -1419,69 +1420,6 @@ function ExportButton({ projectId }: { projectId: string }) {
 // Items render in priority order (most blocking first); we cap at 5 to
 // keep the card scannable. The card itself hides when there's nothing
 // actionable — Pipeline alone handles the happy path.
-
-interface ActionItem {
-  /** Scene id for the deep link. */
-  sceneId: string;
-  sceneName: string;
-  /** Which tab the user should land on. */
-  tab: 'Recording' | 'Script' | 'Narration' | 'Lower Thirds';
-  severity: 'warn' | 'issue';
-  message: string;
-}
-
-function computeActionItems(storyboard: Storyboard): ActionItem[] {
-  const items: ActionItem[] = [];
-  for (const scene of storyboard.scenes) {
-    const hasRecording = !!scene.recording?.source;
-    const hasScript = !!(scene.narration?.script || scene.narration?.monologueScript);
-    const chunks = scene.narration?.chunks ?? [];
-    const hasChunks = chunks.some((c) => !!c.audio);
-
-    // Missing recording is the highest-severity blocker.
-    if (!hasRecording) {
-      items.push({
-        sceneId: scene.id,
-        sceneName: scene.name,
-        tab: 'Recording',
-        severity: 'issue',
-        message: 'Upload a recording — required before script or narration.',
-      });
-      continue;
-    }
-
-    // Script written but TTS not generated → user needs to hit Generate.
-    if (hasScript && !hasChunks) {
-      items.push({
-        sceneId: scene.id,
-        sceneName: scene.name,
-        tab: 'Narration',
-        severity: 'warn',
-        message: 'Script ready but TTS not generated yet.',
-      });
-      continue;
-    }
-
-    // Narration overruns the recording. Freeze-pad still ships the
-    // audio in full now, but the user may want to tighten the script
-    // for a tighter visual.
-    const recDur = scene.recording?.duration_sec ?? 0;
-    if (hasChunks && recDur > 0) {
-      const audioDur = chunks.reduce((sum, c) => sum + (c.durationSec ?? 0), 0);
-      const overrun = audioDur - recDur;
-      if (overrun > 1.0) {
-        items.push({
-          sceneId: scene.id,
-          sceneName: scene.name,
-          tab: 'Script',
-          severity: 'warn',
-          message: `Narration runs ${overrun.toFixed(1)}s past the recording — consider tightening the script.`,
-        });
-      }
-    }
-  }
-  return items.slice(0, 5);
-}
 
 function ActionItemsCard({ projectId, storyboard }: { projectId: string; storyboard: Storyboard }) {
   const items = computeActionItems(storyboard);
