@@ -4,6 +4,18 @@ import { loadConfig } from '../config.js';
 
 export async function registerJobRoutes(app: FastifyInstance): Promise<void> {
   const allowedOrigin = loadConfig().webOrigin;
+
+  // GET /api/jobs — list jobs, optionally filtered. Powers the global
+  // background-job tray on the web client.
+  app.get<{ Querystring: { active?: string; projectId?: string } }>(
+    '/api/jobs',
+    async (req) => {
+      const activeOnly = req.query.active === '1' || req.query.active === 'true';
+      const jobs = jobQueue.list({ activeOnly, projectId: req.query.projectId });
+      return { jobs };
+    },
+  );
+
   app.get<{ Params: { id: string } }>('/api/jobs/:id', async (req, reply) => {
     const job = jobQueue.get(req.params.id);
     if (!job) return reply.code(404).send({ error: 'Job not found' });

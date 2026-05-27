@@ -149,7 +149,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }
     }
 
-    const job = jobQueue.create('render');
+    const job = jobQueue.create('render', { projectId: id, label: 'Render final video' });
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, opts });
 

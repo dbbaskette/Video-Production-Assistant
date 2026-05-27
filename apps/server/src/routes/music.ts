@@ -87,7 +87,10 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
       return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
     }
 
-    const job = jobQueue.create('music-generate');
+    const job = jobQueue.create('music-generate', {
+      projectId: id,
+      label: `Music: ${model === 'pro' ? 'Lyria 3 Pro' : 'Lyria 3 Clip'}`,
+    });
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, model, prompt });
     jobQueue.emit(job.id, 'progress', {

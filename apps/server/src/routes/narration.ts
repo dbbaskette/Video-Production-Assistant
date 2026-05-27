@@ -271,7 +271,10 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
     }
 
-    const job = jobQueue.create('narration-generate-all');
+    const job = jobQueue.create('narration-generate-all', {
+      projectId: id,
+      label: `TTS: ${sceneId}`,
+    });
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { sceneId, engine: body.engine, voice: body.voice, selector: body.selector ?? 'missing' });
 

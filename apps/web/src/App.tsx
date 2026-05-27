@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { NavBar } from './components/NavBar.js';
 import { CommandPalette } from './components/ui/CommandPalette.js';
+import { JobTray } from './components/JobTray.js';
 import { Dashboard } from './pages/Dashboard.js';
 import BrandNew from './pages/BrandNew.js';
 import BrandDetail from './pages/BrandDetail.js';
@@ -31,6 +32,7 @@ export function App() {
     <>
       <NavBar />
       <CommandPalette />
+      <JobTray />
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/settings" element={<Settings />} />

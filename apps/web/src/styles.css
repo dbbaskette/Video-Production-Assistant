@@ -701,6 +701,10 @@ a:hover { text-decoration: underline; }
   0%, 100% { opacity: 0.4; }
   50% { opacity: 1; }
 }
+@keyframes jobTrayIndeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
 
 /* ── Form scale ────────────────────────────────────────
    Mirrors FORM_SIZE in lib/palette.ts. Use these classes instead of
