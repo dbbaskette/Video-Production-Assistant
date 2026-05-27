@@ -39,7 +39,7 @@ import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
 import { createGeminiTtsProvider } from './services/tts/providers/gemini.js';
 import { createXaiTtsProvider } from './services/tts/providers/xai.js';
-import { createFishTtsProvider } from './services/tts/providers/fish.js';
+import { createQwenTtsProvider } from './services/tts/providers/qwen.js';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 
@@ -111,22 +111,18 @@ export async function buildServer() {
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
 
-  // Fish Audio — local model via mlx_audio, no API key needed
-  // Only register if both the model dir AND the Python module exist
-  const fishModelPath = process.env.FISH_AUDIO_MODEL
-    || `${process.env.HOME}/.lmstudio/models/mlx-community/fish-audio-s2-pro-bf16`;
-  if (existsSync(fishModelPath)) {
-    try {
-      const { execFileSync } = await import('node:child_process');
-      // Prefer .venv python (mlx-audio installed there)
-      const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
-      const fishPython = existsSync(venvPython) ? venvPython : 'python3';
-      execFileSync(fishPython, ['-c', 'import mlx_audio'], { timeout: 5000, stdio: 'pipe' });
-      tts.register(createFishTtsProvider());
-      app.log.info(`TTS: Fish Audio provider registered (model: ${fishModelPath}, python: ${fishPython})`);
-    } catch {
-      app.log.warn(`TTS: Fish Audio model found at ${fishModelPath} but mlx_audio Python module is not installed. Run: scripts/setup-python.sh`);
-    }
+  // Qwen3-TTS — local voice cloning via mlx_audio. No API key needed.
+  // Auto-downloads the model on first use; gated on the mlx_audio Python
+  // module being importable.
+  const { execFileSync } = await import('node:child_process');
+  const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
+  const localPython = existsSync(venvPython) ? venvPython : 'python3';
+  try {
+    execFileSync(localPython, ['-c', 'import mlx_audio'], { timeout: 5000, stdio: 'pipe' });
+    tts.register(createQwenTtsProvider());
+    app.log.info(`TTS: Qwen3-TTS provider registered (python: ${localPython})`);
+  } catch {
+    app.log.warn('TTS: mlx_audio Python module not importable; local TTS disabled. Run: scripts/setup-python.sh');
   }
 
   await app.register(healthRoutes);

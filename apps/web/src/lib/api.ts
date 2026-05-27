@@ -823,6 +823,12 @@ export const voiceCloneApi = {
   async saveTranscript(id: string, transcript: string): Promise<VoiceClone> {
     return request('PUT', `/api/voice-clone/${encodeURIComponent(id)}/transcript`, { transcript });
   },
+  async trim(id: string, targetSec = 20): Promise<{ trimmedDurationSec: number; originalDurationSec: number; transcriptTrimmed: boolean; voice: VoiceClone }> {
+    return request('POST', `/api/voice-clone/${encodeURIComponent(id)}/trim`, { targetSec });
+  },
+  async restore(id: string): Promise<{ restored: boolean; voice: VoiceClone }> {
+    return request('POST', `/api/voice-clone/${encodeURIComponent(id)}/restore`);
+  },
   async remove(id: string, opts: { cascadeXai?: boolean } = {}): Promise<{ deleted: boolean; xaiDeleteError?: string }> {
     const qs = opts.cascadeXai ? '?cascade=xai' : '';
     return request('DELETE', `/api/voice-clone/${encodeURIComponent(id)}${qs}`);
@@ -839,7 +845,7 @@ export const voiceCloneApi = {
   async importXai(id: string, voice_id: string): Promise<VoiceClone> {
     return request('POST', `/api/voice-clone/${encodeURIComponent(id)}/import/xai`, { voice_id });
   },
-  async getScript(): Promise<{ script: string; instructions: string }> {
+  async getScript(): Promise<{ short: string; long: string; instructions: string }> {
     return request('GET', '/api/voice-clone/script');
   },
   async getXaiConsoleUrl(): Promise<{ url: string; hasTeamId: boolean }> {
@@ -849,7 +855,7 @@ export const voiceCloneApi = {
    * Synthesize a short sample of this voice on the chosen provider. Returns an
    * audio Blob the caller can drop straight into an <audio src=blob:URL>.
    */
-  async preview(id: string, opts: { provider: 'fish' | 'xai'; text?: string }): Promise<Blob> {
+  async preview(id: string, opts: { provider: 'local' | 'xai'; text?: string }): Promise<Blob> {
     const res = await fetch(`${BASE}/api/voice-clone/${encodeURIComponent(id)}/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

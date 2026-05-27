@@ -56,9 +56,10 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
           }));
         return { ...engine, voices: [...engine.voices, ...cloneVoices] };
       }
-      if (engine.id === 'fish') {
-        // Fish gets one entry per local clone: voice id is the slug,
-        // provider reads ~/.vpa/voice-clones/<slug>/audio.wav directly.
+      if (engine.id === 'qwen') {
+        // Qwen3-TTS is where local voice cloning lives. Each clone with
+        // local audio is exposed as `clone:<slug>`; the provider resolves
+        // ~/.vpa/voice-clones/<slug>/{audio.wav,transcript.txt} at synth time.
         const cloneVoices = clones
           .filter((c) => c.hasAudio)
           .map((c) => ({

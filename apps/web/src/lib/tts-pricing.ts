@@ -6,7 +6,7 @@
  * Sources (last reviewed 2026-05):
  *   xAI       $15.00 / 1M characters
  *   Gemini    free during preview (Google API quota applies)
- *   Fish      runs locally via mlx_audio (compute only, no per-char fee)
+ *   Qwen      runs locally via mlx_audio (compute only, no per-char fee)
  *   Fake      placeholder provider used for tests
  *
  * When prices change, update the table below. The UI auto-picks up the
@@ -33,7 +33,7 @@ const PRICING: Record<string, TtsEnginePrice> = {
     rate: 'free (preview)',
     freeNote: 'preview tier',
   },
-  fish: {
+  qwen: {
     perChar: 0,
     rate: 'local model',
     freeNote: 'local',

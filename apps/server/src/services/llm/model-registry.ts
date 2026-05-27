@@ -109,10 +109,15 @@ export class ModelRegistry {
     }
   }
 
-  /** Merge env-configured entries that are missing from the persisted file */
+  /** Merge env-configured entries that are missing from the persisted file,
+   *  and re-sync env-controlled fields (model id, API key) for the built-in
+   *  seeded entries. User-added entries (e.g. openai-compat) keep their own
+   *  config and are never overwritten by env.
+   */
   private mergeEnvEntries(env: NodeJS.ProcessEnv): void {
     const existingIds = new Set(this.data.models.map((m) => m.id));
     const seeded = seedFromEnv(env);
+    const seededById = new Map(seeded.map((s) => [s.id, s] as const));
     let changed = false;
 
     for (const entry of seeded) {
@@ -123,14 +128,20 @@ export class ModelRegistry {
       }
     }
 
-    // Update API keys from env if they changed
+    // .env is the source of truth for the seeded built-in entries. If the
+    // user edits GEMINI_MODEL / ANTHROPIC_MODEL / CLAUDE_MODEL / API keys,
+    // those changes should win over whatever was persisted at first seed —
+    // otherwise models.json silently goes stale and the UI lies about which
+    // model the request actually hits.
     for (const entry of this.data.models) {
-      if (entry.provider === 'gemini' && env.GEMINI_API_KEY && entry.apiKey !== env.GEMINI_API_KEY) {
-        entry.apiKey = env.GEMINI_API_KEY;
+      const fromEnv = seededById.get(entry.id);
+      if (!fromEnv) continue;  // user-added entry, leave alone
+      if (fromEnv.model && entry.model !== fromEnv.model) {
+        entry.model = fromEnv.model;
         changed = true;
       }
-      if (entry.provider === 'anthropic' && env.ANTHROPIC_API_KEY && entry.apiKey !== env.ANTHROPIC_API_KEY) {
-        entry.apiKey = env.ANTHROPIC_API_KEY;
+      if (fromEnv.apiKey && entry.apiKey !== fromEnv.apiKey) {
+        entry.apiKey = fromEnv.apiKey;
         changed = true;
       }
     }

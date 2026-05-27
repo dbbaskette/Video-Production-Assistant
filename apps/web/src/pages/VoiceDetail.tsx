@@ -16,11 +16,6 @@ export function VoiceDetail() {
     enabled: !!id,
   });
 
-  const consoleUrlQuery = useQuery({
-    queryKey: ['xai-console-url'],
-    queryFn: () => voiceCloneApi.getXaiConsoleUrl(),
-  });
-
   const updateMutation = useMutation({
     mutationFn: (patch: VoiceCloneUpdate) => voiceCloneApi.update(id!, patch),
     onSuccess: () => {
@@ -29,24 +24,16 @@ export function VoiceDetail() {
     },
   });
 
-  const registerXai = useMutation({
-    mutationFn: () => voiceCloneApi.registerXai(id!),
+  const trimMutation = useMutation({
+    mutationFn: (targetSec: number) => voiceCloneApi.trim(id!, targetSec),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voice-clone', id] });
       qc.invalidateQueries({ queryKey: ['voice-clones'] });
     },
   });
 
-  const unregisterXai = useMutation({
-    mutationFn: () => voiceCloneApi.unregisterXai(id!),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['voice-clone', id] });
-      qc.invalidateQueries({ queryKey: ['voice-clones'] });
-    },
-  });
-
-  const importXai = useMutation({
-    mutationFn: (voice_id: string) => voiceCloneApi.importXai(id!, voice_id),
+  const restoreMutation = useMutation({
+    mutationFn: () => voiceCloneApi.restore(id!),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['voice-clone', id] });
       qc.invalidateQueries({ queryKey: ['voice-clones'] });
@@ -105,12 +92,26 @@ export function VoiceDetail() {
       {/* Audio preview */}
       {voice.hasAudio ? (
         <div style={{ marginTop: 16 }}>
-          <audio src={voiceCloneApi.audioUrl(voice.id)} controls style={{ width: '100%' }} />
-          {voice.durationSec && (
-            <p style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-              {voice.durationSec.toFixed(1)} s — saved as 24 kHz mono WAV
+          <audio src={`${voiceCloneApi.audioUrl(voice.id)}?v=${voice.durationSec ?? 0}`} controls style={{ width: '100%' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, gap: 8, flexWrap: 'wrap' }}>
+            <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: 0 }}>
+              {voice.durationSec ? `${voice.durationSec.toFixed(1)} s` : 'unknown duration'}
+              {' — saved as 24 kHz mono WAV'}
+              {voice.isTrimmed && voice.originalDurationSec && (
+                <span style={{ marginLeft: 8, color: 'var(--accent)' }}>
+                  (trimmed from {voice.originalDurationSec.toFixed(1)} s)
+                </span>
+              )}
             </p>
-          )}
+            <TrimControls
+              voice={voice}
+              onTrim={(sec) => trimMutation.mutate(sec)}
+              onRestore={() => restoreMutation.mutate()}
+              trimming={trimMutation.isPending}
+              restoring={restoreMutation.isPending}
+              error={(trimMutation.error as Error | null)?.message ?? (restoreMutation.error as Error | null)?.message}
+            />
+          </div>
         </div>
       ) : (
         <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, color: 'var(--fg-muted)' }}>
@@ -120,33 +121,17 @@ export function VoiceDetail() {
 
       <PreviewSection voice={voice} />
 
+      <Section title="Local voice cloning (Qwen3-TTS)" hint={voice.hasAudio ? 'Available — uses your local recording at synthesis time.' : 'Needs an audio file.'}>
+        <p style={{ fontSize: 13, color: 'var(--fg)', margin: 0, lineHeight: 1.6 }}>
+          In any scene, pick the <strong>Qwen3-TTS (local)</strong> engine, then choose{' '}
+          <strong>{voice.name} (cloned)</strong> from the voice dropdown.
+        </p>
+        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '6px 0 0' }}>
+          Voice id: <code>{`clone:${voice.id}`}</code>
+        </p>
+      </Section>
+
       <MetadataForm voice={voice} onSave={(p) => updateMutation.mutate(p)} pending={updateMutation.isPending} />
-
-      <Section title="Fish Audio (local)" hint={voice.hasAudio ? 'Available — uses your local recording at synthesis time.' : 'Needs an audio file.'}>
-        <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          Pick voice <code>{`clone:${voice.id}`}</code> in any Fish Audio chunk.
-        </span>
-      </Section>
-
-      <Section title="xAI Custom Voice">
-        {voice.providers.xai ? (
-          <XaiRegistered
-            voice={voice}
-            onUnregister={() => unregisterXai.mutate()}
-            onReregister={() => registerXai.mutate()}
-            unregistering={unregisterXai.isPending}
-            reregistering={registerXai.isPending}
-          />
-        ) : (
-          <XaiNotRegistered
-            consoleUrl={consoleUrlQuery.data?.url}
-            hasTeamId={consoleUrlQuery.data?.hasTeamId ?? false}
-            onImport={(voiceId) => importXai.mutate(voiceId)}
-            importing={importXai.isPending}
-            importError={(importXai.error as Error | null)?.message}
-          />
-        )}
-      </Section>
     </main>
   );
 }
@@ -188,8 +173,14 @@ function MetadataForm({ voice, onSave, pending }: { voice: VoiceClone; onSave: (
   };
 
   return (
-    <Section title="Metadata" hint="Sent to xAI when you register or re-register this voice.">
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+    <details style={{ marginTop: 32, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+      <summary style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: 'var(--fg)', listStyle: 'revert', outline: 'none' }}>
+        Metadata
+        <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 400, marginLeft: 8 }}>
+          (optional — name, transcript, gender, accent, etc.)
+        </span>
+      </summary>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
         <Field label="Name">
           <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
         </Field>
@@ -248,7 +239,7 @@ function MetadataForm({ voice, onSave, pending }: { voice: VoiceClone; onSave: (
           {pending ? 'Saving…' : 'Save metadata'}
         </button>
       </div>
-    </Section>
+    </details>
   );
 }
 
@@ -273,106 +264,56 @@ function Field({ label, full, children }: { label: string; full?: boolean; child
   );
 }
 
-function XaiRegistered({ voice, onUnregister, onReregister, unregistering, reregistering }: {
+function TrimControls({ voice, onTrim, onRestore, trimming, restoring, error }: {
   voice: VoiceClone;
-  onUnregister: () => void;
-  onReregister: () => void;
-  unregistering: boolean;
-  reregistering: boolean;
+  onTrim: (targetSec: number) => void;
+  onRestore: () => void;
+  trimming: boolean;
+  restoring: boolean;
+  error?: string;
 }) {
-  const reg = voice.providers.xai!;
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 13 }}>
-          <strong>voice_id:</strong> <code>{reg.voice_id}</code>
-        </span>
-        {reg.imported && <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>(imported)</span>}
-      </div>
-      <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
-        Registered {new Date(reg.registeredAt).toLocaleString()}. The voice now appears in the xAI engine voice picker.
-      </p>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={onReregister} disabled={reregistering || !voice.hasAudio} style={{ padding: '6px 12px', fontSize: 13 }}>
-          {reregistering ? 'Re-registering…' : 'Re-register (delete + re-upload)'}
+  const [target, setTarget] = useState(20);
+  const longEnough = (voice.durationSec ?? 0) > 30;
+  const busy = trimming || restoring;
+  if (voice.isTrimmed) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          onClick={onRestore}
+          disabled={busy}
+          title="Restore the original recording from audio.full.wav"
+          style={{ padding: '5px 10px', fontSize: 12, background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--fg)', cursor: busy ? 'wait' : 'pointer' }}
+        >
+          {restoring ? 'Restoring…' : 'Restore original'}
         </button>
-        <button onClick={onUnregister} disabled={unregistering} style={{ padding: '6px 12px', fontSize: 13, color: 'var(--danger)', border: '1px solid var(--danger)', background: 'transparent', borderRadius: 6 }}>
-          {unregistering ? 'Unregistering…' : 'Unregister'}
-        </button>
+        {error && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{error}</span>}
       </div>
-    </div>
-  );
-}
-
-function XaiNotRegistered({ consoleUrl, hasTeamId, onImport, importing, importError }: {
-  consoleUrl?: string;
-  hasTeamId: boolean;
-  onImport: (voiceId: string) => void;
-  importing: boolean;
-  importError?: string;
-}) {
-  // The API path (POST /v1/custom-voices) requires an Enterprise team, which
-  // most users don't have — the call returns "Custom voices are not enabled
-  // for this team." Rather than offer a button that almost always fails, we
-  // surface only the manual path: clone in the xAI console, paste the
-  // returned voice_id here. The console link lands in the user's team
-  // library when XAI_TEAM_ID is configured, falls back to the generic
-  // /voices page otherwise.
-  const [voiceId, setVoiceId] = useState('');
+    );
+  }
+  if (!longEnough) return null;
   return (
-    <div>
-      <ol style={{ margin: '0 0 12px', paddingLeft: 20, fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
-        <li>
-          {consoleUrl ? (
-            <>
-              Clone the voice in the{' '}
-              <a href={consoleUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>
-                xAI console →
-              </a>
-              {!hasTeamId && (
-                <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
-                  {' '}(set <code>XAI_TEAM_ID</code> for a direct link to your library)
-                </span>
-              )}
-            </>
-          ) : (
-            <>Clone the voice in the xAI console.</>
-          )}
-        </li>
-        <li>
-          Copy the <code>voice_id</code> xAI returns (8 alphanumeric characters).
-        </li>
-        <li>Paste it below to wire the cloned voice into VPA's xAI engine picker.</li>
-      </ol>
-      <div style={{ padding: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8 }}>
-        <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-          voice_id from xAI
-        </label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            value={voiceId}
-            onChange={(e) => setVoiceId(e.target.value)}
-            placeholder="e.g. ab12cd34"
-            spellCheck={false}
-            style={{ ...inputStyle, marginTop: 0, flex: 1, fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
-          />
-          <button
-            onClick={() => onImport(voiceId.trim())}
-            disabled={!voiceId.trim() || importing}
-            className="btn--accent"
-            style={{ padding: '6px 16px', fontSize: 13 }}
-          >
-            {importing ? 'Adding…' : 'Add to library'}
-          </button>
-        </div>
-        {importError && (
-          <p style={{ fontSize: 12, color: 'var(--danger)', margin: '8px 0 0' }}>{importError}</p>
-        )}
-        <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
-          The API-based upload path (<code>POST /v1/custom-voices</code>) requires an Enterprise xAI team
-          and isn't shown here. If you have that tier and want auto-registration, open an issue.
-        </p>
-      </div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <label style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+        Trim to
+        <input
+          type="number"
+          value={target}
+          min={5}
+          max={60}
+          onChange={(e) => setTarget(Math.max(5, Math.min(60, parseInt(e.target.value, 10) || 20)))}
+          style={{ width: 50, marginLeft: 6, marginRight: 4, padding: '2px 4px', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12 }}
+        />
+        s
+      </label>
+      <button
+        onClick={() => onTrim(target)}
+        disabled={busy}
+        title={`Cut reference audio at the nearest silence near ${target}s; the original is preserved.`}
+        style={{ padding: '5px 10px', fontSize: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--fg)', cursor: busy ? 'wait' : 'pointer' }}
+      >
+        {trimming ? 'Trimming…' : 'Trim reference'}
+      </button>
+      {error && <span style={{ fontSize: 11, color: 'var(--danger)' }}>{error}</span>}
     </div>
   );
 }
@@ -380,15 +321,15 @@ function XaiNotRegistered({ consoleUrl, hasTeamId, onImport, importing, importEr
 function PreviewSection({ voice }: { voice: VoiceClone }) {
   const DEFAULT_SAMPLE = "Hi, I'm a sample of how I sound. This is what I'd be like in your narration.";
   const [text, setText] = useState(DEFAULT_SAMPLE);
-  const [activeProvider, setActiveProvider] = useState<'fish' | 'xai' | null>(null);
+  const [activeProvider, setActiveProvider] = useState<'local' | 'xai' | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [audioProvider, setAudioProvider] = useState<'fish' | 'xai' | null>(null);
+  const [audioProvider, setAudioProvider] = useState<'local' | 'xai' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canFish = voice.hasAudio;
+  const canLocal = voice.hasAudio;
   const canXai = !!voice.providers.xai;
 
-  const runPreview = async (provider: 'fish' | 'xai') => {
+  const runPreview = async (provider: 'local' | 'xai') => {
     if (activeProvider) return;
     setActiveProvider(provider);
     setError(null);
@@ -437,36 +378,35 @@ function PreviewSection({ voice }: { voice: VoiceClone }) {
         {text.length} / 4000 chars
       </div>
       {/*
-        Preview button hierarchy: whichever provider is available is rendered as
-        the primary CTA so the user has an obvious next action. If both are
-        available, Fish wins (faster + free). If only xAI is registered, xAI is
-        the primary. The unavailable side stays disabled with a tooltip.
+        Preview button hierarchy: local (Qwen3-TTS) is the primary CTA when
+        audio exists, since it's the path you'll actually use in narration.
+        xAI fills in if registered. The unavailable side stays disabled.
        */}
       {(() => {
-        const fishIsPrimary = canFish; // Fish wins when present
-        const xaiIsPrimary = !canFish && canXai;
+        const localIsPrimary = canLocal;
+        const xaiIsPrimary = !canLocal && canXai;
         return (
           <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <button
-              onClick={() => runPreview('fish')}
-              disabled={!canFish || !!activeProvider || text.trim().length === 0}
-              title={!canFish ? 'Add an audio file to enable Fish preview' : 'Synthesize via Fish Audio (local)'}
-              className={fishIsPrimary ? 'primary' : undefined}
+              onClick={() => runPreview('local')}
+              disabled={!canLocal || !!activeProvider || text.trim().length === 0}
+              title={!canLocal ? 'Add an audio file to enable local preview' : 'Synthesize via Qwen3-TTS (local)'}
+              className={localIsPrimary ? 'primary' : undefined}
               style={{
                 padding: '8px 14px',
                 fontSize: 13,
-                cursor: canFish && !activeProvider ? 'pointer' : 'not-allowed',
-                ...(fishIsPrimary
+                cursor: canLocal && !activeProvider ? 'pointer' : 'not-allowed',
+                ...(localIsPrimary
                   ? {}
                   : {
                       background: 'var(--bg-elev)',
-                      color: canFish ? 'var(--fg)' : 'var(--fg-muted)',
+                      color: canLocal ? 'var(--fg)' : 'var(--fg-muted)',
                       border: '1px solid var(--border)',
                       borderRadius: 6,
                     }),
               }}
             >
-              {activeProvider === 'fish' ? 'Synthesizing…' : '▶ Preview with Fish'}
+              {activeProvider === 'local' ? 'Synthesizing…' : '▶ Preview (local)'}
             </button>
             <button
               onClick={() => runPreview('xai')}
@@ -489,7 +429,7 @@ function PreviewSection({ voice }: { voice: VoiceClone }) {
             >
               {activeProvider === 'xai' ? 'Synthesizing…' : '▶ Preview with xAI'}
             </button>
-            {!canFish && !canXai && (
+            {!canLocal && !canXai && (
               <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
                 Record audio or register with xAI to enable preview
               </span>

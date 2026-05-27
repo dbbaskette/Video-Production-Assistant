@@ -54,7 +54,11 @@ export const VoiceCloneSchema = z.object({
   hasAudio: z.boolean(),
   /** Duration of audio.wav, seconds. */
   durationSec: z.number().optional(),
-  // xAI-style metadata; harmless on Fish, sent on register.
+  /** True when audio.wav is a trimmed copy and audio.full.wav holds the original. Derived from disk. */
+  isTrimmed: z.boolean().optional(),
+  /** Duration of audio.full.wav when isTrimmed is true. Derived. */
+  originalDurationSec: z.number().optional(),
+  // xAI-style metadata; ignored by the local cloner, sent on xAI register.
   gender: VoiceGenderSchema.optional(),
   age: VoiceAgeSchema.optional(),
   accent: z.string().optional(),
