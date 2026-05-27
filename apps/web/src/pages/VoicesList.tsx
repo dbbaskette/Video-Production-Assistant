@@ -17,7 +17,7 @@ export function VoicesList() {
         <div>
           <h1 style={{ margin: 0 }}>Voice Clones</h1>
           <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: '4px 0 0' }}>
-            Reference recordings that clone your voice for TTS narration. Use them via Fish Audio (local) or xAI (uploaded as a custom voice).
+            Reference recordings that clone your voice for TTS narration. Use them via Qwen3-TTS (local) or xAI (uploaded as a custom voice).
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

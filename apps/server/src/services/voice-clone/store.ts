@@ -107,9 +107,14 @@ export class VoiceCloneStore {
     const metaPath = join(this.voiceDir(id), META_FILENAME);
     const text = await readFile(metaPath, 'utf-8');
     const parsed = VoiceCloneSchema.parse(JSON.parse(text));
-    // Refresh hasAudio based on filesystem reality
+    // Refresh hasAudio / isTrimmed based on filesystem reality
     const audioStat = await stat(this.audioPath(id)).catch(() => null);
-    return { ...parsed, hasAudio: !!audioStat?.isFile() };
+    const fullStat = await stat(join(this.voiceDir(id), 'audio.full.wav')).catch(() => null);
+    return {
+      ...parsed,
+      hasAudio: !!audioStat?.isFile(),
+      isTrimmed: !!fullStat?.isFile(),
+    };
   }
 
   async create(input: {

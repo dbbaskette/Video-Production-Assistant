@@ -141,7 +141,7 @@ function probeTtsProviders(tts: TtsService): ProbeResult {
   const wanted: Array<{ id: string; envVar: string; note?: string }> = [
     { id: 'gemini', envVar: 'GEMINI_API_KEY' },
     { id: 'xai', envVar: 'XAI_API_KEY' },
-    { id: 'fish', envVar: 'FISH_AUDIO_MODEL', note: 'and mlx_audio Python module' },
+    { id: 'qwen', envVar: 'QWEN_TTS_MODEL', note: 'and mlx_audio Python module — handles local voice cloning' },
   ];
   const present = wanted.filter((w) => engines.includes(w.id)).map((w) => w.id);
   const missing = wanted.filter((w) => !engines.includes(w.id));
@@ -180,17 +180,10 @@ function probeXaiTeamId(): ProbeResult {
     'Find your team id at https://console.x.ai/ and set XAI_TEAM_ID in .env');
 }
 
-async function probeFishAudio(): Promise<ProbeResult> {
-  const modelPath = process.env.FISH_AUDIO_MODEL
-    || `${process.env.HOME ?? ''}/.lmstudio/models/mlx-community/fish-audio-s2-pro-bf16`;
-  if (!existsSync(modelPath)) {
-    return warn('fish-audio', 'Fish Audio (local TTS)',
-      `Model directory not found: ${modelPath}`,
-      'Set FISH_AUDIO_MODEL to your model path, or download the model into the default location');
-  }
-
+async function probeQwenTts(): Promise<ProbeResult> {
   // mlx_audio import check via subprocess — prefer the workspace .venv python
-  // (matches what the Fish provider actually uses at runtime in server.ts).
+  // (matches what the Qwen provider uses at runtime in server.ts). The model
+  // itself is auto-downloaded on first synth, so we don't probe model paths.
   const wsRoot = resolve(import.meta.dirname, '../../../../..');
   const venvPython = join(wsRoot, '.venv', 'bin', 'python3');
   const pythonBin = existsSync(venvPython) ? venvPython : 'python3';
@@ -200,11 +193,12 @@ async function probeFishAudio(): Promise<ProbeResult> {
       ['-c', 'import mlx_audio'],
       5000,
     );
-    return ok('fish-audio', 'Fish Audio (local TTS)', `Ready (model: ${modelPath})`);
+    const modelHint = process.env.QWEN_TTS_MODEL || 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16';
+    return ok('qwen-tts', 'Qwen3-TTS (local TTS)', `Ready (model: ${modelHint})`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return warn('fish-audio', 'Fish Audio (local TTS)',
-      `Model present but mlx_audio Python module is not importable: ${msg.slice(0, 100)}`,
+    return warn('qwen-tts', 'Qwen3-TTS (local TTS)',
+      `mlx_audio Python module is not importable: ${msg.slice(0, 100)}`,
       'Run scripts/setup-python.sh to install mlx-audio in .venv');
   }
 }
@@ -243,7 +237,7 @@ export async function runSetupHealth(deps: Deps, opts: { force?: boolean } = {})
     Promise.resolve(probeTtsProviders(deps.tts)),
     Promise.resolve(probeXaiKey()),
     Promise.resolve(probeXaiTeamId()),
-    probeFishAudio(),
+    probeQwenTts(),
     probeVpaHome(deps.vpaHome),
   ]);
 

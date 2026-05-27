@@ -2,8 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { extname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { VoiceCloneStore } from '../services/voice-clone/store.js';
 import { transcodeToCanonicalWav, probeDuration } from '../services/voice-clone/transcode.js';
+import { trimVoiceClone, restoreOriginal } from '../services/voice-clone/trim.js';
 import {
   XaiVoiceClient,
   XaiVoiceError,
@@ -31,26 +34,32 @@ const XAI_STATUS: Record<XaiVoiceError['code'], number> = {
   unknown: 502,
 };
 
-const VOICE_CLONE_SCRIPT = `The sun was setting behind the mountains, casting long shadows across the valley below. A gentle breeze rustled through the trees, carrying the scent of pine and wildflowers. In the distance, a river wound its way through the landscape, its surface reflecting the orange and purple hues of the evening sky.
+/**
+ * Short script — ~18 seconds at a natural pace. Broad phoneme coverage in a
+ * single coherent passage. ~15-25 s is the sweet spot for local cloning;
+ * default for new voice creation.
+ */
+const VOICE_CLONE_SCRIPT_SHORT = `Hello there. I'm recording a short voice sample for use in narration. The morning was bright and unusually quiet. A swift brown fox jumped over a sleepy dog, then trotted home through the woods. There it found a warm bowl of soup waiting by the fire. That's all — thanks for listening.`;
+
+/**
+ * Long script — ~60 seconds. Multi-paragraph, mixes descriptive, technical,
+ * and instructional tones. Useful when the user wants more variety; only
+ * the first ~20 s is used as the cloning reference, longer recordings get
+ * auto-trimmed at upload.
+ */
+const VOICE_CLONE_SCRIPT_LONG = `The sun was setting behind the mountains, casting long shadows across the valley below. A gentle breeze rustled through the trees, carrying the scent of pine and wildflowers. In the distance, a river wound its way through the landscape, its surface reflecting the orange and purple hues of the evening sky.
 
 Technology continues to reshape how we work and communicate. From cloud-native platforms to artificial intelligence, the tools we use every day are becoming more powerful and more intuitive. The key is finding the right balance between automation and human creativity.
 
-Let me walk you through the main dashboard. Notice how the navigation is organized into clear sections. Each panel updates in real time, giving you instant visibility into your system's performance. You can customize the layout to match your workflow, and everything syncs automatically across devices.
-
-Questions often come up about security and compliance. Our platform uses end-to-end encryption, role-based access controls, and continuous monitoring. We regularly publish audit reports and maintain certifications for SOC 2, ISO 27001, and GDPR compliance.
-
-That wraps up our overview. The combination of speed, reliability, and ease of use makes this a compelling solution for teams of any size. I'm excited to see what you'll build with it.`;
+Let me walk you through the main dashboard. Notice how the navigation is organized into clear sections. Each panel updates in real time, giving you instant visibility into your system's performance.`;
 
 const VOICE_CLONE_INSTRUCTIONS = `## How to Record Your Voice Clone
 
 1. **Find a quiet room** — minimize background noise, echo, and fan hum
 2. **Use a decent microphone** — a USB headset or laptop mic works, but a condenser mic is better
 3. **Speak naturally** — read the script in your normal speaking voice at a comfortable pace
-4. **Don't rush** — pause briefly between paragraphs
-5. **Aim for 30-90 seconds** — the script above is about 60 seconds at a natural pace
-6. **Record or upload** — use the in-app recorder, or import a WAV/MP3/M4A you already have
-
-The script covers a range of tones (descriptive, technical, instructional, conversational) to give the model a well-rounded sample of your voice.`;
+4. **The short script is enough** — local cloning uses ~15-25 seconds of reference; longer recordings get auto-trimmed
+5. **Record or upload** — use the in-app recorder, or import a WAV/MP3/M4A you already have`;
 
 export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const store = new VoiceCloneStore({ vpaHome: deps.vpaHome });
@@ -66,7 +75,8 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
 
   // ── Reading script + console URL (no params) ─────────────────────
   app.get('/api/voice-clone/script', async () => ({
-    script: VOICE_CLONE_SCRIPT,
+    short: VOICE_CLONE_SCRIPT_SHORT,
+    long: VOICE_CLONE_SCRIPT_LONG,
     instructions: VOICE_CLONE_INSTRUCTIONS,
   }));
 
@@ -91,6 +101,9 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
       const v = await store.read(id);
       if (v.hasAudio && !v.durationSec) {
         v.durationSec = await probeDuration(store.audioPath(id));
+      }
+      if (v.isTrimmed) {
+        v.originalDurationSec = await probeDuration(join(store.voiceDir(id), 'audio.full.wav'));
       }
       return v;
     } catch {
@@ -139,14 +152,16 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
     }
 
     const meta = pickMetadata(fields);
-    const voice = await store.create({
+    let voice = await store.create({
       name: fields.name,
       description: fields.description || undefined,
       transcript: fields.transcript || undefined,
       audioBuffer,
       metadata: meta,
     });
-    return voice;
+    const trim = await maybeAutoTrim(store, voice.id);
+    if (trim) voice = trim.voice;
+    return { ...voice, autoTrimmed: !!trim, originalDurationSec: trim?.originalDurationSec };
   });
 
   // ── Replace audio ───────────────────────────────────────────────
@@ -164,7 +179,66 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
       const msg = err instanceof Error ? err.message : 'Transcode failed';
       return reply.status(400).send({ error: `Audio transcode failed: ${msg}`, code: 'transcode_failed' });
     }
-    return store.replaceAudio(id, wav);
+    let voice = await store.replaceAudio(id, wav);
+    const trim = await maybeAutoTrim(store, id);
+    if (trim) voice = trim.voice;
+    return { ...voice, autoTrimmed: !!trim, originalDurationSec: trim?.originalDurationSec };
+  });
+
+  // ── Trim / restore reference audio ──────────────────────────────
+  app.post('/api/voice-clone/:id/trim', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { targetSec?: number };
+    const targetSec = body.targetSec ?? 20;
+    if (!Number.isFinite(targetSec) || targetSec < 5 || targetSec > 60) {
+      return reply.status(400).send({ error: 'targetSec must be between 5 and 60', code: 'invalid_request' });
+    }
+    let voice;
+    try {
+      voice = await store.read(id);
+    } catch {
+      return reply.status(404).send({ error: `Voice not found: ${id}`, code: 'not_found' });
+    }
+    if (!voice.hasAudio) {
+      return reply.status(400).send({ error: 'No audio to trim', code: 'no_audio' });
+    }
+    try {
+      const result = await trimVoiceClone(store.voiceDir(id), targetSec);
+      // Sync voice.json.transcript with the trimmed transcript.txt so the
+      // metadata UI doesn't show stale pre-trim text.
+      if (result.transcriptTrimmed) {
+        const trimmedText = await readFile(join(store.voiceDir(id), 'transcript.txt'), 'utf-8');
+        await store.update(id, { transcript: trimmedText });
+      }
+      const voice = await store.read(id);
+      voice.durationSec = result.trimmedDurationSec;
+      voice.originalDurationSec = result.originalDurationSec;
+      return { ...result, voice };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(400).send({ error: msg, code: 'trim_failed' });
+    }
+  });
+
+  app.post('/api/voice-clone/:id/restore', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try {
+      await store.read(id);
+    } catch {
+      return reply.status(404).send({ error: `Voice not found: ${id}`, code: 'not_found' });
+    }
+    const restored = await restoreOriginal(store.voiceDir(id));
+    if (!restored) {
+      return reply.status(400).send({ error: 'No backup to restore from', code: 'no_backup' });
+    }
+    // Sync voice.json.transcript with the restored transcript.txt
+    const restoredText = await readFile(join(store.voiceDir(id), 'transcript.txt'), 'utf-8').catch(() => null);
+    if (restoredText !== null) {
+      await store.update(id, { transcript: restoredText });
+    }
+    const voice = await store.read(id);
+    voice.durationSec = await probeDuration(store.audioPath(id));
+    return { restored: true, voice };
   });
 
   // ── PATCH metadata ──────────────────────────────────────────────
@@ -330,11 +404,11 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
   // "Preview voice" buttons — no project context needed.
   app.post('/api/voice-clone/:id/preview', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { provider?: 'fish' | 'xai'; text?: string };
+    const body = (req.body ?? {}) as { provider?: 'local' | 'xai'; text?: string };
     const provider = body.provider;
-    if (provider !== 'fish' && provider !== 'xai') {
+    if (provider !== 'local' && provider !== 'xai') {
       return reply.status(400).send({
-        error: "provider must be 'fish' or 'xai'",
+        error: "provider must be 'local' or 'xai'",
         code: 'invalid_request',
       });
     }
@@ -352,20 +426,20 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
 
     let engineId: string;
     let voiceId: string;
-    if (provider === 'fish') {
+    if (provider === 'local') {
       if (!voice.hasAudio) {
         return reply.status(400).send({
           error: 'No local audio for this voice — record or upload first',
           code: 'no_audio',
         });
       }
-      if (!deps.tts.getProvider('fish')) {
+      if (!deps.tts.getProvider('qwen')) {
         return reply.status(503).send({
-          error: 'Fish Audio TTS provider is not registered. See /setup.',
+          error: 'Qwen3-TTS provider is not registered. See /setup.',
           code: 'provider_unavailable',
         });
       }
-      engineId = 'fish';
+      engineId = 'qwen';
       voiceId = `clone:${voice.id}`;
     } else {
       const xaiReg = voice.providers.xai;
@@ -401,6 +475,41 @@ export async function registerVoiceCloneRoutes(app: FastifyInstance, deps: Deps)
       });
     }
   });
+}
+
+/**
+ * If the just-uploaded reference is too long, trim it to AUTO_TRIM_TARGET_SEC.
+ * Returns the updated voice + original duration when a trim happened.
+ *
+ * 25s is the threshold: local cloning is cleanest with ~15-25s of reference,
+ * so anything beyond that buys nothing and frequently introduces phoneme-
+ * alignment errors (the model has more reference than it can usefully attend
+ * to). The 20s target sits inside that sweet spot.
+ */
+const AUTO_TRIM_THRESHOLD_SEC = 25;
+const AUTO_TRIM_TARGET_SEC = 20;
+
+async function maybeAutoTrim(
+  store: VoiceCloneStore,
+  id: string,
+): Promise<{ voice: import('@vpa/shared').VoiceClone; originalDurationSec: number } | null> {
+  const dur = await probeDuration(store.audioPath(id));
+  if (!dur || dur <= AUTO_TRIM_THRESHOLD_SEC) return null;
+  try {
+    const result = await trimVoiceClone(store.voiceDir(id), AUTO_TRIM_TARGET_SEC);
+    if (result.transcriptTrimmed) {
+      const trimmedText = await readFile(join(store.voiceDir(id), 'transcript.txt'), 'utf-8');
+      await store.update(id, { transcript: trimmedText });
+    }
+    const voice = await store.read(id);
+    voice.durationSec = result.trimmedDurationSec;
+    voice.originalDurationSec = result.originalDurationSec;
+    return { voice, originalDurationSec: result.originalDurationSec };
+  } catch {
+    // Trim is best-effort — if it fails (e.g. already too short, ffmpeg
+    // missing) leave the original recording alone.
+    return null;
+  }
 }
 
 function pickMetadata(fields: Record<string, string>) {
