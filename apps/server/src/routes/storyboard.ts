@@ -35,6 +35,9 @@ const FrameSettingsSchema = z.object({
     ])
     .nullable()
     .optional(),
+  // Project-default narration emotiveness. null clears it (scenes fall back to
+  // the 'medium' baseline).
+  tts_expressiveness: z.enum(['light', 'medium', 'heavy']).nullable().optional(),
 });
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -188,13 +191,28 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
         newDefaults.frame_background = body.frame_background;
       }
     }
+    if ('tts_expressiveness' in body) {
+      if (body.tts_expressiveness === null) {
+        delete newDefaults.tts_expressiveness;
+      } else {
+        newDefaults.tts_expressiveness = body.tts_expressiveness;
+      }
+    }
 
     // Persist the new defaults first
     const withNewDefaults = { ...sb, defaults: newDefaults };
     await saveStoryboard(projectPath, withNewDefaults);
 
-    // Cache busting: any defaults change (frame_style or frame_background) invalidates
-    // ALL scene frame_render caches — simpler and safer than tracking which scenes inherit.
+    // Cache busting is ONLY relevant to frame settings. A non-frame default
+    // (e.g. tts_expressiveness) must not nuke every scene's cached
+    // frame_render — that would force expensive re-renders for an unrelated
+    // change.
+    if (!('frame_style' in body) && !('frame_background' in body)) {
+      return withNewDefaults;
+    }
+
+    // A frame default changed → invalidate ALL scene frame_render caches
+    // (simpler and safer than tracking which scenes inherit).
     for (const scene of withNewDefaults.scenes) {
       if (scene.frame_render) {
         const cachePath = join(projectPath, scene.frame_render);

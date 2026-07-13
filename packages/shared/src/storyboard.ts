@@ -28,6 +28,14 @@ export const NarrationChunkSchema = z.object({
 });
 export type NarrationChunk = z.infer<typeof NarrationChunkSchema>;
 
+/**
+ * Narration emotiveness level. Drives how expressive the synthesized audio is,
+ * applied engine-aware at the TTS layer (Gemini: style prompt; xAI: inserted
+ * native tags). Absent ⇒ effective `medium`.
+ */
+export const ExpressivenessSchema = z.enum(['light', 'medium', 'heavy']);
+export type Expressiveness = z.infer<typeof ExpressivenessSchema>;
+
 /** Per-speaker voice configuration (used in dialog mode). */
 export const SpeakerConfigSchema = z.object({
   engine: z.string(),
@@ -48,6 +56,7 @@ export const NarrationSchema = z.object({
     engine: z.string().optional(),
     voice: z.string().optional(),
     speed: z.number().positive().optional(),
+    expressiveness: ExpressivenessSchema.optional(),
   }).optional(),
   timings: z.array(TimingSchema).optional(),
   chunks: z.array(NarrationChunkSchema).optional(),
@@ -196,6 +205,7 @@ export const StoryboardDefaultsSchema = z.object({
   brand: z.string().optional(),
   voice_profile: z.string().optional(),
   tts_engine: z.string().optional(),
+  tts_expressiveness: ExpressivenessSchema.optional(),
   // Device-mockup frame applied at render time. Scene-level overrides defaults.
   frame_style: z.string().optional(),
   frame_background: z

@@ -1,6 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TtsService } from '../tts/index.js';
+import type { LlmClient } from '../llm/index.js';
+import type { Expressiveness } from '@vpa/shared';
+import { prepareExpressiveText } from '../tts/expressiveness.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { generateSrt, generateVtt } from './subtitles.js';
 
@@ -10,6 +13,7 @@ export interface NarrationInput {
   engine: string;
   voice: string;
   speed?: number;
+  expressiveness?: Expressiveness;
 }
 
 export interface NarrationResult {
@@ -29,6 +33,7 @@ export interface ChunkNarrationInput {
   engine: string;
   voice: string;
   speed?: number;
+  expressiveness?: Expressiveness;
 }
 
 export interface ChunkNarrationResult {
@@ -68,12 +73,18 @@ export function splitDialogIntoChunks(script: string): string[] {
 export async function generateNarration(
   input: NarrationInput,
   tts: TtsService,
+  llm: LlmClient,
+  workspaceRoot: string,
 ): Promise<NarrationResult> {
   const { projectPath, sceneId, engine, voice, speed } = input;
 
   // Load storyboard and find scene
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
+
+  // Effective level: explicit request ?? project default ?? medium.
+  const level: Expressiveness =
+    input.expressiveness ?? sb.defaults?.tts_expressiveness ?? 'medium';
 
   const scene = sb.scenes.find((s) => s.id === sceneId);
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);
@@ -84,8 +95,12 @@ export async function generateNarration(
   // Check for unsupported emotive tags (non-blocking warning)
   const unsupportedEmotives = tts.checkEmotives(engine, script);
 
+  // Materialise the emotiveness level where the engine needs it in the text
+  // (xAI tags); Gemini applies it via the opts below.
+  const prepared = await prepareExpressiveText({ text: script, engine, level, llm, workspaceRoot });
+
   // Generate audio via TTS
-  const ttsResult = await tts.generate(engine, script, { voice, speed });
+  const ttsResult = await tts.generate(engine, prepared, { voice, speed, expressiveness: level });
 
   // Write audio file
   const narrationDir = join(projectPath, 'narration');
@@ -118,7 +133,7 @@ export async function generateNarration(
     subtitles: srtRelPath
       ? { srt: srtRelPath, vtt: vttRelPath }
       : undefined,
-    tts: { engine, voice, speed: speed ?? 1.0 },
+    tts: { engine, voice, speed: speed ?? 1.0, expressiveness: level },
     timings: ttsResult.timings ?? [],
   };
 
@@ -141,19 +156,28 @@ export async function generateNarration(
 export async function generateChunkNarration(
   input: ChunkNarrationInput,
   tts: TtsService,
+  llm: LlmClient,
+  workspaceRoot: string,
 ): Promise<ChunkNarrationResult> {
   const { projectPath, sceneId, chunkIndex, text, engine, voice, speed } = input;
 
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
 
+  // Effective level: explicit request ?? project default ?? medium.
+  const level: Expressiveness =
+    input.expressiveness ?? sb.defaults?.tts_expressiveness ?? 'medium';
+
   const scene = sb.scenes.find((s) => s.id === sceneId);
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);
 
   const unsupportedEmotives = tts.checkEmotives(engine, text);
 
+  // Materialise emotiveness in the text where needed (xAI); Gemini via opts.
+  const prepared = await prepareExpressiveText({ text, engine, level, llm, workspaceRoot });
+
   // Generate audio for this chunk
-  const ttsResult = await tts.generate(engine, text, { voice, speed });
+  const ttsResult = await tts.generate(engine, prepared, { voice, speed, expressiveness: level });
 
   // Write chunk audio file
   const narrationDir = join(projectPath, 'narration');
@@ -193,7 +217,7 @@ export async function generateChunkNarration(
 
   const narration = {
     ...(scene.narration ?? { script: text }),
-    tts: { engine, voice, speed: speed ?? 1.0 },
+    tts: { engine, voice, speed: speed ?? 1.0, expressiveness: level },
     chunks: updatedChunks,
     [modeChunksKey]: updatedChunks,
   };
@@ -230,6 +254,7 @@ export interface BatchInput {
   engine: string;
   voice: string;
   speed?: number;
+  expressiveness?: Expressiveness;
   /** Which chunks to generate. Default: 'missing' — skip ones already rendered. */
   selector?: ChunkSelector;
 }
@@ -282,10 +307,12 @@ async function markChunkFailed(
 export async function generateAllChunks(
   input: BatchInput,
   tts: TtsService,
+  llm: LlmClient,
+  workspaceRoot: string,
   onProgress: (p: BatchProgress) => void,
   isCancelled: () => boolean = () => false,
 ): Promise<{ total: number; completed: number; failed: number }> {
-  const { projectPath, sceneId, engine, voice, speed, selector = 'missing' } = input;
+  const { projectPath, sceneId, engine, voice, speed, expressiveness, selector = 'missing' } = input;
 
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
@@ -368,8 +395,10 @@ export async function generateAllChunks(
     });
     try {
       await generateChunkNarration(
-        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed },
+        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness },
         tts,
+        llm,
+        workspaceRoot,
       );
       completed += 1;
       onProgress({

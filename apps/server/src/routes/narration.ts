@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { TtsService } from '../services/tts/index.js';
 import type { LlmClient } from '../services/llm/index.js';
+import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateNarration, generateChunkNarration, generateAllChunks, splitIntoParagraphs, splitDialogIntoChunks, type ChunkSelector } from '../services/narration/index.js';
 import { jobQueue } from '../lib/job-queue.js';
@@ -20,7 +21,14 @@ interface Deps {
   store: ProjectStore;
   tts: TtsService;
   llm: LlmClient;
+  workspaceRoot: string;
   vpaHome: string;
+}
+
+/** Coerce a request value to a valid emotiveness level, else undefined
+ *  (the narration service then defaults to 'medium'). */
+function coerceExpressiveness(v: unknown): Expressiveness | undefined {
+  return v === 'light' || v === 'medium' || v === 'heavy' ? v : undefined;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -33,7 +41,7 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 // Voice clone reading script + instructions moved to routes/voice-clone.ts.
 
 export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, tts, llm, vpaHome } = deps;
+  const { store, tts, llm, workspaceRoot, vpaHome } = deps;
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
 
@@ -180,11 +188,14 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/scenes/:sceneId/narration/generate — generate full narration (legacy)
   app.post('/api/projects/:id/scenes/:sceneId/narration/generate', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const { engine, voice, speed } = req.body as {
+    const body = req.body as {
       engine?: string;
       voice?: string;
       speed?: number;
+      expressiveness?: unknown;
     };
+    const { engine, voice, speed } = body;
+    const expressiveness = coerceExpressiveness(body.expressiveness);
 
     if (!engine || !voice) {
       return reply
@@ -196,8 +207,10 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     try {
       const result = await generateNarration(
-        { projectPath, sceneId, engine, voice, speed },
+        { projectPath, sceneId, engine, voice, speed, expressiveness },
         tts,
+        llm,
+        workspaceRoot,
       );
       return result;
     } catch (err) {
@@ -217,13 +230,16 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/scenes/:sceneId/narration/generate-chunk — generate one chunk
   app.post('/api/projects/:id/scenes/:sceneId/narration/generate-chunk', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const { chunkIndex, text, engine, voice, speed } = req.body as {
+    const body = req.body as {
       chunkIndex: number;
       text: string;
       engine?: string;
       voice?: string;
       speed?: number;
+      expressiveness?: unknown;
     };
+    const { chunkIndex, text, engine, voice, speed } = body;
+    const expressiveness = coerceExpressiveness(body.expressiveness);
 
     if (chunkIndex == null || !text || !engine || !voice) {
       return reply
@@ -235,8 +251,10 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     try {
       const result = await generateChunkNarration(
-        { projectPath, sceneId, chunkIndex, text, engine, voice, speed },
+        { projectPath, sceneId, chunkIndex, text, engine, voice, speed, expressiveness },
         tts,
+        llm,
+        workspaceRoot,
       );
       return result;
     } catch (err) {
@@ -259,11 +277,13 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       engine?: string;
       voice?: string;
       speed?: number;
+      expressiveness?: unknown;
       selector?: ChunkSelector;
     };
     if (!body.engine || !body.voice) {
       return reply.status(400).send({ error: 'engine and voice are required', code: 'invalid_request' });
     }
+    const expressiveness = coerceExpressiveness(body.expressiveness);
     let projectPath: string;
     try {
       projectPath = await resolveProjectPath(store, id);
@@ -287,9 +307,12 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
             engine: body.engine!,
             voice: body.voice!,
             speed: body.speed,
+            expressiveness,
             selector: body.selector ?? 'missing',
           },
           tts,
+          llm,
+          workspaceRoot,
           (progress) => jobQueue.emit(job.id, 'progress', progress),
           () => jobQueue.get(job.id)?.status === 'cancelled',
         );
