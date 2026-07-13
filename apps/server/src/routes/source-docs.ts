@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
 import {
-  addFile,
+  registerFile,
   addText,
-  addUrl,
+  registerUrl,
+  scheduleExtraction,
   deleteDoc,
   listDocs,
   readExtracted,
@@ -63,7 +64,9 @@ export async function registerSourceDocsRoutes(app: FastifyInstance, deps: Deps)
           const buffer = Buffer.concat(buffers);
           if (buffer.length === 0) continue;
           try {
-            const doc = await addFile(projectPath, {
+            // Register only (saves the original) — the slow markitdown pass
+            // runs in the background so this request returns immediately.
+            const doc = await registerFile(projectPath, {
               filename: part.filename || 'upload',
               buffer,
             });
@@ -81,11 +84,7 @@ export async function registerSourceDocsRoutes(app: FastifyInstance, deps: Deps)
       }
       // Multipart can also carry url / text fields alongside files
       if (fields.url) {
-        try {
-          created.push(await addUrl(projectPath, fields.url, fields.name));
-        } catch (err) {
-          return reply.status(400).send({ error: err instanceof Error ? err.message : 'URL extract failed', code: 'extract_failed' });
-        }
+        created.push(await registerUrl(projectPath, fields.url, fields.name));
       }
       if (fields.text) {
         created.push(await addText(projectPath, fields.text, fields.name || 'note'));
@@ -94,11 +93,7 @@ export async function registerSourceDocsRoutes(app: FastifyInstance, deps: Deps)
       // JSON payload — { url, name? } | { text, name }
       const body = (req.body ?? {}) as { url?: string; text?: string; name?: string };
       if (body.url) {
-        try {
-          created.push(await addUrl(projectPath, body.url, body.name));
-        } catch (err) {
-          return reply.status(400).send({ error: err instanceof Error ? err.message : 'URL extract failed', code: 'extract_failed' });
-        }
+        created.push(await registerUrl(projectPath, body.url, body.name));
       } else if (body.text) {
         created.push(await addText(projectPath, body.text, body.name || 'note'));
       } else {
@@ -107,6 +102,12 @@ export async function registerSourceDocsRoutes(app: FastifyInstance, deps: Deps)
           code: 'invalid_request',
         });
       }
+    }
+
+    // Kick off background extraction for any docs left 'extracting'. Detached
+    // — the response returns now; the client polls the doc list for status.
+    if (created.some((d) => d.status === 'extracting')) {
+      scheduleExtraction(projectPath);
     }
 
     return { created };

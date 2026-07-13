@@ -32,6 +32,12 @@ export function SourceDocsSection({ projectId }: Props) {
   const docsQuery = useQuery({
     queryKey: ['source-docs', projectId],
     queryFn: () => sourceDocsApi.list(projectId),
+    // Extraction runs in the background — poll while any doc is still
+    // extracting so its status pill flips to ready/failed on its own.
+    refetchInterval: (query) => {
+      const data = query.state.data as SourceDoc[] | undefined;
+      return data?.some((d) => d.status === 'extracting') ? 1000 : false;
+    },
   });
   const docs = docsQuery.data ?? [];
   const totalChars = docs.reduce((acc, d) => acc + d.extractedChars, 0);
@@ -40,8 +46,10 @@ export function SourceDocsSection({ projectId }: Props) {
     mutationFn: (files: File[]) => sourceDocsApi.uploadFiles(projectId, files),
     onSuccess: ({ created }) => {
       qc.invalidateQueries({ queryKey: ['source-docs', projectId] });
+      const extracting = created.filter((d) => d.status === 'extracting').length;
       ui.showToast({
         message: `Added ${created.length} source doc${created.length === 1 ? '' : 's'}`,
+        detail: extracting > 0 ? `Extracting ${extracting} in the background…` : undefined,
         tone: 'success',
       });
     },
@@ -140,7 +148,7 @@ export function SourceDocsSection({ projectId }: Props) {
           className="primary"
           style={{ padding: '8px 16px', fontSize: 13 }}
         >
-          {uploadMutation.isPending ? 'Extracting…' : '+ Upload files'}
+          {uploadMutation.isPending ? 'Uploading…' : '+ Upload files'}
         </button>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <input
@@ -273,11 +281,20 @@ function DocRow({ doc, onRemove }: { doc: SourceDoc; onRemove: () => void }) {
         )}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {doc.name}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {doc.name}
+          </span>
+          <StatusPill status={doc.status} />
         </div>
         <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-          {doc.extractor} · {doc.extractedChars.toLocaleString()} chars · {new Date(doc.uploadedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+          {doc.status === 'extracting'
+            ? 'Extracting…'
+            : doc.status === 'failed'
+              ? doc.error || 'Extraction failed'
+              : `${doc.extractor} · ${doc.extractedChars.toLocaleString()} chars`}
+          {' · '}
+          {new Date(doc.uploadedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
         </div>
       </div>
       <button
@@ -295,5 +312,30 @@ function DocRow({ doc, onRemove }: { doc: SourceDoc; onRemove: () => void }) {
         Remove
       </button>
     </div>
+  );
+}
+
+/** Small pill reflecting a doc's extraction lifecycle. Ready docs (the common
+ *  case, including all legacy docs) show nothing to keep the list quiet. */
+function StatusPill({ status }: { status?: SourceDoc['status'] }) {
+  if (!status || status === 'ready') return null;
+  const isFailed = status === 'failed';
+  return (
+    <span
+      style={{
+        flexShrink: 0,
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        padding: '2px 6px',
+        borderRadius: 4,
+        color: isFailed ? 'var(--danger)' : 'var(--warn, #d4a017)',
+        border: `1px solid ${isFailed ? 'var(--danger)' : 'var(--warn, #d4a017)'}`,
+        background: 'transparent',
+      }}
+    >
+      {isFailed ? 'Failed' : 'Extracting…'}
+    </span>
   );
 }

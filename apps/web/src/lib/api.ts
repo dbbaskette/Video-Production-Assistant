@@ -931,6 +931,10 @@ export interface SourceDoc {
   url?: string;
   extractor: 'markitdown' | 'pdf-parse' | 'readability' | 'passthrough';
   extractedChars: number;
+  /** Extraction lifecycle. Absent on legacy docs — treat as 'ready'. */
+  status?: 'extracting' | 'ready' | 'failed';
+  /** Failure reason when status === 'failed'. */
+  error?: string;
   uploadedAt: string;
 }
 
