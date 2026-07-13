@@ -37,6 +37,9 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     const body = (req.body ?? {}) as Partial<RenderOptions> & {
       musicTrackId?: string | null;
       musicVolumeDb?: number;
+      /** 'full' (default) beds music under the whole video; 'bumpers' plays it
+       *  only over the intro/outro bumper windows. */
+      musicScope?: 'full' | 'bumpers';
       /** When false, ignore the brand's bumper_intro / bumper_outro on this render. */
       useBrandBumpers?: boolean;
       /** When false, ignore the brand's default_music_track on this render even
@@ -123,6 +126,14 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       opts.bumperOutro = bumperOutroPath ?? undefined;
     }
 
+    // 'bumpers' scope only makes sense when a bumper is actually in this
+    // render. Coerce to 'full' otherwise so we never emit a silent-music
+    // render even if the client sends a stale value (the UI also disables the
+    // option in that case).
+    const hasBumper = !!(bumperIntroPath || bumperOutroPath);
+    const musicScope: 'full' | 'bumpers' =
+      body.musicScope === 'bumpers' && hasBumper ? 'bumpers' : 'full';
+
     // Resolve the music track. Precedence:
     //   1. Project-level track explicitly picked in the Render UI (musicTrackId).
     //   2. Brand-level default_music_track if the project hasn't chosen one.
@@ -138,6 +149,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       opts.music = {
         audioPath: resolveTrackAudioPath(projectPath, track),
         volumeDb: typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : -20,
+        scope: musicScope,
       };
     } else if (useBrandMusic) {
       const brandMusic = resolveBrandAsset(brandAudio?.default_music_track);
@@ -145,6 +157,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
         opts.music = {
           audioPath: brandMusic,
           volumeDb: typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : -20,
+          scope: musicScope,
         };
       }
     }
