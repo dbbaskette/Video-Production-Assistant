@@ -23,8 +23,9 @@ async function buildTestServer() {
   };
 
   const app = Fastify();
+  const workspaceRoot = path.resolve(import.meta.dirname, '../../../..');
   await app.register(async (i) =>
-    registerNarrationRoutes(i, { store, tts, llm, vpaHome: home }),
+    registerNarrationRoutes(i, { store, tts, llm, workspaceRoot, vpaHome: home }),
   );
   return { app, store, tts, llm, home, projects };
 }

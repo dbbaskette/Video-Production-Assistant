@@ -12,6 +12,7 @@ import {
   type Job,
   type Storyboard,
   type Scene,
+  type Expressiveness,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -237,7 +238,11 @@ export const storyboardApi = {
   },
   async updateDefaults(
     projectId: string,
-    defaults: { frame_style?: string | null; frame_background?: 'brand' | 'transparent' | string | null },
+    defaults: {
+      frame_style?: string | null;
+      frame_background?: 'brand' | 'transparent' | string | null;
+      tts_expressiveness?: Expressiveness | null;
+    },
   ): Promise<Storyboard> {
     return request<Storyboard>('PUT', `/api/projects/${projectId}/storyboard/defaults`, defaults);
   },
@@ -636,7 +641,7 @@ export interface NarrationState {
   hasAudio: boolean;
   audio: string | null;
   subtitles: { srt?: string; vtt?: string } | null;
-  tts: { engine?: string; voice?: string; speed?: number } | null;
+  tts: { engine?: string; voice?: string; speed?: number; expressiveness?: Expressiveness } | null;
   timingCount: number;
   chunks: NarrationChunkInfo[];
   mode: 'monologue' | 'dialog';
@@ -716,7 +721,7 @@ export const narrationApi = {
   async generate(
     projectId: string,
     sceneId: string,
-    opts: { engine: string; voice: string; speed?: number },
+    opts: { engine: string; voice: string; speed?: number; expressiveness?: Expressiveness },
   ): Promise<NarrationResult> {
     return request<NarrationResult>(
       'POST',
@@ -727,7 +732,7 @@ export const narrationApi = {
   async generateChunk(
     projectId: string,
     sceneId: string,
-    opts: { chunkIndex: number; text: string; engine: string; voice: string; speed?: number },
+    opts: { chunkIndex: number; text: string; engine: string; voice: string; speed?: number; expressiveness?: Expressiveness },
   ): Promise<ChunkNarrationResult> {
     return request<ChunkNarrationResult>(
       'POST',
@@ -785,7 +790,7 @@ export const narrationApi = {
   async generateAll(
     projectId: string,
     sceneId: string,
-    opts: { engine: string; voice: string; speed?: number; selector?: 'all' | 'missing' | 'failed' },
+    opts: { engine: string; voice: string; speed?: number; expressiveness?: Expressiveness; selector?: 'all' | 'missing' | 'failed' },
   ): Promise<{ jobId: string; status: 'running' }> {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/narration/generate-all`, opts);
   },

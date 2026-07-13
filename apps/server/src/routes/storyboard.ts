@@ -35,6 +35,9 @@ const FrameSettingsSchema = z.object({
     ])
     .nullable()
     .optional(),
+  // Project-default narration emotiveness. null clears it (scenes fall back to
+  // the 'medium' baseline).
+  tts_expressiveness: z.enum(['light', 'medium', 'heavy']).nullable().optional(),
 });
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -186,6 +189,13 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
         delete newDefaults.frame_background;
       } else {
         newDefaults.frame_background = body.frame_background;
+      }
+    }
+    if ('tts_expressiveness' in body) {
+      if (body.tts_expressiveness === null) {
+        delete newDefaults.tts_expressiveness;
+      } else {
+        newDefaults.tts_expressiveness = body.tts_expressiveness;
       }
     }
 

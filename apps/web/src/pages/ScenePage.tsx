@@ -16,7 +16,7 @@ import { GenerationModal } from '../components/ui/GenerationModal.js';
 import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
 import { RefreshCcw, Sparkles, Upload } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
-import type { ProjectTrackerEntry } from '@vpa/shared';
+import type { ProjectTrackerEntry, Expressiveness } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
 import { PolishScriptModal } from '../components/PolishScriptModal.js';
 import { classifyFit, computeProjectWpm } from '../lib/wpm.js';
@@ -349,6 +349,10 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [selectedEngine, setSelectedEngine] = useState('fake');
   const [selectedVoice, setSelectedVoice] = useState('alice');
   const [selectedSpeed, setSelectedSpeed] = useState(1.0);
+  // Narration emotiveness level. Hydrates once from the scene's saved value,
+  // falling back to the project default; thereafter the user drives it.
+  const [selectedExpressiveness, setSelectedExpressiveness] = useState<Expressiveness>('medium');
+  const hydratedExprRef = useRef(false);
   const [editedChunks, setEditedChunks] = useState<Map<number, string>>(new Map());
   const [chunkScriptDirty, setChunkScriptDirty] = useState(false);
   const [generatingChunks, setGeneratingChunks] = useState<Set<number>>(new Set());
@@ -407,6 +411,18 @@ export function ScenePage(props: ScenePageProps = {}) {
       setChunkSpeakers(assignments);
     }
   }, [narrationState]);
+
+  // Hydrate emotiveness once: the scene's saved level wins, else the project
+  // default. After that the user's choice is preserved.
+  useEffect(() => {
+    if (hydratedExprRef.current) return;
+    const saved = narrationState?.tts?.expressiveness;
+    const projDefault = storyboard?.defaults?.tts_expressiveness;
+    if (saved || projDefault) {
+      setSelectedExpressiveness(saved ?? projDefault!);
+      hydratedExprRef.current = true;
+    }
+  }, [narrationState?.tts?.expressiveness, storyboard?.defaults?.tts_expressiveness]);
 
   // Sync monologue script — ONLY use monologueScript, never scriptState.script (which could be dialog text)
   useEffect(() => {
@@ -526,6 +542,7 @@ export function ScenePage(props: ScenePageProps = {}) {
         chunkIndex: chunk.index,
         text,
         ...voiceSettings,
+        expressiveness: selectedExpressiveness,
       });
       audioCacheBust.current++;
       queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
@@ -536,7 +553,7 @@ export function ScenePage(props: ScenePageProps = {}) {
         return next;
       });
     }
-  }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient, narrationMode, chunkSpeakers]);
+  }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient, narrationMode, chunkSpeakers, selectedExpressiveness]);
 
   // Generate chunks on the server with SSE progress. `selector`:
   //   'missing' (default) — only chunks without audio (skips already-rendered ones)
@@ -562,6 +579,7 @@ export function ScenePage(props: ScenePageProps = {}) {
         engine: selectedEngine,
         voice: selectedVoice,
         speed: selectedSpeed,
+        expressiveness: selectedExpressiveness,
         selector,
       });
       jobId = res.jobId;
@@ -618,7 +636,7 @@ export function ScenePage(props: ScenePageProps = {}) {
       }
     });
     generateAllCloseRef.current = close;
-  }, [narrationState?.chunks, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, selectedEngine, selectedVoice, selectedSpeed, queryClient, ui]);
+  }, [narrationState?.chunks, projectId, sceneId, narrationMode, speakerConfigs, chunkSpeakers, selectedEngine, selectedVoice, selectedSpeed, selectedExpressiveness, queryClient, ui]);
 
   // Cancel an in-flight generate-all job
   const cancelGenerateAll = useCallback(async () => {
@@ -2290,6 +2308,36 @@ export function ScenePage(props: ScenePageProps = {}) {
                         style={{ width: '100%' }}
                       />
                     </div>
+                    {/* Emotiveness — how expressive the synthesized delivery is.
+                        Applied engine-aware at generation (Gemini: style prompt;
+                        xAI: inserted native tags). Regenerate to hear a change. */}
+                    <div style={{ flex: '0 0 auto' }}>
+                      <label style={{ display: 'block', fontSize: 10, color: 'var(--fg-muted)', marginBottom: 3, fontWeight: 600, textTransform: 'uppercase' }}>
+                        Emotiveness
+                      </label>
+                      <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                        {(['light', 'medium', 'heavy'] as const).map((lvl) => (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() => setSelectedExpressiveness(lvl)}
+                            title={`${lvl} emotiveness`}
+                            style={{
+                              padding: '6px 10px',
+                              fontSize: 12,
+                              textTransform: 'capitalize',
+                              cursor: 'pointer',
+                              border: 'none',
+                              borderLeft: lvl === 'light' ? 'none' : '1px solid var(--border)',
+                              background: selectedExpressiveness === lvl ? 'var(--accent)' : 'var(--bg)',
+                              color: selectedExpressiveness === lvl ? '#fff' : 'var(--fg)',
+                            }}
+                          >
+                            {lvl}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <button
                       onClick={() => generateAllChunks('all')}
                       disabled={!!generateAllProgress || generatingChunks.size > 0}
@@ -2311,6 +2359,17 @@ export function ScenePage(props: ScenePageProps = {}) {
                         : 'Generate All'}
                     </button>
                   </div>
+
+                  {/* Emotiveness changed since the audio was generated — the
+                      current chunks were spoken at the previously-saved level,
+                      so regenerate to hear the new one. */}
+                  {narrationState?.chunks?.some((c) => c.audio) &&
+                    narrationState?.tts?.expressiveness &&
+                    narrationState.tts.expressiveness !== selectedExpressiveness && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--warn, #d4a017)' }}>
+                        Emotiveness changed to <strong>{selectedExpressiveness}</strong> — Regenerate all to apply it to the audio.
+                      </div>
+                    )}
 
                   {/* Cost estimate for the upcoming Generate All — sums
                       every un-narrated chunk against the engine that

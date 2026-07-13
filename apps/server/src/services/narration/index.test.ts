@@ -4,9 +4,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { TtsService, createFakeTtsProvider } from '../tts/index.js';
+import { createFakeLlm } from '../llm/index.js';
 import { saveStoryboard, loadStoryboard } from '../storyboard/index.js';
 import { generateNarration, generateAllChunks } from './index.js';
 import type { Storyboard } from '@vpa/shared';
+
+// The `fake` TTS engine never routes through the xAI expressiveness pass, so
+// this LLM is never actually called — it just satisfies the signature.
+const fakeLlm = createFakeLlm();
+function wsRoot(): string {
+  return path.resolve(import.meta.dirname, '../../../../..');
+}
 
 function makeSampleStoryboard(): Storyboard {
   return {
@@ -65,6 +73,8 @@ describe('narration service', () => {
         speed: 1.0,
       },
       tts,
+      fakeLlm,
+      wsRoot(),
     );
 
     expect(result.audioPath).toBe('narration/scene-01.mp3');
@@ -105,6 +115,8 @@ describe('narration service', () => {
       generateNarration(
         { projectPath, sceneId: 'scene-02', engine: 'fake', voice: 'alice' },
         tts,
+        fakeLlm,
+        wsRoot(),
       ),
     ).rejects.toThrow('no script');
   });
@@ -117,6 +129,8 @@ describe('narration service', () => {
       generateNarration(
         { projectPath, sceneId: 'no-such', engine: 'fake', voice: 'alice' },
         tts,
+        fakeLlm,
+        wsRoot(),
       ),
     ).rejects.toThrow('Scene not found');
   });
@@ -126,6 +140,8 @@ describe('narration service', () => {
       generateNarration(
         { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
         tts,
+        fakeLlm,
+        wsRoot(),
       ),
     ).rejects.toThrow('No storyboard found');
   });
@@ -162,6 +178,8 @@ describe('narration service', () => {
     const result = await generateAllChunks(
       { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
       tts,
+      fakeLlm,
+      wsRoot(),
       () => {},
     );
 
@@ -188,6 +206,8 @@ describe('narration service', () => {
     const result = await generateNarration(
       { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
       tts,
+      fakeLlm,
+      wsRoot(),
     );
 
     expect(result.unsupportedEmotives).toContain('alien-vibe');

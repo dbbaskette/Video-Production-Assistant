@@ -9,6 +9,7 @@
  */
 
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
+import { geminiStyleDirective } from '../expressiveness.js';
 
 /** Strip emotive tags like [warm], [confident] from text. */
 function stripEmotiveTags(text: string): string {
@@ -93,9 +94,14 @@ export function createGeminiTtsProvider(apiKey: string, model?: string): TtsProv
       const voice = opts.voice ?? 'Kore';
       const cleanText = stripEmotiveTags(script);
 
+      // Gemini controllable TTS: a leading natural-language directive sets the
+      // delivery style and is not spoken. Absent level ⇒ medium.
+      const directive = geminiStyleDirective(opts.expressiveness ?? 'medium');
+      const prompt = `${directive}\n\n${cleanText}`;
+
       const response = await ai.models.generateContent({
         model: ttsModel,
-        contents: [{ parts: [{ text: cleanText }] }],
+        contents: [{ parts: [{ text: prompt }] }],
         config: {
           responseModalities: ['AUDIO'],
           speechConfig: {

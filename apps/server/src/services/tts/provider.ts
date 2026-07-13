@@ -9,6 +9,10 @@ export interface TtsVoice {
 export interface TtsGenerateOpts {
   voice: string;
   speed?: number; // default 1.0
+  /** Emotiveness level. Providers that support it (Gemini via style prompt)
+   *  apply it here; xAI receives it already materialised as tags in the text,
+   *  so it ignores this. fake/qwen ignore it. */
+  expressiveness?: 'light' | 'medium' | 'heavy';
 }
 
 export interface TtsResult {

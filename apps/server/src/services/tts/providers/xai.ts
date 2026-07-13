@@ -11,11 +11,7 @@
  */
 
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
-
-/** Strip emotive tags like [warm], [confident] from text. */
-function stripEmotiveTags(text: string): string {
-  return text.replace(/\[[\w-]+\]\s*/g, '').trim();
-}
+import { stripAppEmotives, stripXaiTags } from '../expressiveness.js';
 
 const XAI_VOICES = [
   { id: 'Sal', name: 'Sal', description: 'Smooth & balanced — reliable default' },
@@ -39,11 +35,16 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
     })),
 
     async generate(script: string, opts: TtsGenerateOpts): Promise<TtsResult> {
-      const cleanText = stripEmotiveTags(script);
+      // Keep xAI's expressive tags ([pause], <emphasis>, …) — they ARE how
+      // Grok controls delivery — and strip only the app's authoring emotives.
+      const apiText = stripAppEmotives(script);
+      // Spoken words (all tags removed) drive the word count / timings so tags
+      // never leak into subtitles.
+      const spokenText = stripXaiTags(apiText);
       const voice_id = opts.voice ?? 'Sal';
 
       const body = {
-        text: cleanText,
+        text: apiText,
         voice_id,
         language: 'en',
         output_format: {
@@ -81,11 +82,11 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
 
       // Approximate duration: ~150 words/min adjusted by speed
       const speed = opts.speed ?? 1.0;
-      const wordCount = cleanText.split(/\s+/).filter((w) => w.length > 0).length;
+      const wordCount = spokenText.split(/\s+/).filter((w) => w.length > 0).length;
       const durationSec = Math.max(1, (wordCount / 150) * 60) / speed;
 
       // Generate word-level timings by distributing evenly
-      const words = cleanText.split(/\s+/).filter((w) => w.length > 0);
+      const words = spokenText.split(/\s+/).filter((w) => w.length > 0);
       const timings = words.map((word, i) => ({
         word,
         t: Math.round((i * durationSec / words.length) * 100) / 100,
