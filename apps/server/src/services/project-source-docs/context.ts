@@ -19,7 +19,7 @@
  * compressed view.
  */
 
-import { listDocs, readExtracted, type SourceDoc } from './index.js';
+import { listDocs, readExtracted, isReady, type SourceDoc } from './index.js';
 import type { LlmClient } from '../llm/index.js';
 
 /** Soft budget for the assembled reference block, in characters. */
@@ -52,7 +52,11 @@ export async function getReferenceContext(
   projectPath: string,
   opts: ContextOptions = {},
 ): Promise<ReferenceBundle> {
-  const docs = await listDocs(projectPath);
+  // Only 'ready' docs have extracted markdown on disk. A doc still
+  // 'extracting' in the background (or one whose extraction failed) is
+  // skipped so an LLM call fired right after upload never reads a
+  // half-written or missing extract.
+  const docs = (await listDocs(projectPath)).filter(isReady);
   if (docs.length === 0) {
     return { text: '', docCount: 0, chars: 0, truncated: false, summarised: false };
   }

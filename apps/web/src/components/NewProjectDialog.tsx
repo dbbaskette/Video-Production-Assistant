@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect } from 'react';
-import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { Lightbulb, Video } from 'lucide-react';
-import { api, ApiError, brandsApi, sourceDocsApi } from '../lib/api.js';
+import { api, ApiError, brandsApi, sourceDocsApi, type SourceDoc } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
+import { CreateProgressModal, type CreateStage } from './CreateProgressModal.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
 
 /**
@@ -76,38 +77,127 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     .replace(/^-+|-+$/g, '');     // no leading/trailing dashes
   const slugDiffers = slug !== rawName.trim() && rawName.length > 0;
 
-  const create = useMutation({
-    mutationFn: async () => {
+  // Create orchestration. With no reference docs it's a single fast call and
+  // we navigate immediately. With docs, we surface a progress modal: the
+  // upload registers the files fast (extraction runs in the background), then
+  // we poll the doc list so the user can watch extraction finish — or hit
+  // "Continue in background" and jump straight into the project.
+  const [busy, setBusy] = useState(false);
+  const [createError, setCreateError] = useState<unknown>(null);
+  const [progress, setProgress] = useState<{
+    projectId: string | null;
+    stage: CreateStage;
+    docs: SourceDoc[];
+    totalDocs: number;
+    error?: string;
+  } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const navigatedRef = useRef(false);
+
+  useEffect(() => {
+    // Clear any live poll if the dialog unmounts.
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const resetForm = () => {
+    setRawName('');
+    setParentDir('');
+    setObjective('');
+    setBrand(null);
+    setPendingDocs([]);
+  };
+
+  const navigateToProject = (projectId: string) => {
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+    if (pollRef.current) clearInterval(pollRef.current);
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    resetForm();
+    setProgress(null);
+    setBusy(false);
+    onCreated(projectId);
+    onClose();
+  };
+
+  const pollExtraction = (projectId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const docs = await sourceDocsApi.list(projectId);
+        const stillExtracting = docs.some((d) => d.status === 'extracting');
+        setProgress((p) =>
+          p ? { ...p, docs, stage: stillExtracting ? 'extracting' : 'done' } : p,
+        );
+        if (!stillExtracting && pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      } catch {
+        // Transient list failure — keep polling; the user can always
+        // "Continue in background".
+      }
+    }, 1000);
+  };
+
+  const runCreate = async () => {
+    if (!nameValid || busy) return;
+    setBusy(true);
+    setCreateError(null);
+    navigatedRef.current = false;
+    const hasDocs = pendingDocs.length > 0;
+    if (hasDocs) {
+      setProgress({ projectId: null, stage: 'creating', docs: [], totalDocs: pendingDocs.length });
+    }
+
+    let projectId: string;
+    try {
       const project = await api.createProject({
         name: slug,
         parentDir: parentDir.trim() ? parentDir : undefined,
         objective: objective.trim() ? objective : undefined,
         brand,
       });
-      // Upload any reference docs queued up before clicking Create. Failures
-      // here surface as warnings — the project itself is fine, the docs can
-      // be re-added from the Project Overview.
-      if (pendingDocs.length > 0) {
-        try {
-          await sourceDocsApi.uploadFiles(project.id, pendingDocs);
-        } catch (err) {
-          // Swallow; toast on the next page tells the user
-          console.warn('Source-doc upload failed during project create:', err);
-        }
+      projectId = project.id;
+    } catch (err) {
+      // Project creation itself failed — no modal, show inline error.
+      setCreateError(err);
+      setProgress(null);
+      setBusy(false);
+      return;
+    }
+
+    if (!hasDocs) {
+      navigateToProject(projectId);
+      return;
+    }
+
+    setProgress((p) => (p ? { ...p, projectId, stage: 'uploading' } : p));
+    try {
+      const { created } = await sourceDocsApi.uploadFiles(projectId, pendingDocs);
+      const stillExtracting = created.some((d) => d.status === 'extracting');
+      setProgress((p) =>
+        p ? { ...p, projectId, docs: created, stage: stillExtracting ? 'extracting' : 'done' } : p,
+      );
+      if (stillExtracting) {
+        pollExtraction(projectId);
       }
-      return project;
-    },
-    onSuccess: (project) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      onCreated(project.id);
-      setRawName('');
-      setParentDir('');
-      setObjective('');
-      setBrand(null);
-      setPendingDocs([]);
-      onClose();
-    },
-  });
+    } catch (err) {
+      // Upload failed — the project exists, so let the user proceed anyway.
+      console.warn('Source-doc upload failed during project create:', err);
+      setProgress((p) =>
+        p
+          ? {
+              ...p,
+              projectId,
+              stage: 'error',
+              error: err instanceof Error ? err.message : 'Upload failed',
+            }
+          : p,
+      );
+    }
+  };
 
   // Guard against losing typed input on overlay-click or Cancel. Considers
   // any of (name, objective, parent dir, queued docs) as "unsaved".
@@ -124,9 +214,12 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   });
 
   if (!open) return null;
-  const error = create.error;
   const errorMsg =
-    error instanceof ApiError ? error.message : error instanceof Error ? error.message : null;
+    createError instanceof ApiError
+      ? createError.message
+      : createError instanceof Error
+        ? createError.message
+        : null;
   const placeholderRoot = defaults.data?.projectsDefault ?? '~/Movies/VPA';
   const nameValid = slug.length > 0;
   const nameInvalidReason =
@@ -291,17 +384,34 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
         )}
 
         <div className="dialog__actions">
-          <button onClick={guardedClose} disabled={create.isPending}>Cancel</button>
+          <button onClick={guardedClose} disabled={busy}>Cancel</button>
           <button
             className="primary"
-            disabled={!nameValid || create.isPending}
-            onClick={() => create.mutate()}
+            disabled={!nameValid || busy}
+            onClick={() => runCreate()}
             title={!nameValid ? 'Enter a project name to enable Create' : undefined}
           >
-            {create.isPending ? 'Creating…' : copy.createLabel}
+            {busy ? 'Creating…' : copy.createLabel}
           </button>
         </div>
       </div>
+
+      {progress && (
+        <CreateProgressModal
+          stage={progress.stage}
+          totalDocs={progress.totalDocs}
+          docs={progress.docs}
+          error={progress.error}
+          onContinueBackground={() => {
+            if (progress.projectId) navigateToProject(progress.projectId);
+          }}
+          onClose={() => {
+            if (pollRef.current) clearInterval(pollRef.current);
+            setProgress(null);
+            setBusy(false);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -16,13 +16,25 @@
  * via getReferenceContext() — see services/project-source-docs/context.ts.
  */
 
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, extname, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
-import { extract, type ExtractResult } from '../document-extract/index.js';
+import { extract, type ExtractInput, type ExtractResult } from '../document-extract/index.js';
 
 export type SourceDocKind = 'file' | 'url' | 'text';
+
+/**
+ * Extraction lifecycle for a doc:
+ *   - 'extracting': registered (original saved) but markitdown/readability
+ *     hasn't run yet — happens in a detached background pass so `create`
+ *     and uploads return instantly.
+ *   - 'ready': extracted markdown is on disk and usable as LLM context.
+ *   - 'failed': extraction errored; `error` carries the reason.
+ * Legacy docs written before this field existed have no `status` and are
+ * treated as 'ready' everywhere (they always had their extract on disk).
+ */
+export type SourceDocStatus = 'extracting' | 'ready' | 'failed';
 
 export interface SourceDoc {
   id: string;
@@ -39,7 +51,16 @@ export interface SourceDoc {
   extractor: ExtractResult['extractor'];
   /** Number of characters of extracted markdown. Used for context budgeting. */
   extractedChars: number;
+  /** Extraction lifecycle — absent on legacy docs (treat as 'ready'). */
+  status?: SourceDocStatus;
+  /** Failure reason when status === 'failed'. */
+  error?: string;
   uploadedAt: string;
+}
+
+/** A doc counts as usable context only once its markdown is on disk. */
+export function isReady(doc: SourceDoc): boolean {
+  return (doc.status ?? 'ready') === 'ready';
 }
 
 export interface SourceDocsManifest {
@@ -93,12 +114,50 @@ export async function listDocs(projectPath: string): Promise<SourceDoc[]> {
 
 export async function readExtracted(projectPath: string, doc: SourceDoc): Promise<string> {
   const path = join(extractedDir(projectPath), doc.extractedRel);
-  return readFile(path, 'utf-8');
+  try {
+    return await readFile(path, 'utf-8');
+  } catch {
+    // A doc that's still 'extracting' (or whose extract failed) has no
+    // markdown on disk yet. Return empty rather than throwing so callers
+    // that read opportunistically (e.g. the GET :docId preview) don't 500.
+    return '';
+  }
+}
+
+/**
+ * Read-modify-write a single doc's manifest entry. Used by the background
+ * extraction pass to flip status without clobbering concurrently-registered
+ * docs. Callers must serialize per project (see `extractPending`) so two
+ * updates don't interleave their read/write.
+ */
+async function updateDoc(
+  projectPath: string,
+  docId: string,
+  patch: Partial<SourceDoc>,
+): Promise<void> {
+  const manifest = await readManifest(projectPath);
+  const doc = manifest.docs.find((d) => d.id === docId);
+  if (!doc) return;
+  Object.assign(doc, patch);
+  await writeManifest(projectPath, manifest);
 }
 
 // ── File upload ──────────────────────────────────────────────────────
 
-export async function addFile(
+/** Formats we can extract with a plain readFile — fast enough to do inline. */
+const PASSTHROUGH_EXTS = new Set(['.md', '.markdown', '.txt', '.yaml', '.yml']);
+
+/**
+ * Save an uploaded file and record a manifest entry, WITHOUT running the
+ * slow extractor. Passthrough formats (.md/.txt/…) are cheap so they're
+ * extracted inline and land 'ready'; everything else is left 'extracting'
+ * for the background pass (`extractPending`) to finish.
+ *
+ * This is the fast half of what used to be `addFile` — it's what the upload
+ * route awaits, so create/upload returns in milliseconds instead of blocking
+ * on markitdown's Python startup + PDF parsing.
+ */
+export async function registerFile(
   projectPath: string,
   input: { filename: string; buffer: Buffer },
 ): Promise<SourceDoc> {
@@ -112,9 +171,8 @@ export async function addFile(
   const originalAbs = join(originalsDir(projectPath), originalName);
   await writeFile(originalAbs, input.buffer);
 
-  const result = await extract({ kind: 'file', path: originalAbs });
   const extractedName = `${id}.md`;
-  await writeFile(join(extractedDir(projectPath), extractedName), result.markdown);
+  const isPassthrough = PASSTHROUGH_EXTS.has(ext);
 
   const doc: SourceDoc = {
     id,
@@ -122,10 +180,21 @@ export async function addFile(
     name: input.filename,
     originalRel: originalName,
     extractedRel: extractedName,
-    extractor: result.extractor,
-    extractedChars: result.markdown.length,
+    // Passthrough resolves below; non-passthrough stays a stub until extracted.
+    extractor: isPassthrough ? 'passthrough' : 'markitdown',
+    extractedChars: 0,
+    status: 'extracting',
     uploadedAt: new Date().toISOString(),
   };
+
+  if (isPassthrough) {
+    // Cheap path — read + store now so it's immediately usable.
+    const result = await extract({ kind: 'file', path: originalAbs });
+    await writeFile(join(extractedDir(projectPath), extractedName), result.markdown);
+    doc.extractor = result.extractor;
+    doc.extractedChars = result.markdown.length;
+    doc.status = 'ready';
+  }
 
   const manifest = await readManifest(projectPath);
   manifest.docs.push(doc);
@@ -155,12 +224,18 @@ async function exists(path: string): Promise<boolean> {
 
 // ── URL ingest ───────────────────────────────────────────────────────
 
-export async function addUrl(projectPath: string, url: string, displayName?: string): Promise<SourceDoc> {
+/**
+ * Register a URL doc WITHOUT fetching it. The fetch + readability extraction
+ * runs in the background pass, same as non-passthrough files.
+ */
+export async function registerUrl(
+  projectPath: string,
+  url: string,
+  displayName?: string,
+): Promise<SourceDoc> {
   await ensureDirs(projectPath);
   const id = `doc-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`;
-  const result = await extract({ kind: 'url', url });
   const extractedName = `${id}.md`;
-  await writeFile(join(extractedDir(projectPath), extractedName), result.markdown);
 
   const doc: SourceDoc = {
     id,
@@ -168,14 +243,89 @@ export async function addUrl(projectPath: string, url: string, displayName?: str
     name: displayName || url,
     extractedRel: extractedName,
     url,
-    extractor: result.extractor,
-    extractedChars: result.markdown.length,
+    extractor: 'readability',
+    extractedChars: 0,
+    status: 'extracting',
     uploadedAt: new Date().toISOString(),
   };
   const manifest = await readManifest(projectPath);
   manifest.docs.push(doc);
   await writeManifest(projectPath, manifest);
   return doc;
+}
+
+// ── Background extraction ─────────────────────────────────────────────
+
+export interface ExtractPendingOptions {
+  /** Injectable extractor for tests; defaults to the real `extract`. */
+  extractFn?: (input: ExtractInput) => Promise<ExtractResult>;
+}
+
+/**
+ * Extract every doc still in the 'extracting' state, sequentially, flipping
+ * each to 'ready' (or 'failed' with a reason). Sequential + per-project
+ * serialized (via `scheduleExtraction`) so the read-modify-write manifest
+ * updates never race.
+ *
+ * Awaitable so tests can drive it deterministically; the route fires it
+ * through `scheduleExtraction` and does not await.
+ */
+export async function extractPending(
+  projectPath: string,
+  opts: ExtractPendingOptions = {},
+): Promise<void> {
+  const extractFn = opts.extractFn ?? ((input: ExtractInput) => extract(input));
+  const manifest = await readManifest(projectPath);
+  const pending = manifest.docs.filter((d) => d.status === 'extracting');
+
+  for (const doc of pending) {
+    const input: ExtractInput | null =
+      doc.kind === 'file' && doc.originalRel
+        ? { kind: 'file', path: join(originalsDir(projectPath), doc.originalRel) }
+        : doc.kind === 'url' && doc.url
+          ? { kind: 'url', url: doc.url }
+          : null;
+    if (!input) {
+      await updateDoc(projectPath, doc.id, { status: 'failed', error: 'Nothing to extract' });
+      continue;
+    }
+    try {
+      const result = await extractFn(input);
+      await writeFile(join(extractedDir(projectPath), doc.extractedRel), result.markdown);
+      await updateDoc(projectPath, doc.id, {
+        status: 'ready',
+        error: undefined,
+        extractor: result.extractor,
+        extractedChars: result.markdown.length,
+      });
+    } catch (err) {
+      await updateDoc(projectPath, doc.id, {
+        status: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/** Per-project promise chain so concurrent uploads don't run overlapping
+ *  extraction passes (which would race on the manifest). */
+const extractionChains = new Map<string, Promise<void>>();
+
+/**
+ * Fire-and-forget the background extraction for a project. Chains behind any
+ * in-flight pass for the same project and swallows errors (per-doc failures
+ * are already captured on the manifest). Returns the promise so callers/tests
+ * can await if they want to.
+ */
+export function scheduleExtraction(projectPath: string): Promise<void> {
+  const prev = extractionChains.get(projectPath) ?? Promise.resolve();
+  const next = prev.then(() => extractPending(projectPath)).catch(() => {});
+  extractionChains.set(projectPath, next);
+  // Once this link settles and nothing newer replaced it, drop the entry.
+  next.finally(() => {
+    if (extractionChains.get(projectPath) === next) extractionChains.delete(projectPath);
+  });
+  return next;
 }
 
 // ── Inline text ──────────────────────────────────────────────────────
@@ -197,6 +347,7 @@ export async function addText(
     extractedRel: extractedName,
     extractor: 'passthrough',
     extractedChars: text.length,
+    status: 'ready',
     uploadedAt: new Date().toISOString(),
   };
   const manifest = await readManifest(projectPath);
