@@ -16,7 +16,6 @@
  */
 
 import type { LlmClient } from '../llm/index.js';
-import { loadPrompt } from '../llm/index.js';
 import type { Expressiveness } from '@vpa/shared';
 
 /** The app's script-authoring emotive vocabulary — cues for humans, not any
@@ -83,25 +82,17 @@ export interface PrepareExpressiveTextInput {
 export async function prepareExpressiveText(
   input: PrepareExpressiveTextInput,
 ): Promise<string> {
-  if (input.engine !== 'xai') {
-    return input.text;
+  // xAI's /v1/tts vocalizes inline/wrapping tags as literal text (verified
+  // empirically — the docs claim support, the endpoint speaks them). So there
+  // is NO working way to control xAI expressiveness per-phrase via tags: we do
+  // NOT insert them (doing so made xAI read the markup aloud). xAI
+  // expressiveness is therefore voice-selection only; the level is a no-op for
+  // delivery, same as fake/qwen. For xAI we still drop app emotive cues so a
+  // stray `[warm]` isn't spoken; the provider strips any remaining markup too.
+  if (input.engine === 'xai') {
+    return stripAppEmotives(input.text);
   }
-
-  // Give the model clean prose to annotate — drop any app emotive cues first.
-  const clean = stripAppEmotives(input.text);
-
-  try {
-    const systemPrompt = await loadPrompt(input.workspaceRoot, 'narration-expressiveness-xai');
-    const userPrompt = `Requested level: ${input.level}\n\nNarration:\n${clean}`;
-    const result = await input.llm.complete({
-      systemPrompt,
-      userPrompt,
-      temperature: 0.4,
-    });
-    const out = result.text.trim();
-    return out.length > 0 ? out : clean;
-  } catch {
-    // Never block synthesis on the expressiveness pass.
-    return clean;
-  }
+  // Gemini applies the level via a style directive inside its provider; other
+  // engines ignore it. Nothing to materialise in the text here.
+  return input.text;
 }
