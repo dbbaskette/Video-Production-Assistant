@@ -203,8 +203,16 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
     const withNewDefaults = { ...sb, defaults: newDefaults };
     await saveStoryboard(projectPath, withNewDefaults);
 
-    // Cache busting: any defaults change (frame_style or frame_background) invalidates
-    // ALL scene frame_render caches — simpler and safer than tracking which scenes inherit.
+    // Cache busting is ONLY relevant to frame settings. A non-frame default
+    // (e.g. tts_expressiveness) must not nuke every scene's cached
+    // frame_render — that would force expensive re-renders for an unrelated
+    // change.
+    if (!('frame_style' in body) && !('frame_background' in body)) {
+      return withNewDefaults;
+    }
+
+    // A frame default changed → invalidate ALL scene frame_render caches
+    // (simpler and safer than tracking which scenes inherit).
     for (const scene of withNewDefaults.scenes) {
       if (scene.frame_render) {
         const cachePath = join(projectPath, scene.frame_render);

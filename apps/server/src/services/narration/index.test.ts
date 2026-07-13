@@ -107,6 +107,39 @@ describe('narration service', () => {
     expect(scene?.narration?.timings?.length).toBeGreaterThan(0);
   });
 
+  it('persists the requested expressiveness level on the scene', async () => {
+    const sb = makeSampleStoryboard();
+    await saveStoryboard(projectPath, sb);
+
+    await generateNarration(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice', expressiveness: 'heavy' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const scene = updated!.scenes.find((s) => s.id === 'scene-01');
+    expect(scene?.narration?.tts?.expressiveness).toBe('heavy');
+  });
+
+  it('falls back to the project default level when none is requested', async () => {
+    const sb = makeSampleStoryboard();
+    sb.defaults = { tts_expressiveness: 'light' };
+    await saveStoryboard(projectPath, sb);
+
+    await generateNarration(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const scene = updated!.scenes.find((s) => s.id === 'scene-01');
+    expect(scene?.narration?.tts?.expressiveness).toBe('light');
+  });
+
   it('throws when scene has no script', async () => {
     const sb = makeSampleStoryboard();
     await saveStoryboard(projectPath, sb);

@@ -55,6 +55,10 @@ describe('stripXaiTags', () => {
   it('leaves untagged text intact', () => {
     expect(stripXaiTags('Plain narration here.')).toBe('Plain narration here.');
   });
+
+  it('strips wrapping tags even when they carry stray attributes', () => {
+    expect(stripXaiTags('<slow rate="0.8">this</slow> [long-pause] now.')).toBe('this now.');
+  });
 });
 
 describe('prepareExpressiveText', () => {

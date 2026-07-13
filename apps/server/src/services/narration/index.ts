@@ -77,11 +77,14 @@ export async function generateNarration(
   workspaceRoot: string,
 ): Promise<NarrationResult> {
   const { projectPath, sceneId, engine, voice, speed } = input;
-  const level: Expressiveness = input.expressiveness ?? 'medium';
 
   // Load storyboard and find scene
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
+
+  // Effective level: explicit request ?? project default ?? medium.
+  const level: Expressiveness =
+    input.expressiveness ?? sb.defaults?.tts_expressiveness ?? 'medium';
 
   const scene = sb.scenes.find((s) => s.id === sceneId);
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);
@@ -157,10 +160,13 @@ export async function generateChunkNarration(
   workspaceRoot: string,
 ): Promise<ChunkNarrationResult> {
   const { projectPath, sceneId, chunkIndex, text, engine, voice, speed } = input;
-  const level: Expressiveness = input.expressiveness ?? 'medium';
 
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
+
+  // Effective level: explicit request ?? project default ?? medium.
+  const level: Expressiveness =
+    input.expressiveness ?? sb.defaults?.tts_expressiveness ?? 'medium';
 
   const scene = sb.scenes.find((s) => s.id === sceneId);
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);

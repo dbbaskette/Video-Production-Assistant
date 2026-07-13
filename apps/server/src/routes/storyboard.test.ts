@@ -300,6 +300,67 @@ describe('PUT storyboard defaults (frame fields)', () => {
     expect(res.json().code).toBe('invalid_request');
   });
 
+  it('sets and clears tts_expressiveness, leaving other defaults untouched', async () => {
+    const sb: Storyboard = {
+      ...makeSampleStoryboard(projectId, 'test-proj'),
+      defaults: { brand: 'my-brand', frame_style: 'laptop-flat' },
+    };
+    await saveStoryboard(projectPath, sb);
+
+    // Set
+    let res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { tts_expressiveness: 'heavy' },
+    });
+    expect(res.statusCode).toBe(200);
+    let saved = await loadStoryboard(projectPath);
+    expect(saved?.defaults?.tts_expressiveness).toBe('heavy');
+    expect(saved?.defaults?.brand).toBe('my-brand');
+    expect(saved?.defaults?.frame_style).toBe('laptop-flat');
+
+    // Clear
+    res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { tts_expressiveness: null },
+    });
+    expect(res.statusCode).toBe(200);
+    saved = await loadStoryboard(projectPath);
+    expect(saved?.defaults?.tts_expressiveness).toBeUndefined();
+  });
+
+  it('rejects an invalid tts_expressiveness value', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId, 'test-proj'));
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { tts_expressiveness: 'extreme' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('invalid_request');
+  });
+
+  it('changing only tts_expressiveness does NOT invalidate scene frame_render caches', async () => {
+    const sb: Storyboard = {
+      ...makeSampleStoryboard(projectId, 'test-proj'),
+    };
+    // Pretend a scene already has a rendered device-mockup frame cached.
+    sb.scenes[0] = { ...sb.scenes[0]!, frame_render: 'frames/scene-01.mp4' };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/defaults`,
+      payload: { tts_expressiveness: 'light' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const saved = await loadStoryboard(projectPath);
+    // The frame_render cache reference must survive an unrelated defaults change.
+    expect(saved?.scenes[0]?.frame_render).toBe('frames/scene-01.mp4');
+  });
+
   it('returns 400 with code invalid_request for an unknown frame_style', async () => {
     const sb = makeSampleStoryboard(projectId, 'test-proj');
     await saveStoryboard(projectPath, sb);

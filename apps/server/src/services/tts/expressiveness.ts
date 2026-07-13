@@ -40,7 +40,9 @@ export function stripAppEmotives(text: string): string {
  *  subtitles so tags never leak into captions. */
 export function stripXaiTags(text: string): string {
   return text
-    .replace(/<\/?[a-z][a-z-]*>/gi, '') // wrapping tags: <emphasis>, </soft>, …
+    // wrapping tags: <emphasis>, </soft>, and any stray attributes the model
+    // might hallucinate (<slow rate="0.8">)
+    .replace(/<\/?[a-z][a-z-]*(?:\s[^>]*)?>/gi, '')
     .replace(/\[[\w-]+\]/g, '')          // inline tags: [pause], [long-pause], …
     .replace(/\s+/g, ' ')
     .trim();

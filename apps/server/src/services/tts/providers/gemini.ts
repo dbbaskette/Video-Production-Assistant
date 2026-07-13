@@ -95,7 +95,9 @@ export function createGeminiTtsProvider(apiKey: string, model?: string): TtsProv
       const cleanText = stripEmotiveTags(script);
 
       // Gemini controllable TTS: a leading natural-language directive sets the
-      // delivery style and is not spoken. Absent level ⇒ medium.
+      // delivery style and is NOT spoken. Verified empirically — a ~16-word
+      // directive added ~0.7s vs. text alone, not the ~6s it would add if
+      // vocalized. Absent level ⇒ medium.
       const directive = geminiStyleDirective(opts.expressiveness ?? 'medium');
       const prompt = `${directive}\n\n${cleanText}`;
 

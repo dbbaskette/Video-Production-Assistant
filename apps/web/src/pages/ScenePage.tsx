@@ -2320,7 +2320,12 @@ export function ScenePage(props: ScenePageProps = {}) {
                           <button
                             key={lvl}
                             type="button"
-                            onClick={() => setSelectedExpressiveness(lvl)}
+                            onClick={() => {
+                              // Mark hydration done so a late-arriving query
+                              // default can't clobber this manual choice.
+                              hydratedExprRef.current = true;
+                              setSelectedExpressiveness(lvl);
+                            }}
                             title={`${lvl} emotiveness`}
                             style={{
                               padding: '6px 10px',
@@ -2364,8 +2369,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       current chunks were spoken at the previously-saved level,
                       so regenerate to hear the new one. */}
                   {narrationState?.chunks?.some((c) => c.audio) &&
-                    narrationState?.tts?.expressiveness &&
-                    narrationState.tts.expressiveness !== selectedExpressiveness && (
+                    (narrationState?.tts?.expressiveness ?? 'medium') !== selectedExpressiveness && (
                       <div style={{ marginTop: 8, fontSize: 11, color: 'var(--warn, #d4a017)' }}>
                         Emotiveness changed to <strong>{selectedExpressiveness}</strong> — Regenerate all to apply it to the audio.
                       </div>
