@@ -62,18 +62,20 @@ describe('stripXaiTags', () => {
 });
 
 describe('prepareExpressiveText', () => {
-  it('runs the LLM insertion pass for xAI and returns the marked-up text', async () => {
+  // xAI's /v1/tts vocalizes inline tags as literal text (verified empirically),
+  // so we must NOT insert xAI markup — doing so would make xAI speak the tags.
+  it('does NOT insert tags or call the LLM for xAI (endpoint vocalizes tags); returns clean text', async () => {
     const llm = stubLlm('Hello <emphasis>world</emphasis>. [pause] Ready?');
     const out = await prepareExpressiveText({
-      text: 'Hello world. Ready?',
+      text: '[warm] Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
       llm,
       workspaceRoot: workspaceRoot(),
     });
-    expect(out).toContain('<emphasis>');
-    expect(out).toContain('[pause]');
-    expect(llm.complete).toHaveBeenCalledOnce();
+    expect(out.includes('<') || out.includes('[')).toBe(false); // no markup at all
+    expect(out).toBe('Hello world. Ready?'); // app emotive stripped, no tags added
+    expect(llm.complete).not.toHaveBeenCalled();
   });
 
   it('leaves text unchanged for non-xAI engines and never calls the LLM', async () => {
@@ -87,21 +89,5 @@ describe('prepareExpressiveText', () => {
     });
     expect(out).toBe('[warm] Hello world.');
     expect(llm.complete).not.toHaveBeenCalled();
-  });
-
-  it('falls back to the original text when the xAI LLM pass throws', async () => {
-    const llm: LlmClient = {
-      complete: vi.fn(async () => {
-        throw new Error('llm down');
-      }),
-    };
-    const out = await prepareExpressiveText({
-      text: 'Hello world.',
-      engine: 'xai',
-      level: 'medium',
-      llm,
-      workspaceRoot: workspaceRoot(),
-    });
-    expect(out).toBe('Hello world.');
   });
 });

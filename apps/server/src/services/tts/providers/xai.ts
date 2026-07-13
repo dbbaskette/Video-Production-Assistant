@@ -35,16 +35,16 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
     })),
 
     async generate(script: string, opts: TtsGenerateOpts): Promise<TtsResult> {
-      // Keep xAI's expressive tags ([pause], <emphasis>, …) — they ARE how
-      // Grok controls delivery — and strip only the app's authoring emotives.
-      const apiText = stripAppEmotives(script);
-      // Spoken words (all tags removed) drive the word count / timings so tags
-      // never leak into subtitles.
-      const spokenText = stripXaiTags(apiText);
+      // IMPORTANT: xAI's /v1/tts vocalizes inline/wrapping tags as LITERAL text
+      // (verified empirically — `<emphasis>`, `[pause]`, `<slow>` etc. are
+      // spoken, not honored, despite the docs). So we send FULLY tag-stripped
+      // text: app emotives (`[warm]`) AND all xAI markup are removed. `spokenText`
+      // also drives the word count / timings.
+      const spokenText = stripXaiTags(stripAppEmotives(script));
       const voice_id = opts.voice ?? 'Sal';
 
       const body = {
-        text: apiText,
+        text: spokenText,
         voice_id,
         language: 'en',
         output_format: {
