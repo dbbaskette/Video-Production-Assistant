@@ -117,6 +117,10 @@ function isNarrationWriterPrompt(opts: LlmCompleteOptions): boolean {
   return opts.systemPrompt.toLowerCase().includes('narration script writer');
 }
 
+function isNarrationPolishPrompt(opts: LlmCompleteOptions): boolean {
+  return opts.systemPrompt.toLowerCase().includes('narration script polisher');
+}
+
 function isLowerThirdPrompt(opts: LlmCompleteOptions): boolean {
   return opts.systemPrompt.toLowerCase().includes('lower-third recommender');
 }
@@ -175,6 +179,27 @@ export function createFakeLlm(): LlmClient {
             { title: sceneName, subtitle: 'Getting Started', style: 'frosted', in_sec: 1.5, out_sec: 5.5 },
             { title: 'Key Concept', style: 'minimal', in_sec: 12.0, out_sec: 16.0 },
           ]),
+        };
+      }
+
+      // Narration polish — editor mode over a user-supplied draft. Returns
+      // the { notes, script } JSON contract the polishScript service parses.
+      // Must come before the narration-writer branch (both mention "narration
+      // script") and before the generic json branch.
+      if (isNarrationPolishPrompt(opts)) {
+        const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/);
+        const sceneName = nameMatch?.[1]?.trim() ?? 'this scene';
+        return {
+          text: JSON.stringify({
+            notes: [
+              `Tightened the opening for ${sceneName}.`,
+              'Added emotive tags for spoken delivery.',
+            ],
+            script:
+              `[warm] Here's a polished take on ${sceneName}.\n\n` +
+              `[confident] The key steps stay exactly as you wrote them, just tighter.\n\n` +
+              `[calm] And that wraps up this part.`,
+          }),
         };
       }
 

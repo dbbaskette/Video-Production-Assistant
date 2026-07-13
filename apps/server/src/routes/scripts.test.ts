@@ -152,6 +152,60 @@ describe('script routes', () => {
     expect(res.json().code).toBe('not_found');
   });
 
+  it('POST polish returns a proposal without mutating the storyboard', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/polish`,
+      payload: { draft: 'Welcome to the demo. Let me show you around now.' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.sceneId).toBe('scene-01');
+    expect(body.originalScript).toBe('Welcome to the demo. Let me show you around now.');
+    expect(body.proposedScript).toBeTruthy();
+    expect(body.proposedScript).toContain('['); // emotive tags
+    expect(Array.isArray(body.notes)).toBe(true);
+    expect(body.currentWords).toBeGreaterThan(0);
+    expect(body.proposedWords).toBeGreaterThan(0);
+
+    // The storyboard must be untouched — polish only proposes.
+    const after = await loadStoryboard(projectPath);
+    const scene = after!.scenes.find((s) => s.id === 'scene-01');
+    expect(scene?.narration).toBeUndefined();
+  });
+
+  it('POST polish returns 400 when draft is empty', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/polish`,
+      payload: { draft: '   ' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('no_draft');
+  });
+
+  it('POST polish returns 404 for a non-existent scene', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/no-such/script/polish`,
+      payload: { draft: 'some draft text' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json().code).toBe('scene_not_found');
+  });
+
   it('GET script reflects previously generated script', async () => {
     const sb = makeSampleStoryboard(projectId);
     await saveStoryboard(projectPath, sb);

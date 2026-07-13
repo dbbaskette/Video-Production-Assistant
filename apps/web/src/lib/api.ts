@@ -483,6 +483,40 @@ export const scriptApi = {
     );
   },
   /**
+   * Evaluate + editorially polish a user-supplied draft script: improve
+   * pacing/clarity/flow, add emotive tags, and (when the scene has a
+   * recording) fit it to the recording length. Returns the proposal plus a
+   * short critique WITHOUT saving — the caller reviews it side-by-side and
+   * saves via narrationApi.saveScript() on accept.
+   */
+  async polish(
+    projectId: string,
+    sceneId: string,
+    opts: { draft: string; targetDurationSec?: number },
+  ): Promise<{
+    sceneId: string;
+    originalScript: string;
+    proposedScript: string;
+    /** Short evaluation bullets — what changed and why. May be empty. */
+    notes: string[];
+    currentWords: number;
+    proposedWords: number;
+    /** Target word count for the recording; null when no duration was available. */
+    targetWords: number | null;
+    /** Recording duration used for the fit; null when the scene has no recording. */
+    targetDurationSec: number | null;
+    wpm: number;
+    wpmIsMeasured: boolean;
+    wpmSampleChunks: number;
+  }> {
+    return request(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/script/polish`,
+      opts,
+      { timeoutMs: 2 * 60_000 },
+    );
+  },
+  /**
    * Save the user-authored "what is this scene demonstrating?" string.
    * Empty string clears it. The script generator uses this as the north
    * star (auth: 1), with project objective + source-docs as supporting

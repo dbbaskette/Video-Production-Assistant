@@ -18,6 +18,7 @@ import { RefreshCcw, Sparkles, Upload } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
+import { PolishScriptModal } from '../components/PolishScriptModal.js';
 import { classifyFit, computeProjectWpm } from '../lib/wpm.js';
 import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
 import { confirmDestructiveSave } from '../lib/destructive-save.js';
@@ -114,6 +115,17 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [scriptViewTab, setScriptViewTab] = useState<'monologue' | 'dialog'>('monologue');
   /** When true, the TightenScriptModal is mounted for this scene. */
   const [tightenOpen, setTightenOpen] = useState(false);
+  // Script input mode (radio at the top of the Script tab):
+  //   'describe' — the user describes the scene, AI writes it (the existing
+  //                intent + Generate flow).
+  //   'byo'      — the user pastes their own script, AI evaluates + polishes
+  //                it (adds emotives, fits to the recording) via PolishScriptModal.
+  const [scriptInputMode, setScriptInputMode] = useState<'describe' | 'byo'>('describe');
+  /** The user's pasted draft, in 'byo' mode. Local-only; not persisted until
+   *  the polished result is accepted and saved. */
+  const [draftScript, setDraftScript] = useState('');
+  /** When true, the PolishScriptModal is mounted for this scene. */
+  const [polishOpen, setPolishOpen] = useState(false);
   // Whether to ground the next script generation in the actual video (Gemini
   // Files API). Defaults to true when the active provider is Gemini and the
   // scene has a recording — see effect below. User can untick to fall back
@@ -1367,6 +1379,54 @@ export function ScenePage(props: ScenePageProps = {}) {
             }}
           />
 
+          {/* ── Input-mode radio ──
+              Two ways to get a script: describe the scene and let the AI
+              write it (the original flow), or paste your own and have the AI
+              evaluate + polish it. The choice swaps the primary input + button
+              below; the intent field stays visible in both (north star when
+              describing, optional context when polishing). */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              marginBottom: 14,
+              flexWrap: 'wrap',
+            }}
+          >
+            {([
+              { key: 'describe', label: 'Describe the scene → AI writes it' },
+              { key: 'byo', label: "I'll write the script → AI polishes it" },
+            ] as const).map((opt) => {
+              const active = scriptInputMode === opt.key;
+              return (
+                <label
+                  key={opt.key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    background: active ? 'var(--bg-elev)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 8,
+                    color: active ? 'var(--fg)' : 'var(--fg-muted)',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="script-input-mode"
+                    checked={active}
+                    onChange={() => setScriptInputMode(opt.key)}
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              );
+            })}
+          </div>
+
           {/* Scene intent — the user's "north star" for this scene. The
               prompt treats it as authoritative; the video and source-docs
               are framed as the visual anchor / factual reference for it.
@@ -1456,14 +1516,17 @@ export function ScenePage(props: ScenePageProps = {}) {
               }}
             />
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
-              The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.
+              {scriptInputMode === 'byo'
+                ? 'Optional context for the polisher — it uses this to judge whether your script stays on-message. Your pasted script below is what actually gets polished.'
+                : 'The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.'}
             </div>
           </div>
 
           {/* Video-grounded toggle. Only shown when the active provider can
               actually use it — otherwise the toggle would be a no-op trap
-              ("turn this on but nothing changes"). */}
-          {canGroundInVideo && (
+              ("turn this on but nothing changes"). Hidden in 'byo' mode: it
+              only applies to writing from scratch, not polishing a draft. */}
+          {scriptInputMode === 'describe' && canGroundInVideo && (
             <label
               style={{
                 display: 'flex',
@@ -1489,13 +1552,14 @@ export function ScenePage(props: ScenePageProps = {}) {
             </label>
           )}
 
-          {/* ── Top bar: Generate/Regenerate ──
+          {/* ── Describe mode: Generate/Regenerate top bar ──
               Unified affordance — same shape and color whether this is a
               first-time generate or a regenerate. Previously the button
               flipped from filled accent ("✨ Generate Script") to muted
               outline ("🔄 Regenerate") between states; users learn
               affordances visually and that swap erased the visual
               identity of the primary action. */}
+          {scriptInputMode === 'describe' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
             <button
               onClick={async () => {
@@ -1545,6 +1609,72 @@ export function ScenePage(props: ScenePageProps = {}) {
               )}
             </button>
           </div>
+          )}
+
+          {/* ── BYO mode: paste box + Evaluate & polish ──
+              The user pastes their own draft; the button opens the
+              PolishScriptModal, which evaluates + polishes it side-by-side.
+              Disabled until there's non-whitespace text to work on. */}
+          {scriptInputMode === 'byo' && (
+            <div style={{ marginBottom: 16 }}>
+              <label
+                htmlFor="byo-script"
+                style={{
+                  display: 'block',
+                  fontSize: 11,
+                  color: 'var(--fg-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                  marginBottom: 6,
+                }}
+              >
+                Paste your script
+              </label>
+              <textarea
+                id="byo-script"
+                value={draftScript}
+                onChange={(e) => setDraftScript(e.target.value)}
+                placeholder="Paste the narration you've written for this scene. The AI will evaluate it, polish pacing and clarity, add emotive tags, and fit it to the recording length — then show you the result to accept or reject."
+                rows={8}
+                style={{
+                  width: '100%',
+                  resize: 'vertical',
+                  padding: '10px 12px',
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontFamily: 'inherit',
+                }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                <button
+                  onClick={() => setPolishOpen(true)}
+                  disabled={!draftScript.trim()}
+                  className="primary"
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: draftScript.trim() ? 'pointer' : 'not-allowed',
+                    opacity: draftScript.trim() ? 1 : 0.5,
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Sparkles size={14} strokeWidth={1.8} aria-hidden />
+                    Evaluate &amp; polish
+                  </span>
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  {draftScript.trim()
+                    ? 'Opens a side-by-side review — nothing is saved until you accept.'
+                    : 'Paste a script to enable.'}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Error displays */}
           {generateScriptMutation.isError && (
@@ -3109,6 +3239,28 @@ export function ScenePage(props: ScenePageProps = {}) {
             queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
             queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
             queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+          }}
+        />
+      )}
+
+      {polishOpen && projectId && sceneId && (
+        <PolishScriptModal
+          projectId={projectId}
+          sceneId={sceneId}
+          sceneName={scene?.name ?? sceneId}
+          draft={draftScript}
+          onClose={() => setPolishOpen(false)}
+          onAccepted={() => {
+            // Polished script was saved as the monologue (+ TTS chunks wiped,
+            // previous version backed up). Same as Tighten: drop the local
+            // edit buffer so the editor re-reads the saved value, and show a
+            // toast for parity with the editor's own Save.
+            setEditingScript(null);
+            setScriptDirty(false);
+            queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+            queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+            queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
+            ui.showToast({ message: 'Polished script saved. Existing TTS chunks were cleared.', tone: 'success' });
           }}
         />
       )}

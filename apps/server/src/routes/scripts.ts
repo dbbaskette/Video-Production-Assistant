@@ -8,6 +8,7 @@ import { generateScript } from '../services/script/index.js';
 import { convertToDialog } from '../services/script/convert-to-dialog.js';
 import { generateVideoGroundedScript } from '../services/video-narration/index.js';
 import { tightenScript } from '../services/script/tighten.js';
+import { polishScript } from '../services/script/polish.js';
 import { computeProjectWpm } from '../services/script/wpm.js';
 
 interface Deps {
@@ -328,6 +329,79 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(500).send({
         error: `Script tighten failed: ${msg}`,
         code: 'tighten_failed',
+      });
+    }
+  });
+
+  // POST /api/projects/:id/scenes/:sceneId/script/polish — evaluate + editorially
+  // polish a USER-SUPPLIED draft: improve pacing/clarity/flow, add emotive tags,
+  // and fit it to the recording length. Returns the proposal WITHOUT saving —
+  // the client shows it in a side-by-side review modal and PUTs it back on accept.
+  // This is the "bring your own script" counterpart to /generate (which writes
+  // from scratch) and /tighten (which only removes content).
+  app.post('/api/projects/:id/scenes/:sceneId/script/polish', async (req, reply) => {
+    const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const body = (req.body ?? {}) as { draft?: string; targetDurationSec?: number };
+
+    // Validate the draft up front — an empty paste is the one thing polish
+    // can't act on, and the client disables the button for it anyway.
+    const draft = typeof body.draft === 'string' ? body.draft : '';
+    if (!draft.trim()) {
+      return reply.status(400).send({ error: 'draft is required', code: 'no_draft' });
+    }
+
+    const projectPath = await resolveProjectPath(store, id);
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+
+    // Fit target: explicit override, else the recording's duration. Undefined
+    // when the scene has no recording — polish then improves quality only and
+    // the client tells the user it wasn't fitted to length.
+    const targetDurationSec =
+      typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0
+        ? body.targetDurationSec
+        : scene.recording?.duration_sec;
+
+    // Same measured-wpm source of truth Generate + Tighten + Quality Review use.
+    const wpmInfo = computeProjectWpm(sb);
+
+    try {
+      const result = await polishScript(
+        {
+          draft,
+          targetDurationSec,
+          wpm: wpmInfo.wpm,
+          sceneName: scene.name,
+          sceneIntent: scene.intent,
+          projectObjective: sb.project.objective,
+          projectAudience: sb.project.audience,
+          projectPath,
+        },
+        llm,
+        workspaceRoot,
+      );
+      return {
+        sceneId,
+        originalScript: draft,
+        proposedScript: result.proposedScript,
+        notes: result.notes,
+        currentWords: result.currentWords,
+        proposedWords: result.proposedWords,
+        targetWords: result.targetWords ?? null,
+        targetDurationSec: targetDurationSec ?? null,
+        wpm: wpmInfo.wpm,
+        wpmIsMeasured: wpmInfo.isMeasured,
+        wpmSampleChunks: wpmInfo.sampleChunks,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      app.log.error({ err: msg, sceneId }, 'script polish failed');
+      return reply.status(500).send({
+        error: `Script polish failed: ${msg}`,
+        code: 'polish_failed',
       });
     }
   });
