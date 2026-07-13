@@ -29,6 +29,7 @@ import {
   prepareSceneFrame,
   type FramePrepDeps,
 } from './index.js';
+import { ensureSilenceClip } from './silence.js';
 import {
   createCachingBrandColorResolver,
   defaultBrandColorResolver,
@@ -227,23 +228,33 @@ async function prepareNarrationAudio(
   const chunks = (narration.chunks ?? []).filter((c) => c.audio);
   if (chunks.length === 0) return null;
 
-  if (chunks.length === 1) {
-    const full = join(projectPath, chunks[0]!.audio!);
+  const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+  const anyGap = sortedChunks.some((c) => (c.gapSec ?? 0) > 0);
+
+  // Fast path: a single chunk with no trailing pause — just re-encode.
+  if (sortedChunks.length === 1 && !anyGap) {
+    const full = join(projectPath, sortedChunks[0]!.audio!);
     if (!existsSync(full)) return null;
     await runFfmpeg(['-y', '-i', full, '-c:a', 'libmp3lame', '-b:a', '192k', outPath]);
     return outPath;
   }
 
-  // Multi-chunk: concat-demux into a single mp3.
-  const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+  // Concat, inserting `gapSec` of silence after any chunk that has a pause.
+  const fileEntry = (p: string) => `file '${p.replace(/'/g, "'\\''")}'`;
+  const lines: string[] = [];
+  for (const c of sortedChunks) {
+    lines.push(fileEntry(join(projectPath, c.audio!)));
+    const gap = c.gapSec ?? 0;
+    if (gap > 0) {
+      const sil = await ensureSilenceClip(outDir, gap, runFfmpeg);
+      if (sil) lines.push(fileEntry(sil));
+    }
+  }
   const concatList = join(outDir, '.audio-list.txt');
-  const lines = sortedChunks
-    .map((c) => `file '${join(projectPath, c.audio!).replace(/'/g, "'\\''")}'`)
-    .join('\n');
-  await writeFile(concatList, lines);
+  await writeFile(concatList, lines.join('\n'));
   await runFfmpeg([
     '-y', '-f', 'concat', '-safe', '0', '-i', concatList,
-    '-c:a', 'libmp3lame', '-b:a', '192k',
+    '-c:a', 'libmp3lame', '-b:a', '192k', '-ar', '44100', '-ac', '1',
     outPath,
   ]);
   return outPath;

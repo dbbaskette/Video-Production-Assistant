@@ -623,6 +623,8 @@ export interface NarrationChunkInfo {
   hasAudio: boolean;
   audio: string | null;
   durationSec: number | null;
+  /** Trailing silence (seconds) inserted after this chunk at render time. */
+  gapSec?: number;
   speaker?: string;   // "A" | "B" — dialog mode
   /** Last failed-generation record for this chunk. Cleared on next success. */
   failed?: { reason: string; at: string };
@@ -747,6 +749,16 @@ export const narrationApi = {
     slot?: 'monologue' | 'dialog',
   ): Promise<{ saved: boolean; script: string }> {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/script`, { script, slot });
+  },
+  /** Set the trailing pause (seconds) after a chunk. 0 clears it. Applied at
+   *  render time — does not regenerate audio. */
+  async setChunkGap(
+    projectId: string,
+    sceneId: string,
+    index: number,
+    gapSec: number,
+  ): Promise<{ sceneId: string; index: number; gapSec: number }> {
+    return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/narration/chunks/${index}/gap`, { gapSec });
   },
   async restoreScript(
     projectId: string,

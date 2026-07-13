@@ -7,7 +7,7 @@ import type { TtsService } from '../services/tts/index.js';
 import type { LlmClient } from '../services/llm/index.js';
 import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { generateNarration, generateChunkNarration, generateAllChunks, splitIntoParagraphs, splitDialogIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
 import { jobQueue } from '../lib/job-queue.js';
 import {
   listProfiles,
@@ -148,17 +148,18 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     if (narration?.script) {
       const isDialog = (narration.mode ?? 'monologue') === 'dialog';
-      const paragraphs = isDialog
-        ? splitDialogIntoChunks(narration.script)
-        : splitIntoParagraphs(narration.script);
-      chunks = paragraphs.map((text, i) => {
+      const derived = splitScriptIntoChunks(narration.script, isDialog);
+      chunks = derived.map(({ text, gapSec }, i) => {
         const stored = narration.chunks?.find((c) => c.index === i);
+        // Stored gap (a UI edit) wins over the script-derived seed.
+        const effGap = stored?.gapSec ?? gapSec;
         return {
           index: i,
           text,
           hasAudio: !!stored?.audio,
           audio: stored?.audio ?? null,
           durationSec: stored?.durationSec ?? null,
+          ...(effGap > 0 ? { gapSec: effGap } : {}),
           speaker: stored?.speaker
             ?? (isDialog ? (text.match(/^\[Speaker ([A-Z])\]/)?.[1] ?? undefined) : undefined),
           ...(stored?.failed ? { failed: stored.failed } : {}),
@@ -264,6 +265,54 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       }
       throw err;
     }
+  });
+
+  // PUT /api/projects/:id/scenes/:sceneId/narration/chunks/:index/gap — set the
+  // trailing silence (seconds) after a chunk. Applied at concat time, so this
+  // does NOT regenerate audio. gapSec 0 clears the pause.
+  app.put('/api/projects/:id/scenes/:sceneId/narration/chunks/:index/gap', async (req, reply) => {
+    const { id, sceneId, index } = req.params as { id: string; sceneId: string; index: string };
+    const body = (req.body ?? {}) as { gapSec?: unknown };
+    const idx = Number(index);
+    const gap = typeof body.gapSec === 'number' ? body.gapSec : NaN;
+    if (!Number.isInteger(idx) || idx < 0) {
+      return reply.status(400).send({ error: 'invalid chunk index', code: 'invalid_request' });
+    }
+    if (!Number.isFinite(gap) || gap < 0 || gap > 10) {
+      return reply.status(400).send({ error: 'gapSec must be between 0 and 10', code: 'invalid_request' });
+    }
+    const projectPath = await resolveProjectPath(store, id);
+    const sb = await loadStoryboard(projectPath);
+    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    const scene = sb.scenes.find((s) => s.id === sceneId);
+    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    const chunks = [...(scene.narration?.chunks ?? [])];
+    const ci = chunks.findIndex((c) => c.index === idx);
+    if (ci >= 0) {
+      const nextChunk = { ...chunks[ci]! };
+      if (gap > 0) nextChunk.gapSec = gap;
+      else delete (nextChunk as { gapSec?: number }).gapSec;
+      chunks[ci] = nextChunk;
+    } else {
+      // Chunk not generated yet — pauses are independent of TTS, so build a
+      // stub from the script (matching how markChunkFailed / speaker
+      // assignment do). Nothing to store if the gap is 0.
+      if (gap > 0) {
+        const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
+        const derived = scene.narration?.script
+          ? splitScriptIntoChunks(scene.narration.script, isDialog)
+          : [];
+        const stub = derived[idx];
+        if (!stub) return reply.status(404).send({ error: `Chunk not found: ${idx}`, code: 'chunk_not_found' });
+        const dm = isDialog ? stub.text.match(/^\[Speaker ([A-Z])\]/) : null;
+        chunks.push({ index: idx, text: stub.text, gapSec: gap, ...(dm ? { speaker: dm[1] } : {}) });
+        chunks.sort((a, b) => a.index - b.index);
+      }
+    }
+    const narration = { ...(scene.narration ?? {}), chunks };
+    const updated = updateScene(sb, sceneId, { narration: narration as any });
+    await saveStoryboard(projectPath, updated);
+    return { sceneId, index: idx, gapSec: gap };
   });
 
   // POST /api/projects/:id/scenes/:sceneId/narration/generate-all — batch generate
@@ -495,11 +544,12 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         const restored = (prevAny.dialogChunks as typeof prev.chunks | undefined) ?? null;
         const dialogChunks = restored && restored.length > 0
           ? restored
-          : splitDialogIntoChunks(prev.dialogScript).map((text, i) => {
+          : splitScriptIntoChunks(prev.dialogScript, true).map(({ text, gapSec }, i) => {
               const speakerMatch = text.match(/^\[Speaker\s+(A|B)\]/i);
               return {
                 index: i,
                 text,
+                ...(gapSec > 0 ? { gapSec } : {}),
                 speaker: speakerMatch ? speakerMatch[1]!.toUpperCase() : (i % 2 === 0 ? 'A' : 'B'),
               };
             });
@@ -567,11 +617,15 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       if (ci >= 0) {
         updatedChunks[ci] = { ...updatedChunks[ci]!, speaker };
       } else {
-        // Create a stub chunk with speaker assignment (text filled from paragraphs)
-        const paragraphs = scene.narration?.script ? splitIntoParagraphs(scene.narration.script) : [];
+        // Create a stub chunk with speaker assignment (text filled from the
+        // pause-aware split so the index matches the generation path).
+        const derived = scene.narration?.script
+          ? splitScriptIntoChunks(scene.narration.script, true)
+          : [];
         updatedChunks.push({
           index,
-          text: paragraphs[index] ?? '',
+          text: derived[index]?.text ?? '',
+          ...(derived[index]?.gapSec ? { gapSec: derived[index]!.gapSec } : {}),
           speaker,
         });
       }

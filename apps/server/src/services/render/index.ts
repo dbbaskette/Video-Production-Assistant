@@ -21,6 +21,7 @@ import { renderLowerThirdsOverlay } from '../overlay/render.js';
 import { resolveLtColors } from '../overlay/colors.js';
 import { buildTransitionClip } from './transition-clip.js';
 import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
+import { ensureSilenceClip } from './silence.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -418,26 +419,33 @@ async function prepareSceneAudio(projectPath: string, scene: Scene, tmpDir: stri
   const chunks = (narration.chunks ?? []).filter((c) => c.audio);
   if (chunks.length === 0) return null;
 
-  if (chunks.length === 1) {
-    const full = join(projectPath, chunks[0]!.audio!);
+  const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+  const anyGap = sortedChunks.some((c) => (c.gapSec ?? 0) > 0);
+
+  // Fast path: single chunk, no pause — reuse the chunk file as-is.
+  if (sortedChunks.length === 1 && !anyGap) {
+    const full = join(projectPath, sortedChunks[0]!.audio!);
     return existsSync(full) ? full : null;
   }
 
-  // Concat multiple chunks via ffmpeg concat demuxer (works without re-encode for
-  // matching codecs, which our chunks are since they come from the same TTS).
-  const sortedChunks = [...chunks].sort((a, b) => a.index - b.index);
+  // Concat, inserting `gapSec` of silence after any chunk that has a pause.
+  const fileEntry = (p: string) => `file '${p.replace(/'/g, "'\\''")}'`;
+  const lines: string[] = [];
+  for (const c of sortedChunks) {
+    lines.push(fileEntry(join(projectPath, c.audio!)));
+    const gap = c.gapSec ?? 0;
+    if (gap > 0) {
+      const sil = await ensureSilenceClip(tmpDir, gap, runFfmpeg);
+      if (sil) lines.push(fileEntry(sil));
+    }
+  }
   const concatList = join(tmpDir, `${scene.id}-audio-list.txt`);
-  const lines = sortedChunks.map((c) => {
-    const abs = join(projectPath, c.audio!);
-    // ffmpeg concat list format: file 'PATH' — escape single quotes by closing then re-opening
-    return `file '${abs.replace(/'/g, "'\\''")}'`;
-  }).join('\n');
-  await writeFile(concatList, lines);
+  await writeFile(concatList, lines.join('\n'));
 
   const out = join(tmpDir, `${scene.id}-audio.mp3`);
   await runFfmpeg([
     '-y', '-f', 'concat', '-safe', '0', '-i', concatList,
-    '-c:a', 'libmp3lame', '-b:a', '192k',
+    '-c:a', 'libmp3lame', '-b:a', '192k', '-ar', '44100', '-ac', '1',
     out,
   ]);
   return out;

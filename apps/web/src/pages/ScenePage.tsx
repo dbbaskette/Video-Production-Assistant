@@ -555,6 +555,19 @@ export function ScenePage(props: ScenePageProps = {}) {
     }
   }, [projectId, sceneId, resolveChunkVoice, getChunkText, queryClient, narrationMode, chunkSpeakers, selectedExpressiveness]);
 
+  // Set the trailing pause (silence) after a chunk. Applied at render time —
+  // no TTS regen. Clamped 0–10s; 0 clears it.
+  const saveChunkGap = useCallback(async (index: number, gapSec: number) => {
+    if (!projectId || !sceneId) return;
+    const clamped = Math.min(10, Math.max(0, Math.round(gapSec * 10) / 10));
+    try {
+      await narrationApi.setChunkGap(projectId, sceneId, index, clamped);
+      queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
+    } catch (err) {
+      ui.showToast({ message: 'Could not save pause', detail: err instanceof Error ? err.message : undefined, tone: 'error' });
+    }
+  }, [projectId, sceneId, queryClient, ui]);
+
   // Generate chunks on the server with SSE progress. `selector`:
   //   'missing' (default) — only chunks without audio (skips already-rendered ones)
   //   'failed' — only chunks marked failed
@@ -2607,6 +2620,12 @@ export function ScenePage(props: ScenePageProps = {}) {
               )}
 
               {/* ── Paragraph chunks (read-only text + audio) ── */}
+              {narrationState.chunks.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                  Tip: add a timed pause with <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>[pause 1.5s]</code> in the
+                  script (Script tab), or set “Pause after” on any chunk below. Pauses are inserted as silence at render time.
+                </div>
+              )}
               {narrationState.chunks.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {narrationState.chunks.map((chunk) => {
@@ -2762,6 +2781,32 @@ export function ScenePage(props: ScenePageProps = {}) {
                             style={{ width: '100%', marginTop: 8, height: 36 }}
                           />
                         )}
+
+                        {/* Pause after this chunk — inserted as silence at
+                            render time (no re-generate needed). Also settable
+                            inline in the script via [pause 1.5s]. */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 12, color: 'var(--fg-muted)' }}>
+                          <span>Pause after</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10}
+                            step={0.5}
+                            defaultValue={chunk.gapSec ?? 0}
+                            key={`gap-${chunk.index}-${chunk.gapSec ?? 0}`}
+                            onBlur={(e) => {
+                              const v = parseFloat(e.target.value);
+                              const next = Number.isFinite(v) ? v : 0;
+                              if (next !== (chunk.gapSec ?? 0)) saveChunkGap(chunk.index, next);
+                            }}
+                            style={{
+                              width: 56, padding: '3px 6px', fontSize: 12,
+                              background: 'var(--bg)', color: 'var(--fg)',
+                              border: '1px solid var(--border)', borderRadius: 4,
+                            }}
+                          />
+                          <span>s</span>
+                        </div>
                       </div>
                     );
                   })}

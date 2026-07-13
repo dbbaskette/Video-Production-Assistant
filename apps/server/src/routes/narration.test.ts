@@ -264,4 +264,67 @@ describe('narration routes', () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  it('PUT chunk gap persists gapSec without touching the audio', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: 'Hello.\n\nWorld.',
+      chunks: [
+        { index: 0, text: 'Hello.', audio: 'narration/scene-01-chunk-00.mp3', durationSec: 2 },
+        { index: 1, text: 'World.', audio: 'narration/scene-01-chunk-01.mp3', durationSec: 2 },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/chunks/0/gap`,
+      payload: { gapSec: 1.5 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().gapSec).toBe(1.5);
+
+    const updated = await loadStoryboard(projectPath);
+    const chunks = updated!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks!;
+    expect(chunks[0]!.gapSec).toBe(1.5);
+    expect(chunks[0]!.audio).toBe('narration/scene-01-chunk-00.mp3'); // audio unchanged
+
+    // Clearing with 0 removes the gap.
+    await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/chunks/0/gap`,
+      payload: { gapSec: 0 },
+    });
+    const cleared = await loadStoryboard(projectPath);
+    expect(cleared!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks![0]!.gapSec).toBeUndefined();
+  });
+
+  it('PUT chunk gap stub-creates a chunk for a not-yet-generated index', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = { script: 'A.\n\nB.' }; // no chunks generated yet
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/chunks/1/gap`,
+      payload: { gapSec: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const updated = await loadStoryboard(projectPath);
+    const c1 = updated!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks!.find((c) => c.index === 1);
+    expect(c1?.gapSec).toBe(2);
+    expect(c1?.text).toBe('B.');
+  });
+
+  it('rejects an out-of-range chunk gap', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const res = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/chunks/0/gap`,
+      payload: { gapSec: 99 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('invalid_request');
+  });
 });

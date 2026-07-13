@@ -88,6 +88,20 @@ function buildStoryboardContext(sb: Storyboard): string {
     if (hasNarrationAudio) {
       lines.push(`Narration audio: ${scene.narration?.audio ?? `${scene.narration?.chunks?.length} chunks`}`);
       if (scene.narration?.subtitles?.srt) lines.push('Subtitles: SRT + VTT');
+      // Pacing signal: spoken audio (incl. any [pause] gaps) vs recording. A
+      // big shortfall = dead air the author could pace with [pause Xs] beats.
+      const chunks = scene.narration?.chunks ?? [];
+      const spokenSec = chunks.reduce((a, c) => a + (c.durationSec ?? 0), 0);
+      const gapSec = chunks.reduce((a, c) => a + (c.gapSec ?? 0), 0);
+      const recSec = scene.recording?.duration_sec;
+      if (recSec && spokenSec > 0) {
+        const deadAir = recSec - (spokenSec + gapSec);
+        lines.push(
+          `Narration timing: ${spokenSec.toFixed(0)}s spoken + ${gapSec.toFixed(1)}s pauses ` +
+            `vs ${recSec.toFixed(0)}s recording (dead air ${deadAir.toFixed(0)}s). ` +
+            `If dead air is large, suggest pacing with [pause Xs] beats (see pacing rule).`,
+        );
+      }
     } else if (hasScript) {
       // Script written but not synthesised — this is genuinely worth a warn.
       lines.push('Narration audio: none (script present — TTS not yet generated)');
