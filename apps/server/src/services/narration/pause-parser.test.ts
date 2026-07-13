@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePauses } from './pause-parser.js';
+import { parsePauses, stripTimedPauseTokens } from './pause-parser.js';
 
 describe('parsePauses', () => {
   it('returns a single gapless segment for text with no tokens', () => {
@@ -48,6 +48,16 @@ describe('parsePauses', () => {
 
   it('drops a leading token (no silence before any speech)', () => {
     expect(parsePauses('[pause 2s] Hello.')).toEqual([{ text: 'Hello.', gapSec: 0 }]);
+  });
+
+  it('stripTimedPauseTokens removes timed tokens but keeps a bare [pause]', () => {
+    expect(stripTimedPauseTokens('Say [pause 1.5s] this and [pause] that.')).toBe(
+      'Say this and [pause] that.',
+    );
+  });
+
+  it('accepts an uppercase S suffix', () => {
+    expect(parsePauses('a [pause 1.5S] b')[0]!.gapSec).toBe(1.5);
   });
 
   it('drops a trailing token gap (no silence after the last words in the segment list)', () => {

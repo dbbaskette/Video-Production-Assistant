@@ -28,7 +28,7 @@ function clampGap(n: number): number {
 
 /** Parse a numeric pause duration from a token's inner text, else null. */
 function parseDuration(inner: string): number | null {
-  const m = inner.trim().match(/^(\d+(?:\.\d+)?)\s*s?$/);
+  const m = inner.trim().match(/^(\d+(?:\.\d+)?)\s*s?$/i);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
@@ -37,6 +37,16 @@ function parseDuration(inner: string): number | null {
 /** Collapse runs of spaces/tabs (but not newlines) and trim. */
 function normalize(text: string): string {
   return text.replace(/[^\S\n]+/g, ' ').trim();
+}
+
+/**
+ * Belt-and-suspenders: strip TIMED pause tokens (`[pause 1.5s]`, and any
+ * `[pause <something>]`) from text about to be sent to a TTS engine, so a stray
+ * token from an unprocessed path is never vocalised. A bare `[pause]` is left
+ * intact — it belongs to the xAI expressive path.
+ */
+export function stripTimedPauseTokens(text: string): string {
+  return text.replace(/\[pause\s+[^\]]*\]/gi, '').replace(/[^\S\n]{2,}/g, ' ').trim();
 }
 
 export function parsePauses(input: string): PauseSegment[] {

@@ -4,7 +4,7 @@ import type { TtsService } from '../tts/index.js';
 import type { LlmClient } from '../llm/index.js';
 import type { Expressiveness } from '@vpa/shared';
 import { prepareExpressiveText } from '../tts/expressiveness.js';
-import { parsePauses } from './pause-parser.js';
+import { parsePauses, stripTimedPauseTokens } from './pause-parser.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { generateSrt, generateVtt } from './subtitles.js';
 
@@ -87,10 +87,20 @@ export interface ScriptChunk {
  */
 export function splitScriptIntoChunks(script: string, isDialog: boolean): ScriptChunk[] {
   const out: ScriptChunk[] = [];
+  // In dialog mode a `[pause Xs]` mid-turn splits a speaker's line; the
+  // continuation would otherwise lose its `[Speaker X]` prefix and resolve to
+  // the wrong voice. Carry the last-seen speaker onto such continuations.
+  let lastSpeaker: string | null = null;
   for (const seg of parsePauses(script)) {
     const paras = isDialog ? splitDialogIntoChunks(seg.text) : splitIntoParagraphs(seg.text);
     if (paras.length === 0) continue;
-    paras.forEach((text, i) => {
+    paras.forEach((para, i) => {
+      let text = para;
+      if (isDialog) {
+        const m = text.match(/^\[Speaker ([A-Z])\]/);
+        if (m) lastSpeaker = m[1]!;
+        else if (lastSpeaker) text = `[Speaker ${lastSpeaker}] ${text}`;
+      }
       // The pause gap attaches after the last paragraph of this segment.
       out.push({ text, gapSec: i === paras.length - 1 ? seg.gapSec : 0 });
     });
@@ -127,8 +137,16 @@ export async function generateNarration(
   const unsupportedEmotives = tts.checkEmotives(engine, script);
 
   // Materialise the emotiveness level where the engine needs it in the text
-  // (xAI tags); Gemini applies it via the opts below.
-  const prepared = await prepareExpressiveText({ text: script, engine, level, llm, workspaceRoot });
+  // (xAI tags); Gemini applies it via the opts below. Strip any timed pause
+  // token first — the legacy single-file path has no chunk boundaries to turn
+  // it into silence, so it must not be spoken.
+  const prepared = await prepareExpressiveText({
+    text: stripTimedPauseTokens(script),
+    engine,
+    level,
+    llm,
+    workspaceRoot,
+  });
 
   // Generate audio via TTS
   const ttsResult = await tts.generate(engine, prepared, { voice, speed, expressiveness: level });
@@ -190,7 +208,10 @@ export async function generateChunkNarration(
   llm: LlmClient,
   workspaceRoot: string,
 ): Promise<ChunkNarrationResult> {
-  const { projectPath, sceneId, chunkIndex, text, engine, voice, speed } = input;
+  const { projectPath, sceneId, chunkIndex, engine, voice, speed } = input;
+  // Defensively strip any timed pause token so it can never be spoken, even if
+  // this text arrived unprocessed (e.g. a raw generate-chunk API call).
+  const text = stripTimedPauseTokens(input.text);
 
   const sb = await loadStoryboard(projectPath);
   if (!sb) throw new Error('No storyboard found');
@@ -361,6 +382,28 @@ export async function generateAllChunks(
   const paragraphs = derived.map((d) => d.text);
 
   const stored = scene.narration.chunks ?? [];
+
+  // Reconcile stored chunk gaps with the current script tokens BEFORE
+  // generating. A token gap (>0) seeds/overrides; no token preserves any
+  // UI-set gap. This is what applies a gap-only script edit (which doesn't
+  // change chunk text, so isn't otherwise flagged stale) — and it does so
+  // WITHOUT regenerating audio, per the spec's "gap ≠ TTS regen" guarantee.
+  {
+    let gapsChanged = false;
+    const synced = stored.map((c) => {
+      const tokenGap = derived[c.index]?.gapSec ?? 0;
+      if (tokenGap > 0 && (c.gapSec ?? 0) !== tokenGap) {
+        gapsChanged = true;
+        return { ...c, gapSec: tokenGap };
+      }
+      return c;
+    });
+    if (gapsChanged) {
+      const narration = { ...(scene.narration ?? {}), chunks: synced };
+      await saveStoryboard(projectPath, updateScene(sb, sceneId, { narration: narration as any }));
+    }
+  }
+
   const allIndices = paragraphs.map((_, i) => i);
   // 'missing' is the default selector and what the Generate All button uses.
   // It originally meant "no audio file rendered yet", but that's too narrow:
@@ -430,7 +473,10 @@ export async function generateAllChunks(
     });
     try {
       await generateChunkNarration(
-        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: derived[i]?.gapSec ?? 0 },
+        // Only pass a token-seeded gap when the script actually has one (>0);
+        // omitting it lets generateChunkNarration PRESERVE a manually-set
+        // (UI) gap instead of an explicit 0 clobbering it.
+        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: derived[i]?.gapSec || undefined },
         tts,
         llm,
         workspaceRoot,

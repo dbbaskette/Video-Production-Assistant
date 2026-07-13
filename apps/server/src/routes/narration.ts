@@ -288,12 +288,27 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
     const chunks = [...(scene.narration?.chunks ?? [])];
     const ci = chunks.findIndex((c) => c.index === idx);
-    if (ci < 0) return reply.status(404).send({ error: `Chunk not found: ${idx}`, code: 'chunk_not_found' });
-
-    const nextChunk = { ...chunks[ci]! };
-    if (gap > 0) nextChunk.gapSec = gap;
-    else delete (nextChunk as { gapSec?: number }).gapSec;
-    chunks[ci] = nextChunk;
+    if (ci >= 0) {
+      const nextChunk = { ...chunks[ci]! };
+      if (gap > 0) nextChunk.gapSec = gap;
+      else delete (nextChunk as { gapSec?: number }).gapSec;
+      chunks[ci] = nextChunk;
+    } else {
+      // Chunk not generated yet — pauses are independent of TTS, so build a
+      // stub from the script (matching how markChunkFailed / speaker
+      // assignment do). Nothing to store if the gap is 0.
+      if (gap > 0) {
+        const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
+        const derived = scene.narration?.script
+          ? splitScriptIntoChunks(scene.narration.script, isDialog)
+          : [];
+        const stub = derived[idx];
+        if (!stub) return reply.status(404).send({ error: `Chunk not found: ${idx}`, code: 'chunk_not_found' });
+        const dm = isDialog ? stub.text.match(/^\[Speaker ([A-Z])\]/) : null;
+        chunks.push({ index: idx, text: stub.text, gapSec: gap, ...(dm ? { speaker: dm[1] } : {}) });
+        chunks.sort((a, b) => a.index - b.index);
+      }
+    }
     const narration = { ...(scene.narration ?? {}), chunks };
     const updated = updateScene(sb, sceneId, { narration: narration as any });
     await saveStoryboard(projectPath, updated);

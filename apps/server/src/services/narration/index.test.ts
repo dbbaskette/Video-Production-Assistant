@@ -250,6 +250,62 @@ describe('narration service', () => {
     );
   });
 
+  it('Regenerate All preserves a manually-set gap that has no script token', async () => {
+    const sb = makeSampleStoryboard();
+    sb.scenes[0]!.narration = {
+      script: 'A.\n\nB.', // no pause tokens
+      chunks: [
+        { index: 0, text: 'A.', audio: 'narration/scene-01-chunk-00.mp3', durationSec: 2, gapSec: 3 },
+        { index: 1, text: 'B.', audio: 'narration/scene-01-chunk-01.mp3', durationSec: 2 },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice', selector: 'all' },
+      tts, fakeLlm, wsRoot(), () => {},
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const chunks = updated!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks!;
+    expect(chunks[0]!.gapSec).toBe(3); // UI-set gap survived a full regen
+  });
+
+  it('applies a gap-only script edit on Generate All without regenerating audio', async () => {
+    const sb = makeSampleStoryboard();
+    sb.scenes[0]!.narration = {
+      script: 'A.\n\nB.',
+      chunks: [
+        { index: 0, text: 'A.', audio: 'narration/scene-01-chunk-00.mp3', durationSec: 2 },
+        { index: 1, text: 'B.', audio: 'narration/scene-01-chunk-01.mp3', durationSec: 2 },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+    // Author appends a pause after A — the token strips to the same text 'A.',
+    // so the chunk is NOT stale and won't regenerate.
+    const sb2 = (await loadStoryboard(projectPath))!;
+    sb2.scenes[0]!.narration!.script = 'A. [pause 2s]\n\nB.';
+    await saveStoryboard(projectPath, sb2);
+
+    await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice', selector: 'missing' },
+      tts, fakeLlm, wsRoot(), () => {},
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const chunks = updated!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks!;
+    expect(chunks[0]!.gapSec).toBe(2); // gap-only edit applied
+    expect(chunks[0]!.audio).toBe('narration/scene-01-chunk-00.mp3'); // not regenerated
+  });
+
+  it('splitScriptIntoChunks: a mid-turn dialog pause keeps the speaker on the continuation', () => {
+    const chunks = splitScriptIntoChunks('[Speaker A] Hello there [pause 1s] and welcome.', true);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.text).toBe('[Speaker A] Hello there');
+    expect(chunks[0]!.gapSec).toBe(1);
+    expect(chunks[1]!.text).toBe('[Speaker A] and welcome.');
+  });
+
   it('splitScriptIntoChunks: standalone [pause] line, mid-paragraph split, and gapless', () => {
     expect(splitScriptIntoChunks('First para.\n\n[pause 2s]\n\nSecond para.', false)).toEqual([
       { text: 'First para.', gapSec: 2 },
