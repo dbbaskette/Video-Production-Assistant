@@ -18,6 +18,7 @@ For each scene, evaluate:
    - **Script absent + audio absent** → SKIP this check entirely; do NOT emit a narration item. The user opted out of narration at the project level — they're rendering with the recording's own audio (or silent), which is a valid configuration.
 5. **Lower thirds** — Optional. If present, check that timings fall within the recording duration. If absent, do not warn.
 6. **Missing assets** — Any expected files that are missing? Only consider an asset "expected" if its parent feature is in use (e.g. don't expect narration audio for a scene with no script).
+7. **Pacing** — Optional. Each narrated scene's context includes a `Narration timing:` line with the spoken length, existing pause length, the recording length, and the resulting **dead air**. When dead air is **large** (roughly ≥ 5s, or the recording is well over twice the spoken length), the narration will feel rushed against a long clip. Emit **one** `pacing` suggestion telling the author they can add deliberate beats with the inline token — quote the exact syntax **`[pause 1.5s]`** (any duration 0.1–10s) — placed where they want the narration to breathe or sync to on-screen action. Use `severity: "info"` (or `"warn"` for very large dead air). Do NOT suggest pacing when dead air is small, when there is no narration audio, or when the scene already contains meaningful pauses.
 
 ## Severity levels
 

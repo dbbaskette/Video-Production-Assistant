@@ -39,7 +39,8 @@ function totalNarrationDuration(scene: Scene): number {
   if (!n) return 0;
   const chunks = n.chunks ?? [];
   if (chunks.length > 0) {
-    return chunks.reduce((acc, c) => acc + (c.durationSec ?? 0), 0);
+    // Include inter-chunk pauses so the total reflects the rendered length.
+    return chunks.reduce((acc, c) => acc + (c.durationSec ?? 0) + (c.gapSec ?? 0), 0);
   }
   return 0;
 }

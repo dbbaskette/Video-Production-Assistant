@@ -22,6 +22,7 @@ function categoryToTab(category: string): string | null {
     case 'recording': return 'Recording';
     case 'script':    return 'Script';
     case 'narration': return 'Narration';
+    case 'pacing':    return 'Script'; // pauses are authored via [pause Xs] in the script
     case 'lower_thirds': return 'Lower Thirds';
     case 'description': return null; // no dedicated tab; scene name/desc shown across
     case 'general': return null;

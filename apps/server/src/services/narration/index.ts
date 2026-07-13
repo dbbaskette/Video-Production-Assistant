@@ -4,6 +4,7 @@ import type { TtsService } from '../tts/index.js';
 import type { LlmClient } from '../llm/index.js';
 import type { Expressiveness } from '@vpa/shared';
 import { prepareExpressiveText } from '../tts/expressiveness.js';
+import { parsePauses } from './pause-parser.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { generateSrt, generateVtt } from './subtitles.js';
 
@@ -34,6 +35,9 @@ export interface ChunkNarrationInput {
   voice: string;
   speed?: number;
   expressiveness?: Expressiveness;
+  /** Trailing silence after this chunk. When omitted, the chunk's existing
+   *  gap is preserved (a single-chunk regen shouldn't drop a set pause). */
+  gapSec?: number;
 }
 
 export interface ChunkNarrationResult {
@@ -65,6 +69,33 @@ export function splitDialogIntoChunks(script: string): string[] {
     .filter((p) => p.length > 0);
   // Fall back to paragraph splitting if no speaker tags
   return chunks.length > 1 ? chunks : splitIntoParagraphs(script);
+}
+
+export interface ScriptChunk {
+  text: string;
+  gapSec: number;
+}
+
+/**
+ * Pause-aware chunk derivation — the SINGLE source of chunk boundaries. Every
+ * site that derives chunks from a script (generation, failure stubs, the GET
+ * narration route) must use this so indices stay aligned.
+ *
+ * Composes `[pause Xs]` parsing (over the whole script, so a pause on its own
+ * line between paragraphs folds correctly) with the existing paragraph / dialog
+ * split. A pause's gap lands on the LAST paragraph of the text preceding it.
+ */
+export function splitScriptIntoChunks(script: string, isDialog: boolean): ScriptChunk[] {
+  const out: ScriptChunk[] = [];
+  for (const seg of parsePauses(script)) {
+    const paras = isDialog ? splitDialogIntoChunks(seg.text) : splitIntoParagraphs(seg.text);
+    if (paras.length === 0) continue;
+    paras.forEach((text, i) => {
+      // The pause gap attaches after the last paragraph of this segment.
+      out.push({ text, gapSec: i === paras.length - 1 ? seg.gapSec : 0 });
+    });
+  }
+  return out;
 }
 
 /**
@@ -191,6 +222,9 @@ export async function generateChunkNarration(
   const existingChunks = scene.narration?.chunks ?? [];
   const chunkIdx = existingChunks.findIndex((c) => c.index === chunkIndex);
   const existingSpeaker = chunkIdx >= 0 ? existingChunks[chunkIdx]!.speaker : undefined;
+  // Seed gap from the request (script-derived); otherwise preserve any existing
+  // gap so a single-chunk regen doesn't wipe a set pause.
+  const gapSec = input.gapSec ?? (chunkIdx >= 0 ? existingChunks[chunkIdx]!.gapSec : undefined) ?? 0;
 
   const newChunk = {
     index: chunkIndex,
@@ -198,6 +232,7 @@ export async function generateChunkNarration(
     audio: audioRelPath,
     durationSec: ttsResult.durationSec,
     timings: ttsResult.timings ?? [],
+    ...(gapSec > 0 ? { gapSec } : {}),
     ...(existingSpeaker ? { speaker: existingSpeaker } : {}),
   };
 
@@ -283,10 +318,10 @@ async function markChunkFailed(
   } else {
     // Build a stub chunk with text from the script (split index)
     const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
-    const paragraphs = scene.narration?.script
-      ? (isDialog ? splitDialogIntoChunks(scene.narration.script) : splitIntoParagraphs(scene.narration.script))
+    const derived = scene.narration?.script
+      ? splitScriptIntoChunks(scene.narration.script, isDialog)
       : [];
-    const text = paragraphs[chunkIndex] ?? '';
+    const text = derived[chunkIndex]?.text ?? '';
     updated = [...existing, { index: chunkIndex, text, failed: failedRecord }];
     updated.sort((a, b) => a.index - b.index);
   }
@@ -321,9 +356,9 @@ export async function generateAllChunks(
   if (!scene.narration?.script) throw new Error('Scene has no script to narrate');
 
   const isDialog = (scene.narration.mode ?? 'monologue') === 'dialog';
-  const paragraphs = isDialog
-    ? splitDialogIntoChunks(scene.narration.script)
-    : splitIntoParagraphs(scene.narration.script);
+  // Pause-aware chunks: each carries its text (pause tokens stripped) + gapSec.
+  const derived = splitScriptIntoChunks(scene.narration.script, isDialog);
+  const paragraphs = derived.map((d) => d.text);
 
   const stored = scene.narration.chunks ?? [];
   const allIndices = paragraphs.map((_, i) => i);
@@ -395,7 +430,7 @@ export async function generateAllChunks(
     });
     try {
       await generateChunkNarration(
-        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness },
+        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: derived[i]?.gapSec ?? 0 },
         tts,
         llm,
         workspaceRoot,

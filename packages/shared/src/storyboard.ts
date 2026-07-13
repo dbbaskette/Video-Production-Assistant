@@ -18,6 +18,9 @@ export const NarrationChunkSchema = z.object({
   text: z.string(),
   audio: z.string().optional(),        // e.g. "narration/scene-01-chunk-00.mp3"
   durationSec: z.number().optional(),
+  /** Trailing silence (seconds) inserted AFTER this chunk at concat time. Seeded
+   *  from `[pause Xs]` tokens in the script; editable per-chunk. Absent ⇒ 0. */
+  gapSec: z.number().nonnegative().optional(),
   timings: z.array(TimingSchema).optional(),
   speaker: z.string().optional(),      // "A" | "B" — dialog mode speaker assignment
   /** Last failed-generation record. Cleared on next successful regeneration. */

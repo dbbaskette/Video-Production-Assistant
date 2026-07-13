@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { TtsService, createFakeTtsProvider } from '../tts/index.js';
 import { createFakeLlm } from '../llm/index.js';
 import { saveStoryboard, loadStoryboard } from '../storyboard/index.js';
-import { generateNarration, generateAllChunks } from './index.js';
+import { generateNarration, generateAllChunks, splitScriptIntoChunks } from './index.js';
 import type { Storyboard } from '@vpa/shared';
 
 // The `fake` TTS engine never routes through the xAI expressiveness pass, so
@@ -140,6 +140,27 @@ describe('narration service', () => {
     expect(scene?.narration?.tts?.expressiveness).toBe('light');
   });
 
+  it('stores gapSec on chunks from [pause] tokens in the script', async () => {
+    const sb = makeSampleStoryboard();
+    sb.scenes[0]!.narration = { script: 'First line. [pause 1.5s] Second line.' };
+    await saveStoryboard(projectPath, sb);
+
+    await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const chunks = updated!.scenes.find((s) => s.id === 'scene-01')!.narration!.chunks!;
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.text).toBe('First line.'); // token stripped
+    expect(chunks[0]!.gapSec).toBe(1.5);
+    expect(chunks[1]!.gapSec ?? 0).toBe(0);
+  });
+
   it('throws when scene has no script', async () => {
     const sb = makeSampleStoryboard();
     await saveStoryboard(projectPath, sb);
@@ -227,6 +248,21 @@ describe('narration service', () => {
     expect(scene?.narration?.chunks?.[0]?.text).toBe(
       '[warm] This is the NEW first paragraph after a regen.',
     );
+  });
+
+  it('splitScriptIntoChunks: standalone [pause] line, mid-paragraph split, and gapless', () => {
+    expect(splitScriptIntoChunks('First para.\n\n[pause 2s]\n\nSecond para.', false)).toEqual([
+      { text: 'First para.', gapSec: 2 },
+      { text: 'Second para.', gapSec: 0 },
+    ]);
+    expect(splitScriptIntoChunks('One [pause 1s] two.', false)).toEqual([
+      { text: 'One', gapSec: 1 },
+      { text: 'two.', gapSec: 0 },
+    ]);
+    expect(splitScriptIntoChunks('A.\n\nB.', false)).toEqual([
+      { text: 'A.', gapSec: 0 },
+      { text: 'B.', gapSec: 0 },
+    ]);
   });
 
   it('reports unsupported emotive tags', async () => {

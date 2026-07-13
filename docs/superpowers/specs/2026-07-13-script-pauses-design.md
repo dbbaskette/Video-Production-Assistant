@@ -47,11 +47,12 @@ recording — dead air).
 
 `[pause <seconds>]` — e.g. `[pause 1.5s]`, `[pause 0.8s]`, `[pause 2]`.
 
-- Regex: `/\[pause\s+(\d+(?:\.\d+)?)\s*s?\]/gi`.
-- Duration clamped to **0.1–10s**. A match with an out-of-range or unparseable
-  duration is stripped from the text and contributes **no** gap (fails safe).
-- A **bare** `[pause]` (no number) is NOT matched here — it belongs to the xAI
-  expressive path.
+- Matcher: `/\[pause\b([^\]]*)\]/gi`, then parse the captured inner value.
+- A numeric inner (`1.5s`, `2`, `0.8 s`) → **clamped to 0.1–10s** → that gap;
+  the token is stripped from the text.
+- A **non-numeric** inner (`[pause abc]`) → stripped, **no** gap (fails safe).
+- A **bare** `[pause]` (empty/whitespace inner) → **left untouched** — it belongs
+  to the xAI expressive path.
 
 ## Data model
 
@@ -145,7 +146,9 @@ updates the stored `gapSec`.
 
 | Case | Handling |
 |---|---|
-| Malformed / out-of-range duration | Token stripped, no gap (fail safe). |
+| Non-numeric duration (`[pause abc]`) | Token stripped, no gap (fail safe). |
+| Out-of-range number (`[pause 99s]`) | Clamped to 0.1–10s. |
+| Bare `[pause]` | Left untouched (xAI expressive path). |
 | No tokens / no gaps | Identical to today (gapless concat). |
 | Silence-clip generation fails | Log; concat without that gap; render still succeeds. |
 | Leading `[pause]` before any speech | Dropped (no leading silence). |
