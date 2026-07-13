@@ -23,9 +23,11 @@ export interface PolishScriptModalProps {
   /** The user's pasted draft to evaluate + polish. */
   draft: string;
   onClose: () => void;
-  /** Fired once the polished script has been saved. Use to invalidate any
-   *  cached queries the caller cares about (script, narration, storyboard). */
-  onAccepted: () => void;
+  /** Fired once the polished script has been saved, with the exact text that
+   *  was persisted. The caller should set its editor state directly from this
+   *  (rather than waiting on a cache refetch) so the editor shows the new
+   *  script immediately, and invalidate any cached queries it cares about. */
+  onAccepted: (savedScript: string) => void;
 }
 
 export function PolishScriptModal({
@@ -43,8 +45,10 @@ export function PolishScriptModal({
     // Save through the monologue slot so the previous script is backed up and
     // stale TTS chunks are cleared — identical to the editor's Save.
     mutationFn: (script: string) => narrationApi.saveScript(projectId, sceneId, script, 'monologue'),
-    onSuccess: () => {
-      onAccepted();
+    // Hand the saved text back so the parent can set its editor directly. The
+    // mutation's `variables` is the script we just persisted.
+    onSuccess: (_data, script) => {
+      onAccepted(script);
       onClose();
     },
   });
@@ -96,10 +100,47 @@ export function PolishScriptModal({
         )}
 
         {polishMutation.isError && (
-          <p style={{ color: 'var(--danger)', fontSize: 13 }}>
-            Polish failed:{' '}
-            {polishMutation.error instanceof Error ? polishMutation.error.message : 'Unknown error'}
-          </p>
+          <>
+            <p style={{ color: 'var(--danger)', fontSize: 13, margin: 0 }}>
+              Polish failed:{' '}
+              {polishMutation.error instanceof Error ? polishMutation.error.message : 'Unknown error'}
+            </p>
+            {/* A first-attempt failure leaves `data` undefined, so the main
+                button row below never renders. Give the user Try again / Cancel
+                here so the modal isn't a dead end (they'd otherwise have to
+                close and re-open). */}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={onClose}
+                style={{
+                  padding: '8px 16px',
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  color: 'var(--fg)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => polishMutation.mutate()}
+                disabled={polishMutation.isPending}
+                style={{
+                  padding: '8px 16px',
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  color: 'var(--fg)',
+                  cursor: polishMutation.isPending ? 'wait' : 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                {polishMutation.isPending ? 'Retrying…' : 'Try again'}
+              </button>
+            </div>
+          </>
         )}
 
         {data && (

@@ -3250,13 +3250,20 @@ export function ScenePage(props: ScenePageProps = {}) {
           sceneName={scene?.name ?? sceneId}
           draft={draftScript}
           onClose={() => setPolishOpen(false)}
-          onAccepted={() => {
+          onAccepted={(savedScript) => {
             // Polished script was saved as the monologue (+ TTS chunks wiped,
-            // previous version backed up). Same as Tighten: drop the local
-            // edit buffer so the editor re-reads the saved value, and show a
-            // toast for parity with the editor's own Save.
-            setEditingScript(null);
+            // previous version backed up). Set the editor DIRECTLY from the
+            // saved text — not setEditingScript(null) + invalidate, which
+            // races the async refetch and can leave the editor stuck on the
+            // pre-polish script (the effect re-hydrates from stale cache).
+            // Mirror generateScriptMutation.onSuccess here.
+            setEditingScript(savedScript);
             setScriptDirty(false);
+            // Return to describe mode with the paste box cleared so the BYO
+            // input reads as "done" — the polished script now lives in the
+            // editor below, and the raw draft can't be accidentally re-submitted.
+            setScriptInputMode('describe');
+            setDraftScript('');
             queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
             queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
             queryClient.invalidateQueries({ queryKey: ['script', projectId, sceneId] });
