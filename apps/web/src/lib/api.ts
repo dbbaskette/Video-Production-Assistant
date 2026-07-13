@@ -1000,6 +1000,9 @@ export interface RenderOptions {
   musicTrackId?: string | null;
   /** Music gain offset in dB (negative = ducked under narration). Default -20. */
   musicVolumeDb?: number;
+  /** Where music plays: 'full' (whole video, default) or 'bumpers' (only over
+   *  the intro/outro bumper windows). */
+  musicScope?: 'full' | 'bumpers';
   /** When false, ignore the brand's bumper_intro / bumper_outro on this render. */
   useBrandBumpers?: boolean;
   /** When false, ignore the brand's default_music_track even when no project

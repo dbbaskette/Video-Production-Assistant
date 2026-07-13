@@ -20,6 +20,7 @@ import {
 import { renderLowerThirdsOverlay } from '../overlay/render.js';
 import { resolveLtColors } from '../overlay/colors.js';
 import { buildTransitionClip } from './transition-clip.js';
+import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,6 +63,13 @@ export interface RenderOptions {
   music?: {
     audioPath: string;          // absolute path to the music file (mp3/wav)
     volumeDb?: number;          // gain offset in dB; -20 = quiet bed, 0 = full volume
+    /**
+     * Where the music plays. 'full' (default) beds it under the whole video;
+     * 'bumpers' plays it only over the intro/outro bumper windows and stays
+     * silent over the scenes. 'bumpers' with no bumpers present yields no
+     * music — the UI only offers it when a bumper is active.
+     */
+    scope?: MusicScope;
   };
   /**
    * Optional brand bumper videos. Prepended / appended to the scene chain at
@@ -268,6 +276,10 @@ export async function renderFinalVideo(
   // copies live in tmpDir alongside everything else and get cleaned up at end
   // of the function. Cuts (transition: undefined) between bumpers and scenes
   // are intentional — bumpers come in/out cleanly, no fancy xfade.
+  // Normalised bumper paths captured so 'bumpers'-scope music can probe their
+  // real durations for the music-gating windows.
+  let introBumperPath: string | undefined;
+  let outroBumperPath: string | undefined;
   if (opts.bumperIntro || opts.bumperOutro) {
     const firstSize = await probeVideoSize(scenePaths[0]!);
     const targetW = firstSize.width || 1920;
@@ -276,12 +288,14 @@ export async function renderFinalVideo(
       const normalised = await normaliseBumper(
         opts.bumperIntro, targetW, targetH, includeNarration, tmpDir, 'intro',
       );
+      introBumperPath = normalised;
       joinPlan.unshift({ path: normalised, durationSec: 0.5, kind: 'bumper' });
     }
     if (opts.bumperOutro && existsSync(opts.bumperOutro)) {
       const normalised = await normaliseBumper(
         opts.bumperOutro, targetW, targetH, includeNarration, tmpDir, 'outro',
       );
+      outroBumperPath = normalised;
       joinPlan.push({ path: normalised, durationSec: 0.5, kind: 'bumper' });
     }
   }
@@ -294,17 +308,32 @@ export async function renderFinalVideo(
 
   // Stage 4: optional background music overlay
   if (opts.music) {
+    const scope: MusicScope = opts.music.scope ?? 'full';
+    // For 'bumpers' scope, probe the real bumper durations so the music is
+    // gated to exactly the intro/outro windows.
+    let introDurSec = 0;
+    let outroDurSec = 0;
+    if (scope === 'bumpers') {
+      if (introBumperPath) introDurSec = await probeDuration(introBumperPath);
+      if (outroBumperPath) outroDurSec = await probeDuration(outroBumperPath);
+    }
     onProgress?.({
       type: 'step',
       step: 'mix-music',
       totalScenes: renderableScenes.length,
-      message: `Mixing background music (${opts.music.volumeDb ?? -20} dB)`,
+      message:
+        scope === 'bumpers'
+          ? `Mixing background music over bumpers only (${opts.music.volumeDb ?? -20} dB)`
+          : `Mixing background music (${opts.music.volumeDb ?? -20} dB)`,
     });
     await overlayMusic({
       videoPath: concatOutPath,
       musicPath: opts.music.audioPath,
       volumeDb: opts.music.volumeDb ?? -20,
       outputPath: finalPath,
+      scope,
+      introDurSec,
+      outroDurSec,
     });
   }
 
@@ -330,27 +359,30 @@ interface MusicOverlayOpts {
   musicPath: string;        // background music track (mp3/wav)
   volumeDb: number;         // negative dB to duck music under narration
   outputPath: string;       // final.mp4
+  scope?: MusicScope;       // 'full' (default) or 'bumpers'-only
+  introDurSec?: number;     // intro bumper duration (for 'bumpers' scope)
+  outroDurSec?: number;     // outro bumper duration (for 'bumpers' scope)
 }
 
 /**
  * Overlay background music under the existing audio of `videoPath`. Music
- * is loop-extended with `-stream_loop -1` and trimmed to the video duration
- * via amix's `duration=first`. Existing narration sits on top at full volume.
+ * is loop-extended and trimmed to the video duration via amix's
+ * `duration=first`. Existing narration sits on top at full volume.
  *
- * Filter chain:
- *   [1:a] aloop -> volume=Xdb -> afade out at end -> [music]
- *   [0:a][music] amix=duration=first:dropout_transition=2 -> [aout]
- *   then map [aout] + the original [0:v]
+ * The filter graph is built by `buildMusicFilterComplex` — for 'bumpers'
+ * scope it mutes the music over the scene portion so it only plays over the
+ * intro/outro bumper windows.
  */
 async function overlayMusic(opts: MusicOverlayOpts): Promise<void> {
   const dur = await probeDuration(opts.videoPath);
-  // 1.5s tail fade keeps the music from cutting off abruptly.
-  const fadeOutStart = Math.max(0, dur - 1.5);
 
-  const filterComplex = [
-    `[1:a]aloop=loop=-1:size=2147483647,volume=${opts.volumeDb}dB,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=1.5[music]`,
-    `[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,
-  ].join(';');
+  const filterComplex = buildMusicFilterComplex({
+    scope: opts.scope ?? 'full',
+    volumeDb: opts.volumeDb,
+    totalDurSec: dur,
+    introDurSec: opts.introDurSec ?? 0,
+    outroDurSec: opts.outroDurSec ?? 0,
+  });
 
   await runFfmpeg([
     '-y',

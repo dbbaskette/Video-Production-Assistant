@@ -307,6 +307,8 @@ function RenderSection({
   // has the asset (smart default — match the narration / lower-thirds pattern).
   const [useBrandBumpers, setUseBrandBumpers] = useState<boolean | null>(null);
   const [useBrandMusic, setUseBrandMusic] = useState<boolean | null>(null);
+  // Where music plays: 'full' timeline (default) or only over the bumpers.
+  const [musicScope, setMusicScope] = useState<'full' | 'bumpers'>('full');
   const closeStreamRef = useRef<(() => void) | null>(null);
 
   const status = useQuery({
@@ -388,6 +390,15 @@ function RenderSection({
   const effectiveIncludeLowerThirds = includeLowerThirds ?? hasAnyLowerThirds;
   const effectiveUseBrandBumpers = useBrandBumpers ?? brandHasBumpers;
   const effectiveUseBrandMusic = useBrandMusic ?? brandHasMusic;
+  // Will music actually be mixed into this render? (project track enabled, or
+  // the brand's default music applies because no project track is chosen)
+  const musicActiveInRender =
+    musicEnabled || (!musicTrackId && effectiveUseBrandMusic && brandHasMusic);
+  // Will a bumper appear? 'bumpers'-only music needs one, so we coerce back to
+  // 'full' when there isn't one (the UI also disables the option).
+  const bumpersActiveInRender = effectiveUseBrandBumpers && brandHasBumpers;
+  const effectiveMusicScope: 'full' | 'bumpers' =
+    musicScope === 'bumpers' && bumpersActiveInRender && musicActiveInRender ? 'bumpers' : 'full';
   const framesQuery = useQuery({
     queryKey: ['frames'],
     queryFn: () => framesApi.list(),
@@ -409,6 +420,7 @@ function RenderSection({
         includeLowerThirds: effectiveIncludeLowerThirds,
         musicTrackId: musicEnabled ? musicTrackId : null,
         musicVolumeDb,
+        musicScope: effectiveMusicScope,
         useBrandBumpers: effectiveUseBrandBumpers,
         useBrandMusic: effectiveUseBrandMusic,
       }),
@@ -563,6 +575,9 @@ function RenderSection({
           onChangeMusic={setUseBrandMusic}
           disabled={isRunning}
           projectMusicSelected={musicEnabled && !!musicTrackId}
+          musicScope={musicScope}
+          onMusicScopeChange={setMusicScope}
+          musicActive={musicActiveInRender}
         />
       )}
 
@@ -728,6 +743,9 @@ function BrandAssetsSection({
   onChangeMusic,
   disabled,
   projectMusicSelected,
+  musicScope,
+  onMusicScopeChange,
+  musicActive,
 }: {
   slug: string;
   bumperIntro: string | null;
@@ -742,6 +760,12 @@ function BrandAssetsSection({
    *  true, the brand's default music is overridden regardless of `useMusic`,
    *  so we dim that toggle and explain. */
   projectMusicSelected: boolean;
+  /** 'full' or 'bumpers' — where background music plays in the render. */
+  musicScope: 'full' | 'bumpers';
+  onMusicScopeChange: (v: 'full' | 'bumpers') => void;
+  /** Whether any music will actually be mixed into this render. The
+   *  bumpers-only option is meaningless (disabled) without music. */
+  musicActive: boolean;
 }) {
   const hasBumpers = !!(bumperIntro || bumperOutro);
   const hasMusic = !!defaultMusic;
@@ -810,6 +834,41 @@ function BrandAssetsSection({
                 <BumperPreview slug={slug} relPath={bumperOutro} label="End" />
               )}
             </div>
+
+            {/* Music scope — only meaningful when bumpers ARE included and
+                some music is actually playing. Per design, we disable (not
+                hide) with a hint so the option is discoverable but never
+                produces a silent render. */}
+            {(() => {
+              const canScope = useBumpers && musicActive;
+              const hint = !musicActive
+                ? 'Add or enable background music first'
+                : !useBumpers
+                  ? 'Turn on “Include bumpers” first'
+                  : undefined;
+              return (
+                <label
+                  title={hint}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 13,
+                    marginTop: 12,
+                    opacity: canScope ? 1 : 0.45,
+                    cursor: canScope && !disabled ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={canScope && musicScope === 'bumpers'}
+                    disabled={disabled || !canScope}
+                    onChange={(e) => onMusicScopeChange(e.target.checked ? 'bumpers' : 'full')}
+                  />
+                  <span>Play background music only over the bumpers</span>
+                </label>
+              );
+            })()}
           </div>
         )}
 
