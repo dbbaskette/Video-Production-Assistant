@@ -83,6 +83,7 @@ export function createQwenTtsProvider(): TtsProvider {
     // leave the supported set empty — the script gate won't whitelist
     // emotive tags that the model would just speak literally.
     supportedEmotives: new Set<string>(),
+    expressiveTags: [],
     voices: [
       {
         id: 'default',

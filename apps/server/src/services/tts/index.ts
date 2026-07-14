@@ -7,6 +7,9 @@ export interface TtsEngineInfo {
   displayName: string;
   voices: TtsVoice[];
   supportedEmotives: string[];
+  /** Real expressive tags the engine honors in the text (empty for engines
+   *  with no inline markup). Drives the Narration-tab tag reference. */
+  expressiveTags: string[];
 }
 
 export class TtsService {
@@ -22,6 +25,7 @@ export class TtsService {
       displayName: p.displayName,
       voices: p.voices,
       supportedEmotives: Array.from(p.supportedEmotives),
+      expressiveTags: p.expressiveTags,
     }));
   }
 

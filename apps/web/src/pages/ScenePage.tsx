@@ -2396,17 +2396,41 @@ export function ScenePage(props: ScenePageProps = {}) {
                     <NarrationCostBadge cost={pendingCost} />
                   )}
 
-                  {/* Emotive tags hint */}
-                  {currentEngine && currentEngine.supportedEmotives.length > 0 && (
-                    <div style={{ marginTop: 8, fontSize: 10, color: 'var(--fg-muted)' }}>
-                      Tags:{' '}
-                      {currentEngine.supportedEmotives.map((tag) => (
-                        <code key={tag} style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3, marginRight: 3, fontSize: 10 }}>
-                          [{tag}]
-                        </code>
-                      ))}
-                    </div>
-                  )}
+                  {/* What Emotiveness does + the tags actually usable for the
+                      selected engine. Replaces the old misleading legend that
+                      listed vestigial [warm]/[confident] tags (stripped, no
+                      effect). Now engine-driven from currentEngine.expressiveTags. */}
+                  {currentEngine && (() => {
+                    const hasTags = currentEngine.expressiveTags.length > 0;
+                    const chip = { background: 'var(--bg)', padding: '1px 5px', borderRadius: 3, marginRight: 4, fontSize: 10 } as const;
+                    return (
+                      <div style={{ marginTop: 8, fontSize: 10, color: 'var(--fg-muted)', lineHeight: 1.7 }}>
+                        <div style={{ marginBottom: 3 }}>
+                          <strong>Emotiveness</strong> auto-applies delivery when you generate —{' '}
+                          {hasTags
+                            ? `${currentEngine.displayName} inserts the tags below into the text.`
+                            : `${currentEngine.displayName} adjusts tone directly (no inline tags).`}{' '}
+                          Higher = more expressive; regenerate to hear a change.
+                        </div>
+                        <div>
+                          Type in your script:{' '}
+                          <code style={chip}>[pause 1.5s]</code>
+                          <span>timed silence — works on any engine</span>
+                          {hasTags ? (
+                            <>
+                              {'  ·  '}
+                              {currentEngine.expressiveTags.map((t) => (
+                                <code key={t} style={chip}>{t}</code>
+                              ))}
+                              <span>({currentEngine.displayName} speech tags)</span>
+                            </>
+                          ) : (
+                            <>{'  ·  '}<span>{currentEngine.displayName} has no inline tags — use the Emotiveness level for expression.</span></>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

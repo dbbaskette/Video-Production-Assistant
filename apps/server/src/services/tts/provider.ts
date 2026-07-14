@@ -25,6 +25,11 @@ export interface TtsProvider {
   id: string;
   displayName: string;
   supportedEmotives: Set<string>;
+  /** Real, usable expressive tags this engine honors IN THE TEXT (e.g. xAI's
+   *  `[pause]`, `<emphasis>`). Empty for engines with no inline markup (Gemini
+   *  — expressiveness comes from the Emotiveness level instead). Shown as the
+   *  Narration-tab tag reference so users know what they can actually type. */
+  expressiveTags: string[];
   voices: TtsVoice[];
   generate(script: string, opts: TtsGenerateOpts): Promise<TtsResult>;
 }
