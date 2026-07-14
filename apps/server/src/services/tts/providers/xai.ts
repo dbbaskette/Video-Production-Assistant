@@ -35,16 +35,18 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
     })),
 
     async generate(script: string, opts: TtsGenerateOpts): Promise<TtsResult> {
-      // IMPORTANT: xAI's /v1/tts vocalizes inline/wrapping tags as LITERAL text
-      // (verified empirically — `<emphasis>`, `[pause]`, `<slow>` etc. are
-      // spoken, not honored, despite the docs). So we send FULLY tag-stripped
-      // text: app emotives (`[warm]`) AND all xAI markup are removed. `spokenText`
-      // also drives the word count / timings.
-      const spokenText = stripXaiTags(stripAppEmotives(script));
+      // xAI's /v1/tts HONORS its expressive tags ([pause], <slow>, <whisper>, …)
+      // — verified via STT: they change delivery, they are NOT spoken. So we
+      // send the tagged text, stripping only the app's own emotive words
+      // (`[warm]`). The tag-insertion pass upstream guards against stray words.
+      const apiText = stripAppEmotives(script);
+      // Fully tag-stripped text drives the word count / timings so tags never
+      // leak into subtitles.
+      const spokenText = stripXaiTags(apiText);
       const voice_id = opts.voice ?? 'Sal';
 
       const body = {
-        text: spokenText,
+        text: apiText,
         voice_id,
         language: 'en',
         output_format: {

@@ -2,15 +2,14 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createXaiTtsProvider } from './xai.js';
 
 /**
- * Regression: xAI's /v1/tts vocalizes inline/wrapping tags as literal text
- * (verified empirically — `<emphasis>`, `[pause]`, `<slow>` etc. are spoken,
- * not honored). So the provider must send fully tag-stripped text; otherwise
- * the narration audio starts with spoken markup.
+ * xAI Grok /v1/tts HONORS its expressive tags (verified via STT: `[pause]`,
+ * `<slow>`, `<whisper>` are applied, not spoken). So the provider must PASS
+ * xAI tags through — stripping only the app's own emotive words (`[warm]`).
  */
-describe('xAI provider — never sends expressive tags to /v1/tts', () => {
+describe('xAI provider — keeps xAI tags, strips only app emotives', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('strips all xAI markup from the text sent to the API', async () => {
+  it('sends xAI expressive tags to the API but drops app emotive words', async () => {
     let sentBody: { text: string } | null = null;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       sentBody = JSON.parse(init.body as string);
@@ -23,15 +22,14 @@ describe('xAI provider — never sends expressive tags to /v1/tts', () => {
     }));
 
     const provider = createXaiTtsProvider('test-key');
-    await provider.generate(
-      '<slow><soft>This is</soft></slow> [pause] <strong>scene one.</strong> [long-pause] Ready?',
-      { voice: 'Sal' },
-    );
+    await provider.generate('[warm] <slow>Watch this</slow> [pause] closely.', { voice: 'Sal' });
 
-    expect(sentBody).not.toBeNull();
-    const text: string = sentBody!.text;
-    // No angle-bracket or square-bracket tags may reach xAI.
-    expect(text.includes('<') || text.includes('[')).toBe(false);
-    expect(text).toBe('This is scene one. Ready?');
+    const text = sentBody!.text;
+    // App emotive removed…
+    expect(text).not.toContain('[warm]');
+    // …but xAI's own tags preserved (they're honored, not spoken).
+    expect(text).toContain('<slow>');
+    expect(text).toContain('[pause]');
+    expect(text).toBe('<slow>Watch this</slow> [pause] closely.');
   });
 });
