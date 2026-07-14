@@ -193,12 +193,12 @@ export function createFakeLlm(): LlmClient {
           text: JSON.stringify({
             notes: [
               `Tightened the opening for ${sceneName}.`,
-              'Added emotive tags for spoken delivery.',
+              'Smoothed the pacing for spoken delivery.',
             ],
             script:
-              `[warm] Here's a polished take on ${sceneName}.\n\n` +
-              `[confident] The key steps stay exactly as you wrote them, just tighter.\n\n` +
-              `[calm] And that wraps up this part.`,
+              `Here's a polished take on ${sceneName}.\n\n` +
+              `The key steps stay exactly as you wrote them, just tighter.\n\n` +
+              `And that wraps up this part.`,
           }),
         };
       }
@@ -208,7 +208,7 @@ export function createFakeLlm(): LlmClient {
         const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/) ?? opts.userPrompt.match(/Scene:\s*(.+)/);
         const sceneName = nameMatch?.[1]?.trim() ?? 'this scene';
         return {
-          text: `[warm] Let's take a look at ${sceneName}. This is where things really come together.\n\n[confident] Notice how we walk through each step carefully. Every action here builds on what we set up earlier.\n\n[thoughtful] The key thing to understand is why this matters — it's not just about the configuration, it's about establishing a pattern you can reuse.\n\n[calm] And that's it for this section. Let's move on to what comes next.`,
+          text: `Let's take a look at ${sceneName}. This is where things really come together.\n\nNotice how we walk through each step carefully. Every action here builds on what we set up earlier.\n\nThe key thing to understand is why this matters — it's not just about the configuration, it's about establishing a pattern you can reuse.\n\nAnd that's it for this section. Let's move on to what comes next.`,
         };
       }
 

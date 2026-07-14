@@ -8,7 +8,7 @@ function workspaceRoot(): string {
 }
 
 describe('script generation', () => {
-  it('generates a narration script with emotive tags', async () => {
+  it('generates a plain-prose narration script (no bracketed tags)', async () => {
     const llm = createFakeLlm();
     const input: ScriptInput = {
       sceneName: 'Configure the MCP Server',
@@ -20,7 +20,9 @@ describe('script generation', () => {
 
     const script = await generateScript(input, llm, workspaceRoot());
     expect(script).toBeTruthy();
-    expect(script).toContain('[');  // contains emotive tags
+    // Delivery is applied at generation time, not via inline tags — the
+    // generated script should be clean prose.
+    expect(script).not.toContain('[');
     expect(script.length).toBeGreaterThan(50);
   });
 

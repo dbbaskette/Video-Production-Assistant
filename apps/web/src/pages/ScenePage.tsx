@@ -119,7 +119,7 @@ export function ScenePage(props: ScenePageProps = {}) {
   //   'describe' — the user describes the scene, AI writes it (the existing
   //                intent + Generate flow).
   //   'byo'      — the user pastes their own script, AI evaluates + polishes
-  //                it (adds emotives, fits to the recording) via PolishScriptModal.
+  //                it (polishes pacing/clarity, fits to the recording) via PolishScriptModal.
   const [scriptInputMode, setScriptInputMode] = useState<'describe' | 'byo'>('describe');
   /** The user's pasted draft, in 'byo' mode. Local-only; not persisted until
    *  the polished result is accepted and saved. */
@@ -1665,7 +1665,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                 id="byo-script"
                 value={draftScript}
                 onChange={(e) => setDraftScript(e.target.value)}
-                placeholder="Paste the narration you've written for this scene. The AI will evaluate it, polish pacing and clarity, add emotive tags, and fit it to the recording length — then show you the result to accept or reject."
+                placeholder="Paste the narration you've written for this scene. The AI will evaluate it, polish pacing and clarity, and fit it to the recording length — then show you the result to accept or reject."
                 rows={8}
                 style={{
                   width: '100%',
@@ -2086,19 +2086,12 @@ export function ScenePage(props: ScenePageProps = {}) {
                       </button>
                     )}
                     <p style={{ margin: 0, color: 'var(--fg-muted)', fontSize: 11 }}>
-                      Use emotive tags like{' '}
+                      Write plain narration. Delivery (tone, emphasis, pacing) is set by the{' '}
+                      <strong>Emotiveness</strong> level on the Narration tab. Add{' '}
                       <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                        [warm]
-                      </code>
-                      ,{' '}
-                      <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                        [confident]
-                      </code>
-                      ,{' '}
-                      <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>
-                        [thoughtful]
+                        [pause 1.5s]
                       </code>{' '}
-                      to guide narration tone.
+                      anywhere for a timed silence.
                     </p>
                   </div>
                 </div>

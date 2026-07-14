@@ -25,7 +25,7 @@ If yes to any of those, cut it.
 ## What to preserve
 
 - **Facts, terminology, product names** — load-bearing.
-- **Emotive tags** in brackets (`[warm]`, `[confident]`, etc.). Keep them attached to whatever sentence they were on, even if you trim that sentence.
+- **`[pause Xs]` timing tokens**, if any — keep them attached to whatever sentence they were on, even if you trim that sentence. (Do not add or keep other bracketed tags.)
 - **Paragraph structure.** One paragraph in = one paragraph out, separated by blank lines.
 - **Voice.** Second person, conversational, demo-style.
 
