@@ -56,6 +56,7 @@ export function createFakeTtsProvider(): TtsProvider {
       'serious',
       'friendly',
     ]),
+    expressiveTags: [],
     voices: [
       { id: 'alice', name: 'Alice', description: 'Warm and friendly narrator' },
       { id: 'bob', name: 'Bob', description: 'Clear and confident presenter' },

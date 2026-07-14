@@ -81,6 +81,9 @@ export function createGeminiTtsProvider(apiKey: string, model?: string): TtsProv
       'warm', 'confident', 'thoughtful', 'calm', 'excited',
       'curious', 'serious', 'friendly', 'professional', 'enthusiastic',
     ]),
+    // Gemini has no inline speech tags — delivery comes from the Emotiveness
+    // level (a natural-language style directive), not text markup.
+    expressiveTags: [],
     voices: GEMINI_VOICES.map((v) => ({
       id: v.id,
       name: v.name,

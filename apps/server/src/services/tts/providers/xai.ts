@@ -53,6 +53,13 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
     supportedEmotives: new Set([
       'warm', 'confident', 'calm', 'excited', 'serious', 'friendly',
     ]),
+    // Real xAI speech tags the model honors in the text (docs: Speech Tags).
+    // The Emotiveness level auto-inserts these; users can also type them.
+    expressiveTags: [
+      '[pause]', '[long-pause]',
+      '<emphasis>', '<slow>', '<fast>', '<soft>', '<loud>',
+      '<higher-pitch>', '<lower-pitch>', '<whisper>',
+    ],
     voices: XAI_VOICES.map((v) => ({
       id: v.id,
       name: v.name,

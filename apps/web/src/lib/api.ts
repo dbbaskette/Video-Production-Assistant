@@ -606,6 +606,9 @@ export interface TtsEngineInfo {
   displayName: string;
   voices: TtsVoiceInfo[];
   supportedEmotives: string[];
+  /** Real expressive tags this engine honors in the text (empty when the
+   *  engine has no inline markup, e.g. Gemini). */
+  expressiveTags: string[];
 }
 
 export interface VoiceProfileInfo {
