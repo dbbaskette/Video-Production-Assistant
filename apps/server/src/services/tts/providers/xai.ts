@@ -13,38 +13,37 @@
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
 import { stripAppEmotives, stripXaiTags } from '../expressiveness.js';
 
-// Full xAI voice roster from GET https://api.x.ai/v1/tts/voices (26 voices, all
-// multilingual). voice_id is case-insensitive, so the original five keep their
-// capitalised ids (no regression for projects that stored e.g. "Sal"); the rest
-// use the API's display name. The first five carry curated descriptions; the
-// newer ones list the API's gender since xAI provides no per-voice blurb.
+// Full xAI voice roster (26 voices) from GET https://api.x.ai/v1/tts/voices,
+// with the "Tone & Use Cases" blurbs from the xAI TTS docs voice table.
+// voice_id is case-insensitive, so the original five keep their capitalised
+// ids (no regression for projects that stored e.g. "Sal").
 const XAI_VOICES = [
   { id: 'Sal', name: 'Sal', description: 'Smooth & balanced — reliable default' },
   { id: 'Eve', name: 'Eve', description: 'Energetic & upbeat — marketing and onboarding' },
   { id: 'Ara', name: 'Ara', description: 'Warm & friendly — conversational narration' },
   { id: 'Leo', name: 'Leo', description: 'Authoritative & strong — technical walkthroughs' },
   { id: 'Rex', name: 'Rex', description: 'Confident & clear — trailers and explainers' },
-  { id: 'Altair', name: 'Altair', description: 'Male' },
-  { id: 'Atlas', name: 'Atlas', description: 'Male' },
-  { id: 'Carina', name: 'Carina', description: 'Female' },
-  { id: 'Castor', name: 'Castor', description: 'Male' },
-  { id: 'Celeste', name: 'Celeste', description: 'Female' },
-  { id: 'Cosmo', name: 'Cosmo', description: 'Male' },
-  { id: 'Helios', name: 'Helios', description: 'Male' },
-  { id: 'Helix', name: 'Helix', description: 'Male' },
-  { id: 'Iris', name: 'Iris', description: 'Female' },
-  { id: 'Kepler', name: 'Kepler', description: 'Male' },
-  { id: 'Lumen', name: 'Lumen', description: 'Male' },
-  { id: 'Luna', name: 'Luna', description: 'Female' },
-  { id: 'Lux', name: 'Lux', description: 'Male' },
-  { id: 'Naksh', name: 'Naksh', description: 'Male' },
-  { id: 'Orion', name: 'Orion', description: 'Male' },
-  { id: 'Perseus', name: 'Perseus', description: 'Male' },
-  { id: 'Rigel', name: 'Rigel', description: 'Male' },
-  { id: 'Sirius', name: 'Sirius', description: 'Male' },
-  { id: 'Ursa', name: 'Ursa', description: 'Female' },
-  { id: 'Zagan', name: 'Zagan', description: 'Male' },
-  { id: 'Zenith', name: 'Zenith', description: 'Male' },
+  { id: 'Altair', name: 'Altair', description: 'Elegant, refined, premium — Advertising, Narration' },
+  { id: 'Atlas', name: 'Atlas', description: 'Confident, commanding, reassuring — Sales, Assistant' },
+  { id: 'Carina', name: 'Carina', description: 'Soft, empathetic, soothing — Wellness, Support' },
+  { id: 'Castor', name: 'Castor', description: 'Charismatic, down-to-earth, easygoing — Sales, Support' },
+  { id: 'Celeste', name: 'Celeste', description: 'Compassionate, confident, reassuring — Support, Assistant' },
+  { id: 'Cosmo', name: 'Cosmo', description: 'Bright, curious, easy to follow — Education, Podcast' },
+  { id: 'Helios', name: 'Helios', description: 'Upbeat, energetic, versatile — Assistant, Wellness' },
+  { id: 'Helix', name: 'Helix', description: 'Bold, dynamic, adrenaline-fueled — Commentary, Podcast' },
+  { id: 'Iris', name: 'Iris', description: 'Friendly, upbeat, charming — Sales, Support' },
+  { id: 'Kepler', name: 'Kepler', description: 'Inventive, forward-thinking, charismatic — Advertising, Podcast' },
+  { id: 'Lumen', name: 'Lumen', description: 'Warm, articulate, engaging — Education, Advertising' },
+  { id: 'Luna', name: 'Luna', description: 'Gentle, patient, nurturing — Education, Assistant' },
+  { id: 'Lux', name: 'Lux', description: 'Grounded, calm, quietly wise — Wellness, Narration' },
+  { id: 'Naksh', name: 'Naksh', description: 'Warm, thoughtful, wise — Assistant, Support' },
+  { id: 'Orion', name: 'Orion', description: 'Rich, cinematic, resonant — Narration, Audiobooks' },
+  { id: 'Perseus', name: 'Perseus', description: 'Strong, confident, trustworthy — Advertising, Narration' },
+  { id: 'Rigel', name: 'Rigel', description: 'Precise, professional, calmly confident — Assistant, Support' },
+  { id: 'Sirius', name: 'Sirius', description: 'Quick-witted, clever, playful — Commentary, Characters' },
+  { id: 'Ursa', name: 'Ursa', description: 'Friendly, warm, steadfast — Assistant, Podcast' },
+  { id: 'Zagan', name: 'Zagan', description: 'Powerful, dramatic, unmistakable — Characters, Narration' },
+  { id: 'Zenith', name: 'Zenith', description: 'Sharp, focused, driven — Sales, Advertising' },
 ] as const;
 
 export function createXaiTtsProvider(apiKey: string): TtsProvider {
