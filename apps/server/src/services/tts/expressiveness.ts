@@ -16,6 +16,7 @@
  */
 
 import type { LlmClient } from '../llm/index.js';
+import { loadPrompt } from '../llm/index.js';
 import type { Expressiveness } from '@vpa/shared';
 
 /** The app's script-authoring emotive vocabulary — cues for humans, not any
@@ -79,20 +80,89 @@ export interface PrepareExpressiveTextInput {
  * The xAI pass is best-effort: if the LLM call fails, we return the original
  * (app-emotive-stripped) text so synthesis still succeeds.
  */
+/** xAI's documented, narration-safe tags. Non-documented tags (e.g.
+ *  `<emphasis>`, `<strong>`) make xAI prepend framing words ("Say …"), so we
+ *  hard-enforce this allowlist regardless of what the LLM produced. */
+const ALLOWED_XAI_TAGS = new Set(['pause', 'long-pause', 'slow', 'fast', 'soft', 'whisper']);
+
+/** Remove any xAI tag NOT in the allowlist, keeping the inner text of wrapping
+ *  tags. Belt to the prompt's suspenders: a misbehaving model can't slip a
+ *  `<emphasis>` through to xAI. */
+export function keepAllowedXaiTags(text: string): string {
+  return text
+    .replace(/<\/?([a-z][a-z-]*)\s*>/gi, (m, name: string) =>
+      ALLOWED_XAI_TAGS.has(name.toLowerCase()) ? m : '')
+    .replace(/\[([a-z][a-z-]*)\]/gi, (m, name: string) =>
+      ALLOWED_XAI_TAGS.has(name.toLowerCase()) ? m : '')
+    .replace(/[^\S\n]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Ensure the text starts with a real WORD, not a tag. xAI's /v1/tts emits a
+ * fallback utterance ("Say something random…") when the input BEGINS with
+ * markup — verified via STT (leading `<slow>` → framing 4/6; word-first → 5/5
+ * clean). Strips leading inline tags and leading open wrapping tags (dropping
+ * the matching close so nothing is left unbalanced) plus any orphan leading
+ * close tag.
+ */
+export function ensureLeadingWord(text: string): string {
+  let s = text.replace(/^\s+/, '');
+  for (;;) {
+    let m = s.match(/^\[[a-z][a-z-]*\]\s*/i); // leading inline tag
+    if (m) { s = s.slice(m[0].length); continue; }
+    m = s.match(/^<\/[a-z][a-z-]*\s*>\s*/i); // orphan leading close tag
+    if (m) { s = s.slice(m[0].length); continue; }
+    m = s.match(/^<([a-z][a-z-]*)\s*>\s*/i); // leading open wrapping tag
+    if (m) {
+      s = s.slice(m[0].length).replace(new RegExp(`</${m[1]}\\s*>`, 'i'), '');
+      continue;
+    }
+    break;
+  }
+  return s.replace(/^\s+/, '');
+}
+
+/** Word-level signature: tags removed, lowercased, punctuation dropped. Two
+ *  texts with the same signature say the same WORDS (differing only in tags). */
+function wordSignature(text: string): string {
+  return stripXaiTags(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export async function prepareExpressiveText(
   input: PrepareExpressiveTextInput,
 ): Promise<string> {
-  // xAI's /v1/tts vocalizes inline/wrapping tags as literal text (verified
-  // empirically — the docs claim support, the endpoint speaks them). So there
-  // is NO working way to control xAI expressiveness per-phrase via tags: we do
-  // NOT insert them (doing so made xAI read the markup aloud). xAI
-  // expressiveness is therefore voice-selection only; the level is a no-op for
-  // delivery, same as fake/qwen. For xAI we still drop app emotive cues so a
-  // stray `[warm]` isn't spoken; the provider strips any remaining markup too.
-  if (input.engine === 'xai') {
-    return stripAppEmotives(input.text);
+  // Only xAI needs tags materialised in the text — its /v1/tts HONORS inline
+  // tags ([pause], <slow>, <whisper>, …), verified via STT (they change
+  // delivery, they are not spoken). Gemini applies the level via a style
+  // directive in its provider; other engines ignore it.
+  if (input.engine !== 'xai') {
+    return input.text;
   }
-  // Gemini applies the level via a style directive inside its provider; other
-  // engines ignore it. Nothing to materialise in the text here.
-  return input.text;
+
+  // Clean prose to annotate — drop app emotive cues first.
+  const clean = stripAppEmotives(input.text);
+  try {
+    const systemPrompt = await loadPrompt(input.workspaceRoot, 'narration-expressiveness-xai');
+    const userPrompt = `Requested level: ${input.level}\n\nNarration:\n${clean}`;
+    const result = await input.llm.complete({ systemPrompt, userPrompt, temperature: 0.4 });
+    const out = result.text.trim();
+    if (out.length === 0) return clean;
+
+    // GUARD: the pass may only ADD tags, never change words. A weak/local model
+    // can prepend a preamble or reword — which xAI would then SPEAK ("words not
+    // in the script"). If the tag-stripped output doesn't match the input words,
+    // discard it and use the clean text.
+    if (wordSignature(out) !== wordSignature(clean)) return clean;
+    // Enforce the documented-tag allowlist, then guarantee a leading word so
+    // xAI doesn't emit its "Say something random" framing fallback.
+    return ensureLeadingWord(keepAllowedXaiTags(out));
+  } catch {
+    // Never block synthesis on the expressiveness pass.
+    return clean;
+  }
 }

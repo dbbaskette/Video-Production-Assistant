@@ -5,6 +5,8 @@ import {
   geminiStyleDirective,
   stripAppEmotives,
   stripXaiTags,
+  keepAllowedXaiTags,
+  ensureLeadingWord,
   prepareExpressiveText,
 } from './expressiveness.js';
 
@@ -61,21 +63,100 @@ describe('stripXaiTags', () => {
   });
 });
 
+describe('keepAllowedXaiTags', () => {
+  it('keeps documented xAI tags and removes non-documented ones (keeping inner text)', () => {
+    expect(
+      keepAllowedXaiTags('<slow>Watch this</slow> [pause] <emphasis>closely</emphasis> [laugh] now.'),
+    ).toBe('<slow>Watch this</slow> [pause] closely now.');
+  });
+
+  it('keeps [long-pause] and drops <strong>', () => {
+    expect(keepAllowedXaiTags('A [long-pause] <strong>B</strong>.')).toBe('A [long-pause] B.');
+  });
+});
+
+describe('ensureLeadingWord', () => {
+  it('drops a leading open wrapping tag AND its matching close so a word comes first', () => {
+    expect(ensureLeadingWord('<slow>Watch this</slow> [pause] more.')).toBe('Watch this [pause] more.');
+  });
+
+  it('drops a leading inline tag', () => {
+    expect(ensureLeadingWord('[pause] Hello there.')).toBe('Hello there.');
+  });
+
+  it('leaves already-word-first text untouched', () => {
+    expect(ensureLeadingWord('Hello <slow>world</slow>.')).toBe('Hello <slow>world</slow>.');
+  });
+});
+
 describe('prepareExpressiveText', () => {
-  // xAI's /v1/tts vocalizes inline tags as literal text (verified empirically),
-  // so we must NOT insert xAI markup — doing so would make xAI speak the tags.
-  it('does NOT insert tags or call the LLM for xAI (endpoint vocalizes tags); returns clean text', async () => {
-    const llm = stubLlm('Hello <emphasis>world</emphasis>. [pause] Ready?');
+  it('never returns text that starts with a tag (xAI framing guard)', async () => {
+    const llm = stubLlm('<slow>Hello world.</slow> [pause] Ready?');
     const out = await prepareExpressiveText({
-      text: '[warm] Hello world. Ready?',
+      text: 'Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
       llm,
       workspaceRoot: workspaceRoot(),
     });
-    expect(out.includes('<') || out.includes('[')).toBe(false); // no markup at all
-    expect(out).toBe('Hello world. Ready?'); // app emotive stripped, no tags added
-    expect(llm.complete).not.toHaveBeenCalled();
+    expect(out.startsWith('<') || out.startsWith('[')).toBe(false);
+    expect(out).toMatch(/^Hello/);
+  });
+
+  it('strips a non-documented tag the model slipped in, keeping documented ones', async () => {
+    const llm = stubLlm('Hello <emphasis>world</emphasis>. [pause] <slow>Ready?</slow>');
+    const out = await prepareExpressiveText({
+      text: 'Hello world. Ready?',
+      engine: 'xai',
+      level: 'heavy',
+      llm,
+      workspaceRoot: workspaceRoot(),
+    });
+    expect(out).not.toContain('<emphasis>');
+    expect(out).toContain('[pause]');
+    expect(out).toContain('<slow>');
+  });
+
+  // xAI's /v1/tts HONORS its tags (verified via STT), so for xAI we DO insert
+  // them via an LLM pass — but we must guard against a weak/local model adding
+  // stray WORDS (which xAI would then speak).
+  it('inserts xAI tags for xAI when the model only added markup (words unchanged)', async () => {
+    const llm = stubLlm('Hello <slow>world</slow>. [pause] Ready?');
+    const out = await prepareExpressiveText({
+      text: 'Hello world. Ready?',
+      engine: 'xai',
+      level: 'heavy',
+      llm,
+      workspaceRoot: workspaceRoot(),
+    });
+    expect(out).toContain('<slow>');
+    expect(out).toContain('[pause]');
+    expect(llm.complete).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to CLEAN text when the xAI pass adds/changes words (never lets stray words reach TTS)', async () => {
+    // A weaker model prepends a preamble — the classic "words not in the script".
+    const llm = stubLlm('Sure! Here you go: Hello <slow>world</slow>. Ready?');
+    const out = await prepareExpressiveText({
+      text: 'Hello world. Ready?',
+      engine: 'xai',
+      level: 'heavy',
+      llm,
+      workspaceRoot: workspaceRoot(),
+    });
+    expect(out).toBe('Hello world. Ready?'); // guard rejected the tampered output
+  });
+
+  it('falls back to clean text when the xAI LLM pass throws', async () => {
+    const llm: LlmClient = { complete: vi.fn(async () => { throw new Error('llm down'); }) };
+    const out = await prepareExpressiveText({
+      text: '[warm] Hello world.',
+      engine: 'xai',
+      level: 'medium',
+      llm,
+      workspaceRoot: workspaceRoot(),
+    });
+    expect(out).toBe('Hello world.'); // app emotive stripped, no tags
   });
 
   it('leaves text unchanged for non-xAI engines and never calls the LLM', async () => {
