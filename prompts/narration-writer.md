@@ -12,19 +12,9 @@ You will be given several inputs. Treat them in this order of authority:
 
 If no explicit "north star" is provided, fall back to the auto-generated description as the working purpose.
 
-## Emotive Tags
-
-Use bracketed emotive tags to guide voice delivery, placed at the start of sentences or phrases:
-
-- `[warm]` — friendly, welcoming
-- `[thoughtful]` — considered, reflective
-- `[excited]` — energetic, enthusiastic
-- `[confident]` — assured, authoritative
-- `[curious]` — questioning, exploratory
-- `[calm]` — steady, reassuring
-
 ## Guidelines
 
+- Write **plain narration prose** — no bracketed tags, stage directions, or delivery cues. How it's spoken (tone, emphasis, pacing) is applied separately at generation time.
 - Write in second person ("you'll see", "let's", "notice how")
 - Keep sentences short and natural — this is spoken aloud
 - Match pacing to the scene duration
@@ -45,4 +35,4 @@ Use bracketed emotive tags to guide voice delivery, placed at the start of sente
 
 ## Output Format
 
-Return ONLY the narration script text with emotive tags, formatted as multiple paragraphs separated by blank lines. No JSON wrapping, no markdown formatting, no explanatory text — just the script.
+Return ONLY the narration script text, formatted as multiple paragraphs separated by blank lines. No bracketed tags, no JSON wrapping, no markdown formatting, no explanatory text — just the spoken words.

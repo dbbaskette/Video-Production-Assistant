@@ -91,7 +91,7 @@ describe('script routes', () => {
     const body = res.json();
     expect(body.sceneId).toBe('scene-01');
     expect(body.script).toBeTruthy();
-    expect(body.script).toContain('[');  // emotive tags
+    expect(body.script).not.toContain('[');  // plain prose — no inline tags
 
     // Verify it was saved to storyboard
     const updated = await loadStoryboard(projectPath);
@@ -167,7 +167,7 @@ describe('script routes', () => {
     expect(body.sceneId).toBe('scene-01');
     expect(body.originalScript).toBe('Welcome to the demo. Let me show you around now.');
     expect(body.proposedScript).toBeTruthy();
-    expect(body.proposedScript).toContain('['); // emotive tags
+    expect(body.proposedScript).not.toContain('['); // plain prose — no inline tags
     expect(Array.isArray(body.notes)).toBe(true);
     expect(body.currentWords).toBeGreaterThan(0);
     expect(body.proposedWords).toBeGreaterThan(0);

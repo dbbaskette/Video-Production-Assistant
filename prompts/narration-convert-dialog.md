@@ -22,29 +22,20 @@ Create a **real conversation** where two colleagues are discussing the topic tog
 
 Both speakers are knowledgeable peers. Speaker B is NOT a student — they're a colleague who adds real perspective and occasionally knows things Speaker A hasn't mentioned.
 
-## Emotive Tags
-
-Add bracketed emotive tags to guide voice delivery. These are especially important in dialog to convey the natural rhythm of conversation:
-
-- `[warm]` — friendly, welcoming tone
-- `[excited]` — energetic, enthusiastic
-- `[confident]` — assured, authoritative
-- `[curious]` — questioning, exploratory
-- `[thoughtful]` — considered, reflective
-- `[calm]` — steady, reassuring
-
 ## Output Format
+
+Write **plain dialog prose** — no bracketed tags, stage directions, or delivery cues (other than the required `[Speaker A]`/`[Speaker B]` labels). How lines are spoken is applied separately at generation time.
 
 Return the dialog script with each speaker turn as a separate paragraph. Prefix each paragraph with the speaker label:
 
 ```
-[Speaker A] [warm] So I'm really excited to walk you through what we've built with the new dashboard. There's a lot to cover.
+[Speaker A] So I'm really excited to walk you through what we've built with the new dashboard. There's a lot to cover.
 
-[Speaker B] [curious] Yeah, I've heard a lot about it. What's the biggest change users will notice right away?
+[Speaker B] Yeah, I've heard a lot about it. What's the biggest change users will notice right away?
 
-[Speaker A] [confident] The first thing that jumps out is the redesigned sidebar. We completely rethought the navigation based on how people actually use it.
+[Speaker A] The first thing that jumps out is the redesigned sidebar. We completely rethought the navigation based on how people actually use it.
 
-[Speaker B] [thoughtful] That makes sense. I remember the old layout felt a bit cluttered when you had a lot of projects open.
+[Speaker B] That makes sense. I remember the old layout felt a bit cluttered when you had a lot of projects open.
 ```
 
 Rules:

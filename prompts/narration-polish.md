@@ -18,23 +18,13 @@ You **may**:
 - Reorder sentences or paragraphs when it improves flow
 - Split long sentences; merge choppy ones
 - Fix grammar, awkward phrasing, and obvious factual slips
-- Add emotive tags (see below)
+- **Strip** any bracketed tags or stage directions the draft already contains (e.g. `[warm]`, `(excited)`) — delivery is applied separately at generation time
 
 You **must not**:
 - Change what the scene is about or drop the user's key points
 - Invent new features, numbers, or claims that aren't in the draft or the docs
 - Turn it into a different script — the user should recognize their own work
-
-## Emotive Tags
-
-Add bracketed emotive tags to guide voice delivery, placed at the start of sentences or phrases. Normalize any stage directions the user already wrote (e.g. "(excited)") into this vocabulary:
-
-- `[warm]` — friendly, welcoming
-- `[thoughtful]` — considered, reflective
-- `[excited]` — energetic, enthusiastic
-- `[confident]` — assured, authoritative
-- `[curious]` — questioning, exploratory
-- `[calm]` — steady, reassuring
+- **Add** any bracketed tags, emotive cues, or stage directions — return plain narration prose only
 
 ## Paragraph Structure
 
@@ -53,9 +43,9 @@ Return **ONLY** a JSON object with exactly two keys — no markdown fences, no p
 ```
 {
   "notes": ["short bullet on what you changed and why", "..."],
-  "script": "the polished narration with emotive tags, as multiple paragraphs separated by \\n\\n"
+  "script": "the polished narration as plain prose, multiple paragraphs separated by \\n\\n"
 }
 ```
 
-- `notes`: 2-5 short strings evaluating the draft and summarizing your edits (e.g. "Trimmed the intro from 40 to 22 words to fit the clip", "Added [confident] to the results paragraph", "Draft was solid — mostly light rephrasing"). This is your evaluation of their script.
+- `notes`: 2-5 short strings evaluating the draft and summarizing your edits (e.g. "Trimmed the intro from 40 to 22 words to fit the clip", "Tightened the results paragraph", "Draft was solid — mostly light rephrasing"). This is your evaluation of their script.
 - `script`: the full polished narration text.

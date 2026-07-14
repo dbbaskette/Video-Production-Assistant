@@ -16,19 +16,9 @@ Treat the inputs in this order of authority:
 
 If the docs and the video disagree about a fact (a name, a feature, a number), trust the docs and describe the visual moment around them. If the video shows a different action than the intent claims, the intent still wins as the *theme*; describe the visual action but frame it inside what the intent is teaching.
 
-## Emotive Tags
-
-Use bracketed emotive tags to guide voice delivery, placed at the start of sentences or phrases:
-
-- `[warm]` — friendly, welcoming
-- `[thoughtful]` — considered, reflective
-- `[excited]` — energetic, enthusiastic
-- `[confident]` — assured, authoritative
-- `[curious]` — questioning, exploratory
-- `[calm]` — steady, reassuring
-
 ## Guidelines
 
+- Write **plain narration prose** — no bracketed tags, stage directions, or delivery cues. How it's spoken (tone, emphasis, pacing) is applied separately at generation time.
 - Write in second person ("you'll see", "let's", "notice how")
 - Keep sentences short and natural — this is spoken aloud
 - Match pacing to the scene duration
@@ -49,4 +39,4 @@ Use bracketed emotive tags to guide voice delivery, placed at the start of sente
 
 ## Output Format
 
-Return ONLY the narration script text with emotive tags, formatted as multiple paragraphs separated by blank lines. No JSON wrapping, no markdown formatting, no explanatory text — just the script.
+Return ONLY the narration script text, formatted as multiple paragraphs separated by blank lines. No bracketed tags, no JSON wrapping, no markdown formatting, no explanatory text — just the spoken words.
