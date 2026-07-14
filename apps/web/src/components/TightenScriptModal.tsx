@@ -20,9 +20,13 @@ export interface TightenScriptModalProps {
   sceneId: string;
   sceneName: string;
   onClose: () => void;
-  /** Fired once the new script has been saved. Use to invalidate any
-   *  cached queries the caller cares about (review, storyboard, script). */
-  onAccepted: () => void;
+  /** Fired once the new script has been saved, with the saved script text.
+   *  Callers that show the script in an editor should set their edit buffer
+   *  directly from this text (see ScenePage) — nulling the buffer and relying
+   *  on an async query invalidation races the editor's re-hydration effect and
+   *  leaves it showing the pre-tighten script. Callers that only need to
+   *  refresh caches (Quality Review) can ignore the argument. */
+  onAccepted: (savedScript: string) => void;
 }
 
 export function TightenScriptModal({ projectId, sceneId, sceneName, onClose, onAccepted }: TightenScriptModalProps) {
@@ -31,8 +35,8 @@ export function TightenScriptModal({ projectId, sceneId, sceneName, onClose, onA
   });
   const saveMutation = useMutation({
     mutationFn: (script: string) => scriptApi.save(projectId, sceneId, script),
-    onSuccess: () => {
-      onAccepted();
+    onSuccess: (_data, script) => {
+      onAccepted(script);
       onClose();
     },
   });

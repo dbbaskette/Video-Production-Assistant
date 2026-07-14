@@ -3338,11 +3338,15 @@ export function ScenePage(props: ScenePageProps = {}) {
           sceneId={sceneId}
           sceneName={scene?.name ?? sceneId}
           onClose={() => setTightenOpen(false)}
-          onAccepted={() => {
-            // Server saved a new script + wiped TTS chunks. Drop our
-            // local edit buffer so the next render reads the new value
-            // from the storyboard query.
-            setEditingScript(null);
+          onAccepted={(savedScript) => {
+            // Server saved a new script + wiped TTS chunks. Set our local
+            // edit buffer directly from the saved text so the Monologue
+            // editor shows the tightened script immediately. Nulling it
+            // here instead would let the monologue-sync effect re-hydrate
+            // editingScript from the STALE narration query before the
+            // invalidate refetch lands, sticking the editor on the
+            // pre-tighten script until the user switches scenes.
+            setEditingScript(savedScript);
             setScriptDirty(false);
             queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
             queryClient.invalidateQueries({ queryKey: ['narration', projectId, sceneId] });
