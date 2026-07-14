@@ -6,6 +6,18 @@ import { createXaiTtsProvider } from './xai.js';
  * `<slow>`, `<whisper>` are applied, not spoken). So the provider must PASS
  * xAI tags through — stripping only the app's own emotive words (`[warm]`).
  */
+describe('xAI provider — voice roster', () => {
+  it('exposes the full xAI voice list, preserving the original ids for compat', () => {
+    const ids = createXaiTtsProvider('k').voices.map((v) => v.id);
+    // Backward compat: the original five must keep their exact ids.
+    for (const id of ['Sal', 'Eve', 'Ara', 'Leo', 'Rex']) expect(ids).toContain(id);
+    // New voices are included.
+    for (const id of ['Altair', 'Luna', 'Orion', 'Zenith', 'Celeste']) expect(ids).toContain(id);
+    expect(ids).toHaveLength(26);
+    expect(new Set(ids).size).toBe(26); // no duplicates
+  });
+});
+
 describe('xAI provider — keeps xAI tags, strips only app emotives', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 

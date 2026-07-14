@@ -13,12 +13,38 @@
 import type { TtsProvider, TtsResult, TtsGenerateOpts } from '../provider.js';
 import { stripAppEmotives, stripXaiTags } from '../expressiveness.js';
 
+// Full xAI voice roster from GET https://api.x.ai/v1/tts/voices (26 voices, all
+// multilingual). voice_id is case-insensitive, so the original five keep their
+// capitalised ids (no regression for projects that stored e.g. "Sal"); the rest
+// use the API's display name. The first five carry curated descriptions; the
+// newer ones list the API's gender since xAI provides no per-voice blurb.
 const XAI_VOICES = [
   { id: 'Sal', name: 'Sal', description: 'Smooth & balanced — reliable default' },
   { id: 'Eve', name: 'Eve', description: 'Energetic & upbeat — marketing and onboarding' },
   { id: 'Ara', name: 'Ara', description: 'Warm & friendly — conversational narration' },
   { id: 'Leo', name: 'Leo', description: 'Authoritative & strong — technical walkthroughs' },
   { id: 'Rex', name: 'Rex', description: 'Confident & clear — trailers and explainers' },
+  { id: 'Altair', name: 'Altair', description: 'Male' },
+  { id: 'Atlas', name: 'Atlas', description: 'Male' },
+  { id: 'Carina', name: 'Carina', description: 'Female' },
+  { id: 'Castor', name: 'Castor', description: 'Male' },
+  { id: 'Celeste', name: 'Celeste', description: 'Female' },
+  { id: 'Cosmo', name: 'Cosmo', description: 'Male' },
+  { id: 'Helios', name: 'Helios', description: 'Male' },
+  { id: 'Helix', name: 'Helix', description: 'Male' },
+  { id: 'Iris', name: 'Iris', description: 'Female' },
+  { id: 'Kepler', name: 'Kepler', description: 'Male' },
+  { id: 'Lumen', name: 'Lumen', description: 'Male' },
+  { id: 'Luna', name: 'Luna', description: 'Female' },
+  { id: 'Lux', name: 'Lux', description: 'Male' },
+  { id: 'Naksh', name: 'Naksh', description: 'Male' },
+  { id: 'Orion', name: 'Orion', description: 'Male' },
+  { id: 'Perseus', name: 'Perseus', description: 'Male' },
+  { id: 'Rigel', name: 'Rigel', description: 'Male' },
+  { id: 'Sirius', name: 'Sirius', description: 'Male' },
+  { id: 'Ursa', name: 'Ursa', description: 'Female' },
+  { id: 'Zagan', name: 'Zagan', description: 'Male' },
+  { id: 'Zenith', name: 'Zenith', description: 'Male' },
 ] as const;
 
 export function createXaiTtsProvider(apiKey: string): TtsProvider {
