@@ -18,6 +18,7 @@ The skill will:
 - apply exact typography, palette, logo, geometry, accessibility, and
   composition rules;
 - provide approved deck-extracted logo and avatar assets with provenance;
+- provide the active VPA light intro and dark outro bumper videos;
 - generate adapters such as `frame.md` and CSS variables from one canonical
   token file;
 - automatically correct safe deviations;
@@ -55,6 +56,17 @@ The source deck links to the upstream logo and product-icon folder:
 The skill will record that URL as provenance. The initial skill remains usable
 with deck-extracted assets if the upstream folder is unavailable.
 
+Secondary source for bumper assignments and files:
+
+- **VPA brand:** `vmware-tanzu`
+- **Brand definition:** `/Users/dbbaskette/.vpa/brands/vmware-tanzu/design.md`
+- **Active intro:** `assets/bumpers/VMwareTanzu-logo-animation-light.mp4`
+- **Active outro:** `assets/bumpers/VMwareTanzu-logo-animation-dark.mp4`
+
+Only these two active bumper assignments are authoritative. Other design tokens
+in the VPA-generated `design.md` are not imported because some conflict with
+the February 2026 guide, notably its rounded-card and pill guidance.
+
 ## Design decisions
 
 1. **One canonical token source.** `brand/tokens.json` is the package-level
@@ -66,9 +78,9 @@ with deck-extracted assets if the upstream folder is unavailable.
    extracted or redistributed.
 4. **Exact values, semantic roles.** Raw colors are preserved exactly and also
    mapped to roles such as canvas, ink, accent, and status.
-5. **Brand assets are immutable.** Approved logo files are checksum-verified.
-   The known outdated bug is held only as a forbidden checksum, not as a usable
-   asset.
+5. **Brand assets are immutable.** Approved logo and bumper source files are
+   checksum-verified. Known outdated assets are held only as forbidden
+   checksums, not as usable assets.
 6. **Safe correction, narrow blocking.** The skill corrects deterministic
    token-level problems and reserves hard stops for critical output failures.
 7. **No invented motion doctrine.** The static guide governs visual identity.
@@ -92,6 +104,9 @@ skills/tanzu-brand/
 │   ├── logos/
 │   │   ├── tanzu-bug-color.png
 │   │   └── vmware-tanzu-lockup-black.png
+│   ├── bumpers/
+│   │   ├── vmware-tanzu-intro-light.mp4
+│   │   └── vmware-tanzu-outro-dark.mp4
 │   └── avatars/
 │       ├── avatar-01.png
 │       ├── avatar-02.png
@@ -314,6 +329,50 @@ job titles from their appearance.
 Provenance will state that these are deck-extracted internal brand assets and
 must not be redistributed as a public asset pack without authorization.
 
+## Bumper video assets
+
+The skill will package the two bumper files currently assigned by VPA's active
+`vmware-tanzu` brand:
+
+| Packaged name                  | VPA source                             | Role  | Media properties                                          | SHA-256                                                            |
+| ------------------------------ | -------------------------------------- | ----- | --------------------------------------------------------- | ------------------------------------------------------------------ |
+| `vmware-tanzu-intro-light.mp4` | `VMwareTanzu-logo-animation-light.mp4` | Intro | 1920×1080, 3.003 s, 30000/1001 fps, H.264 yuv420p, silent | `d2f2690890855dbf29c438f1e21ecc2428666d869abb4309144f23e303473a9f` |
+| `vmware-tanzu-outro-dark.mp4`  | `VMwareTanzu-logo-animation-dark.mp4`  | Outro | 1920×1080, 3.003 s, 30000/1001 fps, H.264 yuv420p, silent | `9a2d294b615f518c523dcb13b7599a167fb0ece87942578e2f71d930a14de7ab` |
+
+Both use the current Purple-inclusive Tanzu bug and the VMware Tanzu wordmark.
+The packaged files remain byte-for-byte copies of the VPA source assets.
+Provenance will identify them as internal brand assets that must not be
+redistributed as a public bumper pack without authorization.
+
+### Bumper usage
+
+- Apply the light bumper as the default intro and the dark bumper as the default
+  outro when the production format supports brand bumpers.
+- A project or render may explicitly opt out of either or both bumpers.
+- Preserve each complete 3.003-second source; do not trim, speed-ramp, recolor,
+  crop, reverse, mask, overlay, or otherwise edit its internal artwork.
+- Join bumpers to program material with a clean cut unless the user explicitly
+  requests a separately approved transition.
+- Scale proportionally. For non-16:9 output, pad outside the source frame using
+  a matching White or Dark Blue surface rather than cropping the logo.
+- The bumper source files are silent. Music, sonic logos, and sound design
+  remain owned by the active production workflow and are not added by this
+  brand package.
+- Normalized or transcoded render intermediates may differ from the canonical
+  file checksum, but the project-local source copy must retain the approved
+  checksum.
+
+### Forbidden legacy bumper
+
+`TanzuVMware.mp4` is a 10-second, 1280×720 legacy animation that uses the
+retired no-Purple Tanzu bug. It must not be packaged or used:
+
+- SHA-256:
+  `655aedb53e29b3122c1ff4aada6090feaec35c8c3639069c0789a2ee3c3cb5fa`
+
+The manifest stores this checksum in the video deny list without copying the
+legacy file into the skill.
+
 ## Geometry and composition
 
 ### Required
@@ -390,8 +449,10 @@ layouts literally.
 
 ### Intro and outro
 
-- The current wordmark or bug may be used.
-- Do not require a logo sting or persistent footer.
+- Use the packaged light intro and dark outro by default when the production
+  format supports bumpers and the project has not opted out.
+- For a bespoke intro or outro, the current wordmark or bug may be used.
+- Do not require a persistent footer.
 - Motion must preserve the logo artwork as an indivisible visual asset.
 
 ### Forward-looking content
@@ -432,13 +493,14 @@ reports the element and measured ratio.
 
 1. Resolve the target project and detect the active production format.
 2. Copy approved assets into a project-local brand/media directory.
-3. Generate tool adapters from canonical `tokens.json`.
-4. Create `frame.md` when none exists.
-5. If `frame.md` exists, update only the normative brand fields while
+3. Copy the approved bumper pair and record their default intro/outro roles.
+4. Generate tool adapters from canonical `tokens.json`.
+5. Create `frame.md` when none exists.
+6. If `frame.md` exists, update only the normative brand fields while
    preserving project-specific narrative and composition guidance.
-6. Save a one-time project-local backup before changing an existing spec.
-7. Record the applied brand version and asset checksums.
-8. Print a concise summary of changes and the next audit command.
+7. Save a one-time project-local backup before changing an existing spec.
+8. Record the applied brand version and asset checksums.
+9. Print a concise summary of changes and the next audit command.
 
 The operation will support a dry-run mode. Writes will be atomic, and repeating
 the operation with the same brand version will be idempotent.
@@ -446,6 +508,8 @@ the operation with the same brand version will be idempotent.
 ### Generated adapters
 
 - **HyperFrames:** project `frame.md` plus local logo/avatar assets.
+- **Video workflows:** project-local intro/outro bumpers plus their role
+  assignments.
 - **Web/browser compositions:** CSS custom properties in `tokens.css`.
 - **Generic tools:** project-local `tokens.json`.
 - **FFmpeg and native renderers:** the manifest supplies exact hex values,
@@ -464,6 +528,7 @@ Where the format allows deterministic inspection, check:
 - raw and resolved colors;
 - border radii on rectangular containers;
 - asset hashes;
+- bumper role assignments and canonical media properties;
 - aspect-ratio changes to approved logos;
 - contrast of resolved text/background pairs;
 - applied brand and adapter versions; and
@@ -526,6 +591,13 @@ A nonzero exit status is reserved for `BLOCKED`.
 | Known outdated logo checksum                                   | Block                                                            |
 | Approved logo recolored, cropped, distorted, or masked         | Block                                                            |
 | Unknown logo-like asset                                        | Block pending provenance                                         |
+| Approved bumper pair with correct roles                        | Pass                                                             |
+| Bumpers supported and no explicit opt-out                      | Apply light intro and dark outro                                 |
+| Explicit bumper opt-out                                        | Pass and preserve the opt-out                                    |
+| Current bumpers swapped between intro/outro roles              | Correct the assignments                                          |
+| Current bumper source modified or re-encoded                   | Replace with the canonical source copy                           |
+| Legacy bumper checksum                                         | Block                                                            |
+| Non-16:9 output                                                | Pad proportionally; never crop the bumper artwork                |
 | Dark UI capture with known light alternative                   | Warn and request/use light capture                               |
 | Dark UI capture with no light alternative                      | Warn; permit light outer treatment                               |
 | Heavy/repeated gradients                                       | Warn                                                             |
@@ -548,9 +620,11 @@ Run fresh agents against at least these scenarios and record their outputs:
    Tanzu frame.
 5. Create a dense process diagram using multiple gradients and all accent
    colors.
+6. Use the legacy 10-second bumper because it already has an audio track.
 
 Expected baseline failures include incorrect font choice, rounded geometry,
-contrast failure, logo alteration, silent fallback, and over-decoration.
+contrast failure, logo alteration, silent fallback, over-decoration, and use of
+the obsolete bumper.
 
 ### Green scenarios with the skill
 
@@ -561,7 +635,9 @@ Repeat the same scenarios with `tanzu-brand` loaded. The agent must:
 - block the outdated or altered logo;
 - block final rendering when Arial is unresolved;
 - warn rather than fabricate a light screenshot; and
-- simplify or warn about excessive gradients and accent use.
+- simplify or warn about excessive gradients and accent use;
+- apply the current light intro and dark outro; and
+- block the legacy bumper.
 
 ### Refactor scenarios
 
@@ -587,6 +663,7 @@ Implementation tests will cover:
 - backup behavior for an existing `frame.md`;
 - contrast calculations and AA substitutions;
 - asset allow/deny hashes;
+- bumper media metadata, role assignment, opt-out, and legacy-video denial;
 - logo aspect-ratio checks;
 - font-resolution pass/fail behavior;
 - report severity and exit status; and
@@ -606,6 +683,7 @@ Implementation tests will cover:
 - Importing the PowerPoint through the VPA Brand wizard.
 - Changing VPA's current Brand Library data model or routes.
 - Packaging or redistributing proprietary font binaries.
+- Packaging VPA music, sonic-logo, or legacy bumper files.
 - Reconstructing vector master logos from raster images.
 - Defining new animation timing, easing, or transition rules.
 - Forcing slide-specific point sizes or layouts into videos.
