@@ -1377,3 +1377,63 @@ pre code {
 @media (max-width: 720px) {
   .pipeline { padding: 20px 16px 24px; }
 }
+/* Canonical project status */
+.project-workspace-tools { display: flex; justify-content: flex-end; padding: 10px 20px 0; }
+.project-issues-trigger { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elev); color: var(--fg-muted); font-size: 12px; }
+.project-issues-trigger--active { color: var(--warn, #d4a017); cursor: pointer; }
+.project-issues-trigger:disabled { opacity: .8; }
+.project-issues-drawer { width: min(440px, 100vw); max-width: none; height: 100vh; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--border); background: var(--bg-elev); color: var(--fg); box-shadow: -18px 0 50px rgba(0,0,0,.22); }
+.project-issues-drawer::backdrop { background: rgba(8,10,15,.48); }
+.project-issues-drawer__header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px; border-bottom: 1px solid var(--border); }
+.project-issues-drawer__header span { color: var(--fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.project-issues-drawer__header h2 { margin: 4px 0 0; font-size: 21px; }
+.project-issues-drawer__header button { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; padding: 5px; }
+.project-issues-drawer__body { overflow-y: auto; height: calc(100vh - 82px); padding: 20px 22px 40px; }
+.project-issues-drawer__body section + section { margin-top: 28px; }
+.project-issues-drawer__body h3 { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; font-size: 15px; }
+.project-issues-drawer__body h3 span { color: var(--fg-muted); font-size: 12px; }
+.project-issues-group h4 { color: var(--fg-muted); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin: 18px 0 8px; }
+.project-issue { border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; padding: 12px; background: var(--surface); margin-bottom: 8px; }
+.project-issue--blocker { border-left-color: var(--danger); }
+.project-issue--warning { border-left-color: var(--warn, #d4a017); }
+.project-issue strong { font-size: 13px; }
+.project-issue p { color: var(--fg-muted); font-size: 12px; line-height: 1.45; margin: 5px 0; }
+.project-issue a { color: var(--accent); font-size: 12px; text-decoration: none; font-weight: 600; }
+
+.project-action-card { margin-top: 22px; padding: 22px; border: 1px solid var(--border); border-radius: 14px; background: linear-gradient(145deg, var(--bg-elev), var(--surface)); box-shadow: 0 10px 32px rgba(0,0,0,.06); }
+.project-action-card--error { color: var(--danger); }
+.project-action-card__header { display: flex; align-items: center; justify-content: space-between; gap: 22px; }
+.project-action-card__eyebrow { color: var(--fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.project-action-card h2 { margin: 6px 0 4px; font-size: 21px; }
+.project-action-card p { margin: 0; color: var(--fg-muted); font-size: 13px; }
+.project-action-card__cta { display: inline-flex; gap: 7px; align-items: center; white-space: nowrap; text-decoration: none; }
+.project-action-card__steps { list-style: none; display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 7px; margin: 20px 0 0; padding: 0; }
+.project-action-card__step { min-width: 0; display: grid; grid-template-columns: 19px 1fr; align-items: center; padding: 8px; border: 1px solid var(--border); border-radius: 7px; color: var(--fg-muted); }
+.project-action-card__step > span { display: flex; }
+.project-action-card__step small { font-variant-numeric: tabular-nums; font-size: 9px; text-align: right; }
+.project-action-card__step strong { grid-column: 1 / -1; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 600; }
+.project-action-card__step--complete { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.project-action-card__step--ready { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.project-action-card__step--stale { color: var(--warn, #d4a017); }
+.project-action-card__issues { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--border); font-size: 11px; }
+.project-action-card__issues > a { flex-basis: 100%; color: var(--fg-muted); text-decoration: none; }
+.project-action-card__issues button { border: 0; background: transparent; color: var(--accent); padding: 0; cursor: pointer; font-size: 11px; font-weight: 600; }
+
+.render-preflight { margin: 14px 0 18px; border: 1px solid var(--border); border-radius: 9px; padding: 13px; background: var(--surface); }
+.render-preflight--ready { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.render-preflight--blocked { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.render-preflight__summary { display: flex; gap: 9px; align-items: center; }
+.render-preflight__summary > div { display: flex; flex-direction: column; gap: 2px; }
+.render-preflight__summary span { color: var(--fg-muted); font-size: 11px; }
+.render-preflight__list h4 { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-muted); }
+.render-preflight__list a { display: flex; align-items: center; gap: 8px; padding: 7px 0; color: inherit; text-decoration: none; font-size: 12px; }
+.render-preflight__list a span { flex: 1; }
+.render-preflight__list a b { color: var(--accent); font-size: 11px; }
+.render-preflight details { margin-top: 10px; }
+.render-preflight summary { display: flex; align-items: center; gap: 6px; color: var(--warn, #d4a017); cursor: pointer; font-size: 12px; }
+
+@media (max-width: 760px) {
+  .project-issues-drawer { width: 100vw; }
+  .project-action-card__header { align-items: flex-start; flex-direction: column; }
+  .project-action-card__steps { grid-template-columns: repeat(4, minmax(0,1fr)); }
+}

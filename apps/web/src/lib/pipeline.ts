@@ -1,168 +1,68 @@
-/**
- * Pipeline step computation — shared between the Project Overview's
- * horizontal Pipeline and the persistent left-rail sidebar so both
- * surfaces tell the user the same story about workflow ordering.
- *
- * `usePipelineSteps` returns the same data the Pipeline component used
- * to compute inline, factored out so the sidebar can render a compact
- * version (number + dot + label) without duplicating the
- * done/next/todo logic.
- */
-
 import { useQuery } from '@tanstack/react-query';
-import {
-  storyboardApi,
-  qualityReviewApi,
-  renderApi,
-} from './api.js';
-import { reviewSummaryLabel, type ReviewStatus } from './palette.js';
+import type { WorkflowActionKey, WorkflowStepKey, WorkflowStepState } from '@vpa/shared';
+import { workflowStatusApi } from './api.js';
 
-export type PipelineStepStatus = 'done' | 'next' | 'todo';
+export type PipelineStepStatus = 'done' | 'next' | 'todo' | 'stale';
 
 export interface PipelineStep {
-  key: 'storyboard' | 'recordings' | 'script' | 'narration' | 'lower-thirds' | 'render' | 'review';
-  /** Short name for the sidebar; the Pipeline component uses the same label. */
+  key: WorkflowStepKey;
   label: string;
   to: string;
   status: PipelineStepStatus;
-  /** Sub-line shown on the Project Overview pipeline (counts, status word). */
+  state: WorkflowStepState;
   detail?: string;
 }
 
-interface Result {
-  steps: PipelineStep[];
-  /** The single 'next' step, if any. */
-  next?: PipelineStep;
-  /** True when nothing is unchecked. */
-  allDone: boolean;
+export function workflowActionRoute(projectId: string, action: WorkflowActionKey, sceneId?: string): string {
+  if (action === 'open_storyboard') return `/project/${projectId}/storyboard`;
+  if (action === 'open_recordings') return `/project/${projectId}/recordings`;
+  if (action === 'open_script') return `/project/${projectId}/script`;
+  if (action === 'open_narration') return `/project/${projectId}/narration`;
+  if (action === 'open_lower_thirds') return `/project/${projectId}/lower-thirds`;
+  if (action === 'open_review') return `/project/${projectId}/review`;
+  if (action === 'open_scene_recording' && sceneId) {
+    return `/project/${projectId}/storyboard?scene=${encodeURIComponent(sceneId)}&tab=Recording`;
+  }
+  return `/project/${projectId}/render`;
 }
 
-/**
- * Reads project state and returns the canonical step list. All queries
- * are cached so calling this in two places (sidebar + overview) doesn't
- * fan out extra requests.
- */
-export function usePipelineSteps(projectId: string | undefined): Result {
-  const { data: storyboard } = useQuery({
-    queryKey: ['storyboard', projectId],
-    queryFn: () => storyboardApi.get(projectId!),
+function stepRoute(projectId: string, key: WorkflowStepKey): string {
+  const actionByStep: Record<WorkflowStepKey, WorkflowActionKey> = {
+    storyboard: 'open_storyboard', recordings: 'open_recordings', script: 'open_script',
+    narration: 'open_narration', 'lower-thirds': 'open_lower_thirds', render: 'open_render', review: 'open_review',
+  };
+  return workflowActionRoute(projectId, actionByStep[key]);
+}
+
+export function useWorkflowStatus(projectId: string | undefined) {
+  return useQuery({
+    queryKey: workflowStatusApi.queryKey(projectId),
+    queryFn: () => workflowStatusApi.get(projectId!),
     enabled: !!projectId,
+    placeholderData: (previous) => previous,
+    refetchInterval: (query) => query.state.data?.render.output.state === 'in_progress' ? 1500 : false,
   });
-  const { data: review } = useQuery({
-    queryKey: ['review', projectId],
-    queryFn: () => qualityReviewApi.get(projectId!),
-    enabled: !!projectId,
-  });
-  const { data: renderStatus } = useQuery({
-    queryKey: ['render-status', projectId],
-    queryFn: () => renderApi.status(projectId!),
-    enabled: !!projectId,
-  });
+}
 
-  const sceneCount = storyboard?.scenes?.length ?? 0;
-  const hasStoryboard = !!storyboard && sceneCount > 0;
-  const recordingCount = storyboard?.scenes?.filter((s) => s.recording).length ?? 0;
-  // A scene "has a script" when narration.script (or either of the legacy
-  // monologue / dialog snapshots) is non-empty. Same predicate the script
-  // overview page uses.
-  const scriptCount = storyboard?.scenes?.filter((s) => {
-    const n = s.narration;
-    return !!(n?.script || n?.monologueScript || n?.dialogScript);
-  }).length ?? 0;
-  const narrationCount = storyboard?.scenes?.filter((s) => s.narration?.audio).length ?? 0;
-  const lowerThirdCount =
-    storyboard?.scenes?.filter((s) => (s.lower_thirds?.length ?? 0) > 0).length ?? 0;
-  const finalRendered = !!renderStatus?.exists;
-
-  const reviewStatus: ReviewStatus = !review?.status
-    ? 'unrun'
-    : review.status === 'ok'
-      ? 'ready'
-      : (review.status as ReviewStatus);
-
-  type Raw = Omit<PipelineStep, 'status'> & { done: boolean };
-  const raw: Raw[] = [
-    {
-      key: 'storyboard',
-      label: 'Storyboard',
-      to: `/project/${projectId}/storyboard`,
-      detail: hasStoryboard ? `${sceneCount} scenes` : 'Generate or upload',
-      done: hasStoryboard,
-    },
-    {
-      key: 'recordings',
-      label: 'Recordings',
-      to: `/project/${projectId}/recordings`,
-      detail: hasStoryboard ? `${recordingCount}/${sceneCount}` : '—',
-      done: hasStoryboard && recordingCount === sceneCount,
-    },
-    {
-      key: 'script',
-      label: 'Script',
-      // Project-wide script overview — same pattern as Narration / Lower
-      // Thirds. Each row deep-links to the scene's Script tab.
-      to: `/project/${projectId}/script`,
-      // Scripts are optional — the user can ship a silent video. Pragmatic
-      // done-rule mirrors narration / lower-thirds: marked done once
-      // recordings are in.
-      detail: scriptCount > 0 ? `${scriptCount}/${sceneCount}` : 'Optional',
-      done: hasStoryboard && recordingCount === sceneCount,
-    },
-    {
-      key: 'narration',
-      label: 'Narration',
-      // Cross-scene narration overview — replaces the old dead-link to
-      // /storyboard. Each row deep-links into its scene's Narration tab.
-      to: `/project/${projectId}/narration`,
-      // Narration is OPTIONAL — the user can render with the recording's
-      // original audio or render silent. Pragmatic done-rule: marked done
-      // once all recordings are in.
-      detail: narrationCount > 0 ? `${narrationCount}/${sceneCount}` : 'Optional',
-      done: hasStoryboard && recordingCount === sceneCount,
-    },
-    {
-      key: 'lower-thirds',
-      label: 'Lower Thirds',
-      to: `/project/${projectId}/lower-thirds`,
-      detail: lowerThirdCount > 0 ? `${lowerThirdCount}/${sceneCount}` : 'Optional',
-      // Optional — done once recordings are in.
-      done: hasStoryboard && recordingCount === sceneCount,
-    },
-    {
-      key: 'render',
-      label: 'Render',
-      // Dedicated page — matches the Narration / Lower Thirds pattern.
-      // Previously this was a scroll-down section on the overview which
-      // confused users ("nothing happened when I clicked Render").
-      to: `/project/${projectId}/render`,
-      detail: finalRendered ? 'Done' : 'final.mp4',
-      done: finalRendered,
-    },
-    {
-      key: 'review',
-      label: 'Quality Review',
-      to: `/project/${projectId}/review`,
-      detail: reviewSummaryLabel(reviewStatus, {
-        warnings: review?.summary.warn ?? 0,
-        issues: review?.summary.issue ?? 0,
-      }),
-      done: reviewStatus === 'ready',
-    },
-  ];
-
-  let foundNext = false;
-  const steps: PipelineStep[] = raw.map((s) => {
-    if (s.done) return { ...s, status: 'done' };
-    if (!foundNext) {
-      foundNext = true;
-      return { ...s, status: 'next' };
-    }
-    return { ...s, status: 'todo' };
-  });
-
+export function usePipelineSteps(projectId: string | undefined) {
+  const query = useWorkflowStatus(projectId);
+  const data = query.data;
+  const nextRoute = data && projectId ? workflowActionRoute(projectId, data.nextAction.key, data.nextAction.sceneId) : null;
+  const nextStepKey = data?.nextAction.key === 'open_scene_recording' ? 'recordings'
+    : data?.nextAction.key === 'render_again' ? 'render'
+      : data?.nextAction.key.replace(/^open_/, '').replace('_', '-') as WorkflowStepKey | undefined;
+  const steps: PipelineStep[] = !data || !projectId ? [] : data.steps.map((step) => ({
+    key: step.key,
+    label: step.label,
+    detail: step.summary,
+    state: step.state,
+    to: step.key === nextStepKey && nextRoute ? nextRoute : stepRoute(projectId, step.key),
+    status: step.key === nextStepKey ? 'next' : step.state === 'complete' || step.state === 'optional' ? 'done' : step.state === 'stale' ? 'stale' : 'todo',
+  }));
   return {
+    ...query,
     steps,
-    next: steps.find((s) => s.status === 'next'),
-    allDone: steps.every((s) => s.status === 'done'),
+    next: steps.find((step) => step.status === 'next'),
+    allDone: !!data && data.steps.every((step) => step.state === 'complete' || step.state === 'optional'),
   };
 }

@@ -183,7 +183,7 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
           border: stepBadgeBorder(step.status),
         }}
       >
-        {step.status === 'done' ? '✓' : number}
+        {step.status === 'done' ? '✓' : step.status === 'stale' ? '!' : number}
       </span>
       <span
         style={{
@@ -220,10 +220,11 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
 function stepBadgeBg(status: PipelineStepStatus): string {
   if (status === 'done') return STATUS_COLOR.success;
   if (status === 'next') return 'var(--accent-2)';
+  if (status === 'stale') return 'var(--warn, #d4a017)';
   return 'transparent';
 }
 function stepBadgeFg(status: PipelineStepStatus): string {
-  if (status === 'done' || status === 'next') return '#fff';
+  if (status === 'done' || status === 'next' || status === 'stale') return '#fff';
   return 'var(--fg-muted)';
 }
 function stepBadgeBorder(status: PipelineStepStatus): string {

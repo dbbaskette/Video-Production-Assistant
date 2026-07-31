@@ -12,6 +12,10 @@ import { readBrand } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { SceneTransitionSchema } from '@vpa/shared';
+import { computeWorkflowStatus } from '../services/workflow-status/index.js';
+import { buildRenderFingerprint } from '../services/workflow-status/fingerprint.js';
+import { writeRenderManifest } from '../services/workflow-status/render-manifest.js';
+import { getQualityReview } from './quality-review.js';
 
 interface Deps {
   store: ProjectStore;
@@ -63,6 +67,22 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     } catch (err) {
       const e = err as { statusCode?: number; message?: string };
       return reply.status(e.statusCode ?? 500).send({ error: e.message ?? 'Project lookup failed', code: 'not_found' });
+    }
+
+    const project = await store.readProject(id);
+    const storyboard = await loadStoryboard(projectPath);
+    const workflow = await computeWorkflowStatus({
+      projectPath,
+      project,
+      storyboard,
+      review: getQualityReview(id),
+    });
+    if (!workflow.render.ready) {
+      return reply.status(409).send({
+        error: 'The project is not ready for a full render.',
+        code: 'render_blocked',
+        blockers: workflow.render.blockers,
+      });
     }
 
     // Resolve the project's brand so we can pull bumpers / default music. The
@@ -170,6 +190,31 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       try {
         const result = await renderFinalVideo(projectPath, opts, (event) => {
           jobQueue.emit(job.id, 'progress', event);
+        });
+        const manifestOptions = {
+          audioMode: opts.audioMode,
+          burnSubtitles: opts.burnSubtitles,
+          includeNarration: opts.includeNarration,
+          includeLowerThirds: opts.includeLowerThirds,
+          musicTrackId: body.musicTrackId ?? null,
+          musicVolumeDb: body.musicVolumeDb ?? -20,
+          musicScope,
+          useBrandBumpers,
+          useBrandMusic,
+        };
+        const currentProject = await store.readProject(id);
+        const currentStoryboard = await loadStoryboard(projectPath);
+        const outputInfo = await stat(result.outputPath);
+        await writeRenderManifest(projectPath, {
+          completedAt: new Date().toISOString(),
+          output: {
+            path: 'renders/final.mp4',
+            sizeBytes: outputInfo.size,
+            durationSec: result.durationSec,
+            sceneCount: result.scenePaths.length,
+          },
+          options: manifestOptions,
+          fingerprint: await buildRenderFingerprint(projectPath, currentProject, currentStoryboard, manifestOptions),
         });
         jobQueue.complete(job.id, {
           projectId: id,

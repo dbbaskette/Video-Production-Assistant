@@ -2,7 +2,7 @@ import { useParams, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { ProjectSidebar } from '../components/ProjectSidebar.js';
-import { HealthRail } from '../components/HealthRail.js';
+import { ProjectIssuesControl } from '../components/ProjectIssuesDrawer.js';
 
 export function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -46,10 +46,12 @@ export function ProjectWorkspace() {
           flexDirection: 'column',
         }}
       >
+        <div className="project-workspace-tools">
+          <ProjectIssuesControl projectId={project.id} />
+        </div>
         <div style={{ flex: 1 }}>
           <Outlet context={{ project }} />
         </div>
-        <HealthRail />
       </main>
     </div>
   );

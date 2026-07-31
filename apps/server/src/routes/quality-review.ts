@@ -14,6 +14,10 @@ interface Deps {
 // In-memory cache of last review result per project (clears on server restart)
 const reviewCache = new Map<string, ReviewResult>();
 
+export function getQualityReview(projectId: string): ReviewResult | null {
+  return reviewCache.get(projectId) ?? null;
+}
+
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
   const tracker = await store.readTracker();
   const entry = tracker.projects.find((p) => p.id === projectId);

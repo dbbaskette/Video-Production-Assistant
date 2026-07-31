@@ -13,6 +13,8 @@ import {
   type Storyboard,
   type Scene,
   type Expressiveness,
+  WorkflowStatusSchema,
+  type WorkflowStatus,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -1113,6 +1115,16 @@ export const renderApi = {
     es.addEventListener('error', handler);
     es.addEventListener('message', handler);
     return () => es.close();
+  },
+};
+
+export const workflowStatusApi = {
+  queryKey(projectId: string | undefined) {
+    return ['workflow-status', projectId] as const;
+  },
+  async get(projectId: string): Promise<WorkflowStatus> {
+    const data = await request<unknown>('GET', `/api/projects/${projectId}/workflow-status`);
+    return WorkflowStatusSchema.parse(data);
   },
 };
 

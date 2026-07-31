@@ -18,6 +18,10 @@ import type { LucideIcon } from 'lucide-react';
 import type { ProjectTrackerEntry, Storyboard } from '@vpa/shared';
 import { computeActionItems } from '../lib/scene-health.js';
 import { SnapshotHistory } from '../components/SnapshotHistory.js';
+import { ProjectActionCard } from '../components/ProjectActionCard.js';
+import { RenderPreflight } from '../components/RenderPreflight.js';
+import { useWorkflowStatus } from '../lib/pipeline.js';
+import { ApiError } from '../lib/api.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -27,9 +31,6 @@ export function ProjectOverview() {
   const { project } = useOutletContext<WorkspaceContext>();
   const { projectId } = useParams<{ projectId: string }>();
 
-  // Pipeline steps come from the shared lib/pipeline so the sidebar
-  // and this view are always in sync.
-  const { steps, next: nextStep } = usePipelineSteps(projectId);
   const { data: storyboard } = useQuery({
     queryKey: ['storyboard', projectId],
     queryFn: () => storyboardApi.get(projectId!),
@@ -44,21 +45,10 @@ export function ProjectOverview() {
         {project.path}
       </p>
 
-      <Pipeline
-        steps={steps}
-        nextStep={nextStep}
+      <ProjectActionCard
         projectId={project.id}
-        hasStoryboard={hasStoryboard}
+        onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))}
       />
-
-      {/* Granular action items — surfaces scene-level issues that the
-          high-level pipeline can't (e.g. "scene-04 narration overruns the
-          recording by 1.4s"). Renders below the pipeline so the workflow
-          stepper stays the main wayfinding signal; this is a focused punch
-          list for the specific scene the user should touch next. */}
-      {hasStoryboard && storyboard && projectId && (
-        <ActionItemsCard projectId={projectId} storyboard={storyboard} />
-      )}
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
       <CollapsibleSection
@@ -291,6 +281,7 @@ function RenderSection({
   musicEnabled: boolean;
 }) {
   const queryClient = useQueryClient();
+  const workflowQuery = useWorkflowStatus(projectId);
   const [progress, setProgress] = useState<RenderProgressEvent | null>(null);
   const [doneAt, setDoneAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -428,6 +419,7 @@ function RenderSection({
       setError(null);
       setProgress(null);
       setDoneAt(null);
+      queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
       // Subscribe to SSE for progress
       closeStreamRef.current?.();
       const close = renderApi.subscribe(jobId, (raw) => {
@@ -439,6 +431,7 @@ function RenderSection({
           setProgress(null);
           setDoneAt(Date.now());
           queryClient.invalidateQueries({ queryKey: ['render-status', projectId] });
+          queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
           closeStreamRef.current?.();
           closeStreamRef.current = null;
         } else if (evt.type === 'error') {
@@ -451,7 +444,15 @@ function RenderSection({
       });
       closeStreamRef.current = close;
     },
-    onError: (err) => setError(err instanceof Error ? err.message : 'Failed to start render'),
+    onError: (err) => {
+      queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
+      if (err instanceof ApiError && err.status === 409) {
+        const payload = err.payload as { blockers?: Array<{ message: string }> };
+        setError(payload.blockers?.map((item) => `• ${item.message}`).join('\n') ?? err.message);
+        return;
+      }
+      setError(err instanceof Error ? err.message : 'Failed to start render');
+    },
   });
 
   useEffect(() => {
@@ -465,6 +466,7 @@ function RenderSection({
   const exists = status.data?.exists;
   const sizeMb = exists && status.data?.sizeBytes ? (status.data.sizeBytes / 1024 / 1024).toFixed(1) : null;
   const isRunning = startRender.isPending || progress !== null;
+  const renderBlocked = !!workflowQuery.data && !workflowQuery.data.render.ready;
   const progressPct = progress && progress.totalScenes && progress.sceneIndex !== undefined
     ? Math.round(((progress.sceneIndex + (progress.step === 'mux-scene' ? 0.5 : 0)) / progress.totalScenes) * 100)
     : progress?.step === 'concat-scenes' ? 95 : null;
@@ -486,11 +488,13 @@ function RenderSection({
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
             {exists
-              ? <>Ready · {sizeMb} MB · <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 400 }}>last rendered {timeAgo(status.data?.modifiedAt)}</span></>
+              ? <>{workflowQuery.data?.render.output.state === 'stale' ? 'Outdated' : 'Ready'} · {sizeMb} MB · <span style={{ fontSize: 12, color: 'var(--fg-muted)', fontWeight: 400 }}>last rendered {timeAgo(status.data?.modifiedAt)}</span></>
               : 'Not rendered yet'}
           </div>
         </div>
       </div>
+
+      {workflowQuery.data && <RenderPreflight projectId={projectId} status={workflowQuery.data} />}
 
       {/* Options */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 13 }}>
@@ -573,7 +577,7 @@ function RenderSection({
           useMusic={effectiveUseBrandMusic}
           onChangeBumpers={setUseBrandBumpers}
           onChangeMusic={setUseBrandMusic}
-          disabled={isRunning}
+          disabled={isRunning || renderBlocked}
           projectMusicSelected={musicEnabled && !!musicTrackId}
           musicScope={musicScope}
           onMusicScopeChange={setMusicScope}
@@ -648,7 +652,7 @@ function RenderSection({
             style={{ marginRight: 8, marginBottom: -3, marginTop: -2 }}
             aria-hidden
           />
-          {isRunning ? 'Rendering full project…' : exists ? 'Re-render full project' : 'Render full project'}
+          {isRunning ? 'Rendering full project…' : renderBlocked ? 'Resolve blockers to render' : exists ? 'Render again' : 'Render full project'}
         </button>
         {exists && (
           <>
