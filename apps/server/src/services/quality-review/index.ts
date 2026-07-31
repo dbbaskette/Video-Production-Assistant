@@ -20,6 +20,7 @@ export interface ReviewResult {
   };
   status: 'ok' | 'warnings' | 'issues';
   reviewedAt: string;
+  inputFingerprint?: string;
 }
 
 function buildStoryboardContext(sb: Storyboard): string {

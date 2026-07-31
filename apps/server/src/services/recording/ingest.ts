@@ -3,6 +3,7 @@ import path from 'node:path';
 import { projectFiles } from '../project/paths.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import type { VideoMetadata } from './metadata.js';
+import type { RecordingProvenance } from '@vpa/shared';
 
 export interface IngestResult {
   sceneId: string;
@@ -15,6 +16,7 @@ export async function ingestRecording(
   sceneId: string,
   sourcePath: string,
   metadata: VideoMetadata,
+  provenance: RecordingProvenance = { source_kind: 'manual' },
 ): Promise<IngestResult> {
   const files = projectFiles(projectRoot);
   await mkdir(files.recordingsDir, { recursive: true });
@@ -39,6 +41,9 @@ export async function ingestRecording(
         source: relativePath,
         duration_sec: metadata.duration_sec,
         ingested_at: new Date().toISOString(),
+        source_kind: provenance.source_kind,
+        capture_session_id: provenance.capture_session_id,
+        captured_at: provenance.captured_at,
       },
       overlay_render: undefined,
       frame_render: undefined,

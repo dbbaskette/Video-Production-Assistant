@@ -15,6 +15,12 @@ import {
   type Expressiveness,
   WorkflowStatusSchema,
   type WorkflowStatus,
+  AgentRecordingPlanSchema,
+  AgentRecordingSessionSchema,
+  type AgentRecordingPlan,
+  type AgentRecordingPlanUpdate,
+  type AgentRecordingSession,
+  type AgentRecordingSessionState,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -288,8 +294,13 @@ export const recordingsApi = {
   videoUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording/video`;
   },
-  async uploadForScene(projectId: string, sceneId: string, file: File): Promise<IngestResult> {
+  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<IngestResult> {
     const form = new FormData();
+    if (provenance) {
+      form.append('source_kind', provenance.source_kind);
+      form.append('capture_session_id', provenance.capture_session_id);
+      if (provenance.captured_at) form.append('captured_at', provenance.captured_at);
+    }
     form.append('file', file);
     const res = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording`, {
       method: 'POST',
@@ -416,6 +427,31 @@ export const recordingsApi = {
 
   async executeSplit(projectId: string, boundaries: SceneBoundary[]): Promise<Storyboard> {
     return request<Storyboard>('POST', `/api/projects/${projectId}/recordings/execute-split`, { boundaries });
+  },
+};
+
+export const agentRecordingApi = {
+  queryKey(projectId: string | undefined, sceneId: string | undefined) {
+    return ['agent-recording-plan', projectId, sceneId] as const;
+  },
+  sessionQueryKey(projectId: string | undefined, sceneId: string | undefined) {
+    return ['agent-recording-session', projectId, sceneId] as const;
+  },
+  async getPlan(projectId: string, sceneId: string): Promise<AgentRecordingPlan> {
+    return AgentRecordingPlanSchema.parse(await request('GET', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/plan`));
+  },
+  async savePlan(projectId: string, sceneId: string, update: AgentRecordingPlanUpdate): Promise<AgentRecordingPlan> {
+    return AgentRecordingPlanSchema.parse(await request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/plan`, update));
+  },
+  async currentSession(projectId: string, sceneId: string): Promise<AgentRecordingSession | null> {
+    const data = await request<unknown>('GET', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/current`);
+    return data === null ? null : AgentRecordingSessionSchema.parse(data);
+  },
+  async createSession(projectId: string, sceneId: string): Promise<AgentRecordingSession> {
+    return AgentRecordingSessionSchema.parse(await request('POST', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions`, { state: 'rehearsing' }));
+  },
+  async updateSession(projectId: string, sceneId: string, sessionId: string, state: AgentRecordingSessionState, extra: { message?: string; recordingId?: string; capProjectPath?: string; exportPath?: string } = {}): Promise<AgentRecordingSession> {
+    return AgentRecordingSessionSchema.parse(await request('PATCH', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/${sessionId}`, { state, ...extra }));
   },
 };
 

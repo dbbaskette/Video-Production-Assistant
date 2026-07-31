@@ -1437,3 +1437,40 @@ pre code {
   .project-action-card__header { align-items: flex-start; flex-direction: column; }
   .project-action-card__steps { grid-template-columns: repeat(4, minmax(0,1fr)); }
 }
+
+/* Cap + Codex scene recording */
+.agent-recording-entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--accent-bg) 45%, var(--bg-elev)); }
+.agent-recording-entry > div { display: flex; flex-direction: column; gap: 3px; }
+.agent-recording-entry strong { font-size: 13px; }
+.agent-recording-entry span { color: var(--fg-muted); font-size: 11px; }
+.agent-recording-entry button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.agent-recording-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(5,8,14,.58); }
+.agent-recording-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elev); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+.agent-recording-dialog header, .agent-recording-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.agent-recording-dialog header span { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .09em; }
+.agent-recording-dialog header h2 { margin: 3px 0 0; font-size: 19px; }
+.agent-recording-dialog header button { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; }
+.agent-recording-dialog__body { padding: 20px; overflow-y: auto; }
+.agent-recording-dialog footer { border-top: 1px solid var(--border); border-bottom: 0; }
+.agent-recording-dialog footer button { display: inline-flex; align-items: center; gap: 7px; }
+.agent-recording-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.agent-recording-grid label, .agent-recording-plan label { display: flex; flex-direction: column; gap: 5px; color: var(--fg-muted); font-size: 11px; }
+.agent-recording-grid input, .agent-recording-grid select, .agent-recording-plan input { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); }
+.agent-recording-dialog fieldset { display: flex; flex-wrap: wrap; gap: 14px; margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 7px; }
+.agent-recording-dialog legend { color: var(--fg-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.agent-recording-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.agent-recording-plan h3, .agent-recording-readiness h3 { margin: 14px 0 8px; font-size: 12px; }
+.agent-recording-plan label { position: relative; flex-direction: row; align-items: center; margin-bottom: 7px; }
+.agent-recording-plan label span { width: 22px; height: 22px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-size: 10px; font-weight: 700; }
+.agent-recording-readiness p { display: flex; align-items: center; gap: 7px; margin: 5px 0; color: var(--fg-muted); font-size: 11px; }
+.agent-recording-note, .agent-recording-warning, .agent-recording-notice { margin: 16px 0 0; padding: 10px 12px; border-radius: 6px; font-size: 11px; line-height: 1.45; }
+.agent-recording-note { background: var(--accent-bg); color: var(--fg-muted); }
+.agent-recording-warning { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.agent-recording-notice { background: color-mix(in srgb, var(--warn, #d4a017) 14%, transparent); color: var(--warn, #d4a017); }
+.agent-recording-status { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
+.agent-recording-status > div { display: flex; gap: 3px; flex-direction: column; }
+.agent-recording-status span, .agent-recording-status small { color: var(--fg-muted); }
+.agent-recording-status--active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.agent-recording-status--done { color: var(--success); }
+.agent-recording-status--failed { color: var(--danger); }
+@media (max-width: 640px) { .agent-recording-grid { grid-template-columns: 1fr; } .agent-recording-entry { align-items: flex-start; flex-direction: column; } }

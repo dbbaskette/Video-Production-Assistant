@@ -12,8 +12,9 @@ import { loadStoryboard, saveStoryboard, createStoryboard, addScene, updateScene
 import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
-import { SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
+import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
+import { requireAttachableSession, updateAgentRecordingSession } from '../services/agent-recording/session.js';
 
 interface Deps {
   store: ProjectStore;
@@ -62,6 +63,19 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No file uploaded', code: 'no_file' });
     }
 
+    const multipartValue = (name: string): string | undefined => {
+      const field = (data.fields as Record<string, { value?: unknown }> | undefined)?.[name];
+      return typeof field?.value === 'string' ? field.value : undefined;
+    };
+    const provenance = RecordingProvenanceSchema.parse({
+      source_kind: multipartValue('source_kind') ?? 'manual',
+      capture_session_id: multipartValue('capture_session_id'),
+      captured_at: multipartValue('captured_at'),
+    });
+    if (provenance.source_kind === 'cap-agent') {
+      await requireAttachableSession(projectPath, id, sceneId, provenance.capture_session_id!);
+    }
+
     // Save to temp, probe, then ingest
     const tmpDir = path.join(projectPath, '.tmp');
     await mkdir(tmpDir, { recursive: true });
@@ -75,7 +89,10 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       await writeFile(tmpFile, Buffer.concat(chunks));
 
       const metadata = await probe(tmpFile);
-      const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata);
+      const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
+      if (provenance.source_kind === 'cap-agent') {
+        await updateAgentRecordingSession(projectPath, id, sceneId, provenance.capture_session_id!, { state: 'completed' });
+      }
       return result;
     } finally {
       await unlink(tmpFile).catch(() => {});

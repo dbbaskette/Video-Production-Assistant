@@ -11,6 +11,8 @@ import { createFakeLlm } from '../services/llm/index.js';
 import { createFakeProbe } from '../services/recording/metadata.js';
 import { registerRecordingRoutes } from './recordings.js';
 import type { Storyboard } from '@vpa/shared';
+import { createAgentRecordingSession, updateAgentRecordingSession } from '../services/agent-recording/session.js';
+import { loadStoryboard } from '../services/storyboard/index.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -119,6 +121,26 @@ describe('recording routes', () => {
       });
       expect(res.statusCode).toBe(404);
       expect(res.json().code).toBe('scene_not_found');
+    });
+
+    it('attaches Cap output only from an attaching session and saves provenance', async () => {
+      const sb = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, sb);
+      const session = await createAgentRecordingSession(projectPath, projectId, 'scene-01');
+      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'recording', recordingId: 'cap-1' });
+      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'exporting' });
+      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'attaching' });
+
+      const form = new FormData();
+      form.append('source_kind', 'cap-agent');
+      form.append('capture_session_id', session.id);
+      form.append('captured_at', '2026-07-31T12:00:00.000Z');
+      form.append('file', Buffer.from('fake-mp4-data'), { filename: 'take.mp4', contentType: 'video/mp4' });
+      const res = await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/scenes/scene-01/recording`, payload: form.getBuffer(), headers: form.getHeaders() });
+
+      expect(res.statusCode).toBe(200);
+      const saved = await loadStoryboard(projectPath);
+      expect(saved?.scenes[0]?.recording).toMatchObject({ source_kind: 'cap-agent', capture_session_id: session.id, captured_at: '2026-07-31T12:00:00.000Z' });
     });
   });
 

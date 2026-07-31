@@ -4,6 +4,7 @@ import type { LlmClient } from '../services/llm/index.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { runQualityReview } from '../services/quality-review/index.js';
 import type { ReviewResult } from '../services/quality-review/index.js';
+import { buildReviewFingerprint } from '../services/workflow-status/fingerprint.js';
 
 interface Deps {
   store: ProjectStore;
@@ -39,7 +40,7 @@ export async function registerQualityReviewRoutes(
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
 
-    const result = await runQualityReview(sb, llm, workspaceRoot, projectPath);
+    const result = { ...(await runQualityReview(sb, llm, workspaceRoot, projectPath)), inputFingerprint: buildReviewFingerprint(sb) };
     reviewCache.set(id, result);
 
     return result;

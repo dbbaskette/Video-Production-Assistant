@@ -1,0 +1,4 @@
+interface:
+  display_name: "Record VPA Scene with Cap"
+  short_description: "Rehearse and record a VPA scene safely"
+  default_prompt: "Use $vpa-agent-recording to rehearse and record this VPA scene with Cap."

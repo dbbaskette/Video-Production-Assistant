@@ -4,6 +4,9 @@ export const RecordingSchema = z.object({
   source: z.string(),
   duration_sec: z.number().positive().optional(),
   ingested_at: z.string().datetime().optional(),
+  source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split']).optional(),
+  capture_session_id: z.string().uuid().optional(),
+  captured_at: z.string().datetime().optional(),
 });
 export type Recording = z.infer<typeof RecordingSchema>;
 

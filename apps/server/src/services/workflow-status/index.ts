@@ -3,6 +3,7 @@ import { isAbsolute, join } from 'node:path';
 import { WorkflowStatusSchema, type Project, type Storyboard, type WorkflowIssue, type WorkflowStatus, type WorkflowStep } from '@vpa/shared';
 import { jobQueue } from '../../lib/job-queue.js';
 import { buildRenderFingerprint } from './fingerprint.js';
+import { buildReviewFingerprint } from './fingerprint.js';
 import { getFinalOutputInfo, readRenderManifest } from './render-manifest.js';
 
 const labels = {
@@ -59,7 +60,9 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
   if (scriptCount > 0 && scriptCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'script', code: 'scripts_partial', message: `Scripts exist for ${scriptCount} of ${scenes.length} scenes.`, recommendation: 'Finish the remaining scripts or continue without them.', action: 'open_script' }));
   if (narrationCount > 0 && narrationCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'narration', code: 'narration_partial', message: `Narration exists for ${narrationCount} of ${scenes.length} scenes.`, recommendation: 'Generate the remaining narration or render with original audio.', action: 'open_narration' }));
   if (lowerThirdCount > 0 && lowerThirdCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'lower-thirds', code: 'lower_thirds_partial', message: `Lower thirds are used in ${lowerThirdCount} of ${scenes.length} scenes.`, recommendation: 'Review whether the remaining scenes need labels.', action: 'open_lower_thirds' }));
+  const reviewIsStale = !!review?.status && (!review.inputFingerprint || review.inputFingerprint !== buildReviewFingerprint(storyboard));
   if (!review?.status) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_unrun', message: 'Quality Review has not been run.', recommendation: 'Run Quality Review before publishing.', action: 'open_review' }));
+  else if (reviewIsStale) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_stale', message: 'Quality Review is outdated because project inputs changed.', recommendation: 'Run Quality Review again.', action: 'open_review' }));
   else if ((review.summary?.issue ?? 0) > 0 || (review.summary?.warn ?? 0) > 0) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_findings', message: 'Quality Review has findings to inspect.', recommendation: 'Review the findings before publishing.', action: 'open_review' }));
 
   const outputInfo = await getFinalOutputInfo(projectPath);
@@ -78,7 +81,7 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
   const hasStoryboard = scenes.length > 0;
   const recordingsComplete = hasStoryboard && recorded === scenes.length;
   const renderState: WorkflowStep['state'] = activeRender ? 'in_progress' : output.state === 'current' ? 'complete' : output.state === 'stale' ? 'stale' : recordingsComplete ? 'ready' : 'blocked';
-  const reviewState: WorkflowStep['state'] = !recordingsComplete ? 'blocked' : review?.status === 'ok' ? 'complete' : review?.status ? 'in_progress' : 'ready';
+  const reviewState: WorkflowStep['state'] = !recordingsComplete ? 'blocked' : reviewIsStale ? 'stale' : review?.status === 'ok' ? 'complete' : review?.status ? 'in_progress' : 'ready';
   const optionalState = (count: number): WorkflowStep['state'] => count === 0 ? 'optional' : count === scenes.length ? 'complete' : 'in_progress';
   const steps: WorkflowStep[] = [
     { key: 'storyboard', label: labels.storyboard, state: hasStoryboard ? 'complete' : 'ready', summary: hasStoryboard ? `${scenes.length} scenes` : 'Create or import', completed: hasStoryboard ? scenes.length : 0, total: scenes.length || 1 },
@@ -97,7 +100,7 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
       ? { key: 'open_scene_recording' as const, label: 'Add next recording', summary: `${scenes[firstMissing]?.name ?? 'A scene'} needs a recording.`, sceneId: scenes[firstMissing]?.id }
       : output.state !== 'current'
         ? { key: output.state === 'stale' ? 'render_again' as const : 'open_render' as const, label: output.state === 'stale' ? 'Render again' : 'Render project', summary: output.reason ?? 'All required recordings are ready.' }
-        : { key: 'open_review' as const, label: review?.status === 'ok' ? 'Review complete' : 'Run quality review', summary: review?.status === 'ok' ? 'The project is ready.' : 'Check the finished project before publishing.' };
+        : { key: 'open_review' as const, label: review?.status === 'ok' && !reviewIsStale ? 'Review complete' : 'Run quality review', summary: review?.status === 'ok' && !reviewIsStale ? 'The project is ready.' : 'Check the finished project before publishing.' };
 
   const issues = [...blockers, ...warnings];
   const completed = steps.filter((step) => step.state === 'complete' || step.state === 'optional').length;

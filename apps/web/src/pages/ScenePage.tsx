@@ -22,6 +22,9 @@ import { PolishScriptModal } from '../components/PolishScriptModal.js';
 import { classifyFit, computeProjectWpm } from '../lib/wpm.js';
 import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
 import { confirmDestructiveSave } from '../lib/destructive-save.js';
+import { AgentRecordingDialog } from '../components/AgentRecordingDialog.js';
+import { AgentRecordingStatus } from '../components/AgentRecordingStatus.js';
+import { MonitorPlay } from 'lucide-react';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -132,6 +135,7 @@ export function ScenePage(props: ScenePageProps = {}) {
   // to the (faster, cheaper) text-only path.
   const [groundInVideo, setGroundInVideo] = useState(true);
   const [showReplaceUpload, setShowReplaceUpload] = useState(false);
+  const [agentRecordingOpen, setAgentRecordingOpen] = useState(false);
   const generateAbortRef = useRef<AbortController | null>(null);
   // Local edit buffer for the user-authored "what is this scene
   // demonstrating?" string. Hydrated from the storyboard scene; saved on
@@ -162,6 +166,7 @@ export function ScenePage(props: ScenePageProps = {}) {
     onSuccess: (_data, file) => {
       setShowReplaceUpload(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
       ui.showToast({
         message: 'Recording replaced',
         detail: file.name,
@@ -896,6 +901,12 @@ export function ScenePage(props: ScenePageProps = {}) {
       {/* Tab content */}
       {activeTab === 'Recording' && (
         <div>
+          {projectId && sceneId && <AgentRecordingStatus projectId={projectId} sceneId={sceneId} />}
+          <div className="agent-recording-entry">
+            <div><strong>Record this scene with Codex</strong><span>Review the steps, rehearse the target app, then let Cap capture the final take.</span></div>
+            <button type="button" className="btn--accent" disabled={scene.type === 'terminal'} title={scene.type === 'terminal' ? 'Computer Use cannot drive terminal applications.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Record with Codex</button>
+          </div>
+          {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { setAgentRecordingOpen(false); setShowReplaceUpload(true); }} />}
           {/* Re-analyze blocking modal — running this also calls Gemini Files
               API in the video-grounded path, which adds an upload + poll
               before the actual generateContent. */}

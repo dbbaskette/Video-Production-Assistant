@@ -40,6 +40,14 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   // Recording tab should show "No recording" state with upload area
   await expect(page.getByText('No recording uploaded')).toBeVisible();
   await expect(page.getByText('Drop MP4 files here')).toBeVisible();
+
+  // Agent recording is a reviewed handoff, not an automatic recorder launch.
+  await page.getByRole('button', { name: 'Record with Codex' }).click();
+  await expect(page.getByRole('heading', { name: 'Prepare agent recording' })).toBeVisible();
+  await expect(page.getByText('VPA prepares the instructions')).toBeVisible();
+  await page.getByLabel('Target application').fill('Safari');
+  await expect(page.getByRole('button', { name: 'Save & copy Codex handoff' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close' }).click();
 });
 
 test('project overview shows recording counts', async ({ page }) => {
@@ -56,4 +64,7 @@ test('project overview shows recording counts', async ({ page }) => {
 
   // Recordings card should show — or 0/0 when no storyboard
   await expect(page.getByText('Recordings')).toBeVisible();
+  await expect(page.getByText(/Project progress/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /Project issues/ })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Project health' })).toHaveCount(0);
 });

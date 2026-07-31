@@ -67,7 +67,7 @@ a developer-experience extra.
 The left sidebar lays out the workflow as a sequence of dedicated phase pages. Every per-scene operation (narration, lower thirds, frame style, transition) is reachable from either the per-scene Recording tab OR the project-wide overview page for that phase — pick whichever fits the moment.
 
 1. **Storyboard** — Chat with AI to plan a demo storyboard (or upload recordings and let AI generate one)
-2. **Recordings** — Upload one MP4 per scene; the **Replace recording** button on the scene's Recording tab swaps files cleanly and invalidates the lower-thirds / frame caches
+2. **Recordings** — Upload one MP4 per scene, or use **Record with Codex** to review a scene plan that Codex rehearses with Computer Use while Cap records. Manual upload remains available.
 3. **Script** *(optional)* — Project-wide `/script` page shows every scene's script status with word count and inline preview. Click into any scene to write or AI-generate a draft. Monologue and dialog modes are edited independently with restore-previous backup.
 4. **Voices** *(optional)* — Record or upload a voice clone in-browser; use it with Fish Audio (local) or register it as an xAI custom voice
 5. **Narration** *(optional)* — Project-wide `/narration` page shows per-scene script + audio status. TTS engine produces per-paragraph MP3 chunks + SRT/VTT subtitles. Per-mode chunks survive monologue↔dialog toggling.
@@ -84,7 +84,8 @@ The left sidebar lays out the workflow as a sequence of dedicated phase pages. E
 | **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand. The Render page displays which brand assets will be applied + per-render opt-out checkboxes. |
 | **Voices Library** | Record or upload voice clones in-browser; ffmpeg transcodes to canonical 24 kHz mono WAV. Use them with Fish Audio (local) or register them as xAI custom voices |
 | **AI Ideation** | Chat-based storyboard planning with scene proposals and refinement |
-| **Recording Ingestion** | Upload per-scene MP4s, or upload one long recording and split it at AI-proposed boundaries. **Replace recording** swaps a scene's video and automatically invalidates the cached lower-thirds bake + framed video. |
+| **Recording Ingestion** | Upload per-scene MP4s, upload one long recording and split it at AI-proposed boundaries, or prepare a Cap + Codex agent recording. **Replace recording** swaps a scene's video and automatically invalidates the cached lower-thirds bake + framed video. |
+| **Agent Recording** | The Recording tab derives a reviewed action plan and copies a repository-aware Codex handoff. Codex rehearses the supported target UI, asks for explicit capture confirmation, controls Cap through its structured CLI, and attaches the validated local MP4 with provenance. See [Cap agent recording](docs/agent-recording-cap.md). |
 | **Script Generation** | AI writes narration scripts with emotive tags from scene context. Monologue and dialog modes are independent. Project-wide `/script` page lists every scene with word count + preview. The editor shows a **live word-count + fit indicator** sized to the scene's recording at the project's measured TTS rate — coloured green/red so the user can self-correct length before generating TTS, with a **✨ Tighten script** button that opens directly when the verdict is "TOO LONG." Saving a script (manual edit, regenerate, or Tighten) clears any previously-generated TTS chunks so the next render doesn't play old narration over new wording. |
 | **TTS Narration** | Per-paragraph chunked TTS with multiple engines/voices, word-level timing, SRT/VTT subtitles. Cloned voices appear automatically in the engine voice picker. |
 | **Scene Preview** | Combined recording + narration + lower-thirds preview, played inline without rendering |
@@ -95,7 +96,7 @@ The left sidebar lays out the workflow as a sequence of dedicated phase pages. E
 | **Tighten script** | A **✨ Tighten script** button appears next to every Quality Review narration warning. Clicking it opens a side-by-side modal that shows the current script next to an LLM-proposed shorter version sized to the recording duration. The tightener is constrained to *remove* content only — never rephrase or add — and is short-circuited entirely when the script already fits the target, with a retry-once-then-give-up guard if the model can't find a safe cut. Accept persists the new script and clears the stale TTS chunks so the next render uses the right wording. |
 | **Final Render** | Three-stage ffmpeg pipeline (audio concat → per-scene mux → multi-scene concat) with progress UI, brand-bumper prepend/append, brand default music fallback, per-render opt-outs for narration / lower-thirds / brand assets, and forced normalisation (scale + pad + setsar + settb) so mixed-source inputs always concat cleanly. Mux automatically **freeze-pads the video** when narration runs longer than the recording (uses ffmpeg `tpad=stop_mode=clone`) so the last sentence never gets clipped. Concat fast-path is gated on uniform dimensions + time bases + audio params — any mismatch routes through the re-encode path that normalises everything via the filter graph (prevents the silent-corruption bug where the player showed `0:0.0`). The Render page shows a **scene-strip** above the player — horizontal row of thumbnails per scene with transition icons between them — so you can confirm ordering + transitions at a glance before re-rendering. **Download** button returns a `Content-Disposition: attachment` mp4 named after the project. |
 | **Setup Health** | In-app probes for ffmpeg/drawtext, ffprobe, LLM connectivity, TTS providers, env vars, and `VPA_HOME`. When every probe passes, the page collapses to a single green "Everything's ready" tile with an expand-on-demand details list — silent-success replaces a wall of green bands. |
-| **Project Overview action items** | A scene-granular "Needs attention" card under the workflow pipeline surfaces specific blockers (missing recording, script-but-no-TTS, narration overrun > 1s, etc.) with deep links to the right tab on the right scene. Hidden when there's nothing actionable so the happy path is just the pipeline. |
+| **Canonical project status** | One server-computed status drives the overview, sidebar, issues drawer, and render preflight. It distinguishes blocked, ready, in-progress, complete, optional, and stale work. Rendered videos remain playable when outdated and are labelled **Outdated** until rendered again. |
 | **In-app toasts** | Save / Recommend / Render-overlay actions now confirm via a non-blocking toast (success, error, warn). Reduces the "did that work?" cognitive load on destructive or async operations. |
 | **Export** | Bundle all scene assets into an organized directory with manifest for external editing apps |
 
@@ -190,9 +191,10 @@ docs/superpowers/     Design specs and implementation plans
   project.yaml           # project metadata, including applied brand
   storyboard.yaml        # scene definitions, scripts (monologue + dialog), per-mode chunks
   recordings/            # per-scene MP4 files
+  recording-plans/       # reviewed Codex plans + transient session records
   narration/             # per-scene MP3 + SRT + VTT (and per-paragraph chunk MP3s)
   overlays/              # rendered videos with lower-third overlays
-  renders/               # final.mp4 + per-scene mp4s from the render pipeline
+  renders/               # final.mp4 + render-manifest.json + per-scene mp4s
   export/                # exported asset bundles
   source-docs/           # uploaded reference documents
 ```

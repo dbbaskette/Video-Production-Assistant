@@ -40,7 +40,7 @@ export function useWorkflowStatus(projectId: string | undefined) {
     queryFn: () => workflowStatusApi.get(projectId!),
     enabled: !!projectId,
     placeholderData: (previous) => previous,
-    refetchInterval: (query) => query.state.data?.render.output.state === 'in_progress' ? 1500 : false,
+    refetchInterval: (query) => query.state.data?.render.output.state === 'in_progress' ? 1500 : 5000,
   });
 }
 

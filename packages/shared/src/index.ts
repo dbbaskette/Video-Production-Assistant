@@ -7,3 +7,4 @@ export * from './storyboard.js';
 export * from './state.js';
 export * from './voice-clone.js';
 export * from './workflow-status.js';
+export * from './agent-recording.js';
