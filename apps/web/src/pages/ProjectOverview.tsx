@@ -6,17 +6,13 @@ import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
-import { usePipelineSteps, type PipelineStep } from '../lib/pipeline.js';
 // Shared relativeTime helper. Local `timeAgo` alias keeps the rest of
 // the file's call sites reading the same as before.
 import { relativeTime as timeAgo } from '../lib/format.js';
 import {
-  Video, FileText, Volume2, Tag, Film, Check, ArrowRight, Layers,
-  CircleCheck, ListChecks,
+  Video, FileText, Volume2, Tag, Film,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import type { ProjectTrackerEntry, Storyboard } from '@vpa/shared';
-import { computeActionItems } from '../lib/scene-health.js';
+import type { ProjectTrackerEntry } from '@vpa/shared';
 import { SnapshotHistory } from '../components/SnapshotHistory.js';
 import { ProjectActionCard } from '../components/ProjectActionCard.js';
 import { RenderPreflight } from '../components/RenderPreflight.js';
@@ -49,6 +45,7 @@ export function ProjectOverview() {
         projectId={project.id}
         onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))}
       />
+      <div style={{ marginTop: 12 }}><ExportButton projectId={project.id} /></div>
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
       <CollapsibleSection
@@ -121,138 +118,6 @@ export function ProjectOverview() {
         <SnapshotHistory projectId={project.id} />
       </CollapsibleSection>
     </div>
-  );
-}
-
-/**
- * Pick the most useful "next step" link based on where the project is in the
- * workflow, render it prominently, and demote the other shortcuts to a small
- * muted row beneath. Keeps the same set of destinations, just clarifies
- * where the user should go.
- */
-// ── Pipeline ──────────────────────────────────────────────────────
-//
-// The signature element of the product. A horizontal stepper that
-// shows the workflow as a connected sequence: numbered nodes with
-// Lucide glyphs, a filament behind them that fills as steps complete,
-// per-step labels + counts, and the next-up step pulsing in violet to
-// declare itself as the call to action.
-//
-// Step computation lives in lib/pipeline so the sidebar renders a
-// compact version against the same source of truth.
-
-const STEP_ICONS: Record<string, LucideIcon> = {
-  storyboard: ListChecks,
-  recordings: Video,
-  narration: Volume2,
-  'lower-thirds': Tag,
-  render: Film,
-  review: CircleCheck,
-};
-
-function Pipeline({
-  steps,
-  nextStep,
-  projectId,
-  hasStoryboard,
-}: {
-  steps: PipelineStep[];
-  nextStep?: PipelineStep;
-  projectId: string;
-  hasStoryboard: boolean;
-}) {
-  // The filament behind the row needs to know how far to fill. We
-  // count completed steps + half-credit for the "next" step so the
-  // user feels progress as soon as they engage with each step.
-  const doneIndex = steps.findIndex((s) => s.status !== 'done');
-  // doneIndex === -1 means everything's done.
-  const completedCount = doneIndex === -1 ? steps.length : doneIndex;
-  const total = steps.length;
-  const fillRatio =
-    total <= 1 ? 1 : Math.min(1, (completedCount + (nextStep ? 0.5 : 0)) / (total - 1));
-
-  return (
-    <section className="pipeline" aria-label="Project pipeline">
-      {/* Header — section label + next-up CTA. Pulled into the same
-          line so the user's eye lands on "where am I → what's next"
-          without scrolling between two visual hits. */}
-      <div className="pipeline__header">
-        <div>
-          <span className="pipeline__eyebrow">Workflow</span>
-          <h3 className="pipeline__title">{nextStep ? nextStep.label : 'All steps complete'}</h3>
-          <p className="pipeline__sub">
-            {nextStep
-              ? nextStep.detail
-                ? `${completedCount} of ${total} done · ${nextStep.detail} remaining`
-                : `${completedCount} of ${total} done`
-              : 'Ready to ship.'}
-          </p>
-        </div>
-        <div className="pipeline__cta-row">
-          {nextStep ? (
-            <Link
-              to={nextStep.to}
-              className="primary pipeline__cta"
-              aria-label={`Go to ${nextStep.label}`}
-            >
-              <span>Continue</span>
-              <ArrowRight size={16} strokeWidth={2} aria-hidden />
-            </Link>
-          ) : (
-            <span className="pipeline__complete">
-              <Check size={14} strokeWidth={2.5} aria-hidden />
-              All steps complete
-            </span>
-          )}
-          {hasStoryboard && <ExportButton projectId={projectId} />}
-        </div>
-      </div>
-
-      {/* Stepper rail — the filament is the progress fill behind the
-          nodes. Its length is set via the --fill custom property so CSS
-          can map it to width (horizontal) or height (vertical) without
-          fighting an inline width style. */}
-      <ol
-        className="pipeline__rail"
-        role="list"
-        style={{ ['--fill' as string]: `${fillRatio * 100}%` }}
-      >
-        <div aria-hidden className="pipeline__filament" />
-        {steps.map((step, i) => {
-          const Icon = STEP_ICONS[step.key] ?? Layers;
-          const index = String(i + 1).padStart(2, '0');
-          const total = String(steps.length).padStart(2, '0');
-          return (
-            <li key={step.key} className={`pipeline__step pipeline__step--${step.status}`}>
-              <Link
-                to={step.to}
-                className="pipeline__node"
-                aria-label={`Step ${i + 1} of ${steps.length}: ${step.label}${step.detail ? ` — ${step.detail}` : ''}`}
-              >
-                <span className="pipeline__node-disc">
-                  {step.status === 'done' ? (
-                    <Check size={16} strokeWidth={2.5} aria-hidden />
-                  ) : (
-                    <Icon size={16} strokeWidth={1.8} aria-hidden />
-                  )}
-                </span>
-                <span className="pipeline__node-meta">
-                  <span className="pipeline__node-num" aria-hidden>
-                    {index}
-                    <span className="pipeline__node-num-sep">/</span>
-                    {total}
-                  </span>
-                  <span className="pipeline__node-label">{step.label}</span>
-                  {step.detail && (
-                    <span className="pipeline__node-detail">{step.detail}</span>
-                  )}
-                </span>
-              </Link>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
   );
 }
 
@@ -359,23 +224,19 @@ function RenderSection({
     if (sb && includeNarration === null) {
       setIncludeNarration(hasAnyNarration);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sb, hasAnyNarration]);
   useEffect(() => {
     if (sb && includeLowerThirds === null) {
       setIncludeLowerThirds(hasAnyLowerThirds);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sb, hasAnyLowerThirds]);
   // Same hydrate pattern for brand toggles — default ON when the brand has
   // the asset; users can flip explicitly to opt out.
   useEffect(() => {
     if (brandQuery.data && useBrandBumpers === null) setUseBrandBumpers(brandHasBumpers);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandQuery.data, brandHasBumpers]);
   useEffect(() => {
     if (brandQuery.data && useBrandMusic === null) setUseBrandMusic(brandHasMusic);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandQuery.data, brandHasMusic]);
   const effectiveIncludeNarration = includeNarration ?? hasAnyNarration;
   const effectiveIncludeLowerThirds = includeLowerThirds ?? hasAnyLowerThirds;
@@ -1479,85 +1340,6 @@ function ExportButton({ projectId }: { projectId: string }) {
           {exportMutation.error instanceof Error ? exportMutation.error.message : 'Export failed'}
         </span>
       )}
-    </div>
-  );
-}
-
-// ── ActionItemsCard ─────────────────────────────────────────────────
-//
-// Scene-granular "what's blocking you" punch list. The Pipeline above
-// answers at the workflow-step level ("you're on Script"); this answers
-// at the scene level ("scene-04 needs TTS regenerated"). Computes
-// items client-side from the storyboard so it's always live without
-// running Quality Review.
-//
-// Items render in priority order (most blocking first); we cap at 5 to
-// keep the card scannable. The card itself hides when there's nothing
-// actionable — Pipeline alone handles the happy path.
-
-function ActionItemsCard({ projectId, storyboard }: { projectId: string; storyboard: Storyboard }) {
-  const items = computeActionItems(storyboard);
-  if (items.length === 0) return null;
-  return (
-    <div
-      style={{
-        marginTop: 16,
-        padding: 16,
-        background: 'var(--bg-elev)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>Needs attention</h3>
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-          {items.length} scene{items.length === 1 ? '' : 's'}
-        </span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {items.map((item, idx) => (
-          <Link
-            key={`${item.sceneId}-${idx}`}
-            to={`/project/${projectId}/storyboard?scene=${encodeURIComponent(item.sceneId)}&tab=${encodeURIComponent(item.tab)}`}
-            style={{
-              display: 'flex',
-              gap: 10,
-              alignItems: 'center',
-              padding: '8px 12px',
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              textDecoration: 'none',
-              color: 'inherit',
-              fontSize: 12,
-              transition: 'border-color 120ms',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
-          >
-            <span
-              style={{
-                fontSize: 9,
-                padding: '2px 6px',
-                borderRadius: 3,
-                background: item.severity === 'issue' ? 'var(--danger)' : 'var(--warn, #d4a017)',
-                color: '#fff',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                letterSpacing: 0.5,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {item.severity}
-            </span>
-            <span style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{item.sceneName}</span>
-            <span style={{ color: 'var(--fg-muted)', flex: 1 }}>{item.message}</span>
-            <span style={{ color: 'var(--accent)', fontSize: 11, whiteSpace: 'nowrap' }}>
-              Open {item.tab} →
-            </span>
-          </Link>
-        ))}
-      </div>
     </div>
   );
 }

@@ -11,7 +11,7 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   await page.goto('/');
   await page.getByRole('button', { name: 'Ideate a new demo' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByPlaceholder('my-demo').fill('e2e-recording');
+  await page.getByPlaceholder('MCP Demo Test').fill('e2e-recording');
   await page.getByRole('button', { name: 'Create' }).click();
 
   // Run ideation to create scenes
@@ -26,22 +26,21 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   await page.getByRole('button', { name: 'Accept & Create Storyboard' }).click();
   await expect(page).toHaveURL(/\/project\/[^/]+\/storyboard/);
 
-  // Click first scene in sidebar to navigate to scene page
-  await page.getByRole('link', { name: 'Introduction and Context' }).click();
-  await expect(page).toHaveURL(/\/project\/[^/]+\/scene\/scene-01/);
+  // Pick the generated browser scene in the master-detail storyboard.
+  await page.getByRole('button', { name: /browser/ }).first().click();
 
-  // Scene page should show scene name and recording tab
-  await expect(page.getByRole('heading', { name: 'Introduction and Context' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Recording' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Script' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Narration' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Lower Thirds' })).toBeVisible();
+  // Embedded scene editor should expose all workflow tabs.
+  await expect(page.getByRole('button', { name: 'Recording', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Script', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Narration', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Lower Thirds', exact: true })).toBeVisible();
 
   // Recording tab should show "No recording" state with upload area
   await expect(page.getByText('No recording uploaded')).toBeVisible();
   await expect(page.getByText('Drop MP4 files here')).toBeVisible();
 
   // Agent recording is a reviewed handoff, not an automatic recorder launch.
+  await expect(page.getByRole('button', { name: 'Record with Codex' })).toBeEnabled();
   await page.getByRole('button', { name: 'Record with Codex' }).click();
   await expect(page.getByRole('heading', { name: 'Prepare agent recording' })).toBeVisible();
   await expect(page.getByText('VPA prepares the instructions')).toBeVisible();
@@ -55,15 +54,17 @@ test('project overview shows recording counts', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'I have recordings' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByPlaceholder('my-demo').fill('e2e-rec-overview');
+  await page.getByPlaceholder('MCP Demo Test').fill('e2e-rec-overview');
   await page.getByRole('button', { name: 'Create' }).click();
 
-  // Should land on project overview
+  // Recording-first creation lands on Recordings; use the workspace nav to inspect the overview.
+  await expect(page).toHaveURL(/\/project\/[^/]+\/recordings$/);
+  await page.getByRole('link', { name: 'Overview' }).click();
   await expect(page).toHaveURL(/\/project\/[^/]+$/);
   await expect(page.getByRole('heading', { name: 'e2e-rec-overview' })).toBeVisible();
 
   // Recordings card should show — or 0/0 when no storyboard
-  await expect(page.getByText('Recordings')).toBeVisible();
+  await expect(page.getByLabel('Project status').getByText('Recordings', { exact: true })).toBeVisible();
   await expect(page.getByText(/Project progress/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Project issues/ })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Project health' })).toHaveCount(0);

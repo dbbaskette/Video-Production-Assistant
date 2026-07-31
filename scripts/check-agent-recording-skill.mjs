@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import process from 'node:process';
 
 const skillPath = join(process.cwd(), '.agents', 'skills', 'vpa-agent-recording', 'SKILL.md');
 const text = await readFile(skillPath, 'utf8');
@@ -23,4 +24,4 @@ const missing = required.filter((pattern) => !pattern.test(text)).map(String);
 if (missing.length) {
   throw new Error(`Agent recording skill is missing required contracts:\n${missing.join('\n')}`);
 }
-console.log('Agent recording skill contract is complete.');
+process.stdout.write('Agent recording skill contract is complete.\n');
