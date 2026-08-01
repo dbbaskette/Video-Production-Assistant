@@ -51,10 +51,25 @@ import { CapInstaller } from './services/cap/installer.js';
 import { createMacOSDesktopPlatform } from './services/desktop-driver/macos.js';
 import { DesktopDriverSessionManager } from './services/desktop-driver/session.js';
 import { registerAgentDesktopRoutes } from './routes/agent-desktop.js';
+import { createCodexSceneRunner } from './services/agent-recording/codex-runner.js';
+import {
+  createAgentRecordingCoordinator,
+  type AgentRecordingCoordinator,
+} from './services/agent-recording/coordinator.js';
+import { probeVideo } from './services/recording/metadata.js';
+import { ingestRecording } from './services/recording/ingest.js';
+import type { ServerConfig } from './config.js';
 
-export async function buildServer() {
-  const config = loadConfig();
-  const app = Fastify({ logger: { level: 'info' } });
+export interface BuildServerOptions {
+  /** Test seam for hermetic server lifecycle and route wiring checks. */
+  config?: ServerConfig;
+  agentRecordingCoordinator?: AgentRecordingCoordinator;
+  logger?: boolean;
+}
+
+export async function buildServer(options: BuildServerOptions = {}) {
+  const config = options.config ?? loadConfig();
+  const app = Fastify({ logger: options.logger ?? { level: 'info' } });
 
   await app.register(cors, {
     origin: [config.webOrigin],
@@ -131,6 +146,18 @@ export async function buildServer() {
   const desktopDriver = new DesktopDriverSessionManager({
     platform: createMacOSDesktopPlatform(),
   });
+  const codexRunner = createCodexSceneRunner(wsRoot);
+  const agentRecordingCoordinator = options.agentRecordingCoordinator
+    ?? createAgentRecordingCoordinator({
+      cap: capRuntime,
+      codex: codexRunner,
+      desktop: desktopDriver,
+      store,
+      workspaceRoot: wsRoot,
+      probeVideo,
+      ingest: ingestRecording,
+      driverBaseUrl: `http://127.0.0.1:${config.port}`,
+    });
 
   // Qwen3-TTS — local voice cloning via mlx_audio. No API key needed.
   // Auto-downloads the model on first use; gated on the mlx_audio Python
@@ -219,11 +246,28 @@ export async function buildServer() {
   await app.register(async (instance) => registerFramesRoutes(instance, {}));
   await app.register(async (instance) => registerSnapshotRoutes(instance, { store }));
   await app.register(async (instance) => registerWorkflowStatusRoutes(instance, { store }));
-  await app.register(async (instance) => registerAgentRecordingRoutes(instance, { store }));
+  await app.register(async (instance) =>
+    registerAgentRecordingRoutes(instance, { store, coordinator: agentRecordingCoordinator }),
+  );
   await app.register(async (instance) => registerAgentDesktopRoutes(instance, { desktop: desktopDriver }));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
-  return { app, config, store, capRuntime, capInstaller, desktopDriver };
+  try {
+    await agentRecordingCoordinator.reconcile();
+  } catch (error) {
+    app.log.error({ err: error }, 'Agent recording reconciliation failed; continuing startup');
+  }
+
+  return {
+    app,
+    config,
+    store,
+    capRuntime,
+    capInstaller,
+    desktopDriver,
+    codexRunner,
+    agentRecordingCoordinator,
+  };
 }
 
 async function main() {
