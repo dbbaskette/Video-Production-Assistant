@@ -1,5 +1,15 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Route } from '@playwright/test';
 import { rm } from 'node:fs/promises';
+
+const missingCap = {
+  state: 'not-installed',
+  installed: false,
+  captureReady: false,
+  missingPermissions: [],
+  targetCount: 0,
+  message: 'Cap is not installed in this recording smoke fixture.',
+  updatedAt: '2026-08-01T00:00:00.000Z',
+};
 
 test.beforeAll(async () => {
   await rm('/tmp/vpa-e2e-home', { recursive: true, force: true });
@@ -7,6 +17,39 @@ test.beforeAll(async () => {
 });
 
 test('scene page loads from storyboard and shows recording tab', async ({ page }) => {
+  const capStatusRequests: string[] = [];
+  const capCheckRequests: string[] = [];
+  const capInstallRequests: string[] = [];
+  const fulfillMissingCap = async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(missingCap),
+    });
+  };
+
+  await page.route('**/api/setup/cap', async (route) => {
+    const request = route.request();
+    if (request.method() !== 'GET') throw new Error(`Unexpected Cap status method: ${request.method()}`);
+    capStatusRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    await fulfillMissingCap(route);
+  });
+  await page.route('**/api/setup/cap/check', async (route) => {
+    const request = route.request();
+    if (request.method() !== 'POST') throw new Error(`Unexpected Cap check method: ${request.method()}`);
+    capCheckRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    await fulfillMissingCap(route);
+  });
+  await page.route('**/api/setup/cap/install', async (route) => {
+    const request = route.request();
+    capInstallRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Cap installation is forbidden in this smoke test.' }),
+    });
+  });
+
   // Create a project with ideation to get a storyboard
   await page.goto('/');
   await page.getByRole('button', { name: 'Ideate a new demo' }).click();
@@ -47,6 +90,9 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   await expect(page.getByRole('button', { name: 'Install Cap' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Save & rehearse with Codex' })).toBeDisabled();
   await page.getByRole('button', { name: 'Close' }).click();
+  expect(capStatusRequests.length).toBeGreaterThan(0);
+  expect(capCheckRequests).toEqual([]);
+  expect(capInstallRequests).toEqual([]);
 });
 
 test('project overview shows recording counts', async ({ page }) => {
