@@ -13,6 +13,7 @@ import { registerRecordingRoutes } from './recordings.js';
 import type { Storyboard } from '@vpa/shared';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { ingestRecording } from '../services/recording/ingest.js';
+import { createAgentRecordingSession } from '../services/agent-recording/session.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -96,6 +97,28 @@ describe('recording routes', () => {
       expect(body.sceneId).toBe('scene-01');
       expect(body.relativePath).toBe('recordings/scene-01.mp4');
       expect(body.metadata.duration_sec).toBe(47.2);
+    });
+
+    it('rejects a manual upload while the scene has a nonterminal Cap session', async () => {
+      const sb = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, sb);
+      await createAgentRecordingSession(projectPath, projectId, 'scene-01');
+
+      const form = new FormData();
+      form.append('file', Buffer.from('fake-mp4-data'), {
+        filename: 'scene-01.mp4',
+        contentType: 'video/mp4',
+      });
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/recording`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'agent_recording_active' });
+      expect((await loadStoryboard(projectPath))?.scenes[0]?.recording).toBeUndefined();
     });
 
     it('returns 404 when no storyboard exists', async () => {

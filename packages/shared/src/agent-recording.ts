@@ -94,6 +94,10 @@ export const AgentRehearsalEvidenceSchema = z.object({
   })),
   resetConfirmed: z.boolean(),
   diagnostic: z.string().max(2000).optional(),
+  /** Server-authored snapshot of the reviewed settings bound to this rehearsal. */
+  reviewedCapture: AgentCaptureSettingsSchema.optional(),
+  /** Server-authored snapshot of the reviewed actions bound to this rehearsal. */
+  reviewedSteps: z.array(AgentRecordingStepSchema).optional(),
 });
 export type AgentRehearsalEvidence = z.infer<typeof AgentRehearsalEvidenceSchema>;
 

@@ -15,6 +15,7 @@ import { splitRecording, type SceneBoundary } from '../services/recording/split.
 import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+import { getCurrentAgentRecordingSession } from '../services/agent-recording/session.js';
 
 interface Deps {
   store: ProjectStore;
@@ -73,6 +74,15 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       capture_session_id: multipartValue('capture_session_id'),
       captured_at: multipartValue('captured_at'),
     });
+    if (provenance.source_kind !== 'cap-agent') {
+      const activeSession = await getCurrentAgentRecordingSession(projectPath, id, sceneId);
+      if (activeSession && !['completed', 'failed', 'interrupted'].includes(activeSession.state)) {
+        return reply.status(409).send({
+          error: 'Stop the active Cap recording workflow before uploading a recording manually.',
+          code: 'agent_recording_active',
+        });
+      }
+    }
     // Save to temp, probe, then ingest
     const tmpDir = path.join(projectPath, '.tmp');
     await mkdir(tmpDir, { recursive: true });

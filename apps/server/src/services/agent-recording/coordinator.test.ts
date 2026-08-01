@@ -282,6 +282,8 @@ describe('agent recording coordinator', () => {
         { description: 'Model visible', passed: true },
         { description: 'General visible', passed: true },
       ],
+      reviewedCapture: update.capture,
+      reviewedSteps: update.steps,
     });
     expect(ready.rehearsal).not.toHaveProperty('diagnostic');
     expect(ready.rehearsal?.checkpoints.every((checkpoint) => !('detail' in checkpoint))).toBe(true);

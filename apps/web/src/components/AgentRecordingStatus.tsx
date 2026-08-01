@@ -33,7 +33,7 @@ export function AgentRecordingStatus({ projectId, sceneId }: { projectId: string
   const active = !terminalStates.has(session.state);
   return <div className={`agent-recording-status agent-recording-status--${failed ? 'failed' : done ? 'done' : 'active'}`}>
     {failed ? <CircleX size={16} /> : done ? <CircleCheck size={16} /> : <LoaderCircle className="spin" size={16} />}
-    <div><strong>{statusLabel(session.state)}</strong>{session.message && <span>{session.message}</span>}<small>Session {session.id.slice(0, 8)}</small></div>
+    <div><strong>{statusLabel(session.state)}</strong>{session.message && <span>{session.message}</span>}</div>
     {active && <button type="button" className="btn--danger" disabled={cancel.isPending} onClick={() => cancel.mutate(session.id)}><Square size={12} />{cancel.isPending ? 'Stopping…' : 'Stop'}</button>}
     {cancel.error && <span className="agent-recording-status__error" role="alert">{cancel.error.message}</span>}
   </div>;

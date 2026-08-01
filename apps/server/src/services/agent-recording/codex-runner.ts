@@ -170,7 +170,7 @@ function normalizeNullableEvidence(value: unknown): unknown {
   return normalized;
 }
 
-function parseEvidence<T>(label: string, message: string, schema: z.ZodType<T>): T {
+function parseEvidence<TSchema extends z.ZodTypeAny>(label: string, message: string, schema: TSchema): z.output<TSchema> {
   let value: unknown;
   try {
     value = JSON.parse(message);

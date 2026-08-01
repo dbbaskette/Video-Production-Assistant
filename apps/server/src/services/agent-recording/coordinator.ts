@@ -511,6 +511,8 @@ export function createAgentRecordingCoordinator(
         completedStepIndexes: plan.steps.map((step) => step.index),
         checkpoints: requiredCheckpoints(plan).map((description) => ({ description, passed: true })),
         resetConfirmed: true,
+        reviewedCapture: { ...plan.capture },
+        reviewedSteps: plan.steps.map((step) => ({ ...step })),
       },
     };
   }

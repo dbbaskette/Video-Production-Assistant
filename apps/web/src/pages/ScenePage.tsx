@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi, framesApi } from '../lib/api.js';
+import { agentRecordingApi, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi, framesApi } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
@@ -24,6 +24,7 @@ import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
 import { confirmDestructiveSave } from '../lib/destructive-save.js';
 import { AgentRecordingDialog } from '../components/AgentRecordingDialog.js';
 import { AgentRecordingStatus } from '../components/AgentRecordingStatus.js';
+import { isActiveAgentRecordingSession } from '../lib/agent-recording-ui.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -149,6 +150,18 @@ export function ScenePage(props: ScenePageProps = {}) {
     enabled: !!projectId,
   });
 
+  const { data: agentRecordingSession } = useQuery({
+    queryKey: agentRecordingApi.sessionQueryKey(projectId, sceneId),
+    queryFn: () => agentRecordingApi.currentSession(projectId!, sceneId!),
+    enabled: !!projectId && !!sceneId,
+    refetchInterval: (query) => isActiveAgentRecordingSession(query.state.data) ? 2_000 : false,
+  });
+  const agentRecordingActive = isActiveAgentRecordingSession(agentRecordingSession);
+
+  useEffect(() => {
+    if (agentRecordingActive) setShowReplaceUpload(false);
+  }, [agentRecordingActive]);
+
   // Active model — used to gate the "ground in video" toggle. Only Gemini
   // accepts video natively; everything else falls back to text-only.
   const { data: activeModel } = useQuery({
@@ -161,7 +174,13 @@ export function ScenePage(props: ScenePageProps = {}) {
   const canGroundInVideo = activeModel?.provider === 'gemini' && !!scene?.recording;
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => recordingsApi.uploadForScene(projectId!, sceneId!, file),
+    mutationFn: async (file: File) => {
+      const current = await agentRecordingApi.currentSession(projectId!, sceneId!);
+      if (isActiveAgentRecordingSession(current)) {
+        throw new Error('Stop the active Cap recording workflow before uploading a file.');
+      }
+      return recordingsApi.uploadForScene(projectId!, sceneId!, file);
+    },
     onSuccess: (_data, file) => {
       setShowReplaceUpload(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
@@ -903,9 +922,9 @@ export function ScenePage(props: ScenePageProps = {}) {
           {projectId && sceneId && <AgentRecordingStatus projectId={projectId} sceneId={sceneId} />}
           <div className="agent-recording-entry">
             <div><strong>Capture with Cap + Codex</strong><span>Review the scene, run a safe rehearsal, then confirm the exact take you want recorded.</span></div>
-            <button type="button" className="btn--accent" disabled={scene.type === 'terminal'} title={scene.type === 'terminal' ? 'Terminal scenes cannot use guided recording.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Set up recording</button>
+            <button type="button" className="btn--accent" disabled={scene.type === 'terminal' || uploadMutation.isPending} title={scene.type === 'terminal' ? 'Terminal scenes cannot use guided recording.' : uploadMutation.isPending ? 'Wait for the manual upload to finish.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Set up recording</button>
           </div>
-          {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { setAgentRecordingOpen(false); setShowReplaceUpload(true); }} />}
+          {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { if (!agentRecordingActive) { setAgentRecordingOpen(false); setShowReplaceUpload(true); } }} />}
           {/* Re-analyze blocking modal — running this also calls Gemini Files
               API in the video-grounded path, which adds an upload + poll
               before the actual generateContent. */}
@@ -937,9 +956,11 @@ export function ScenePage(props: ScenePageProps = {}) {
                   overwrites the existing file, so this just exposes the
                   upload dropzone again. */}
               <div style={{ marginTop: 12 }}>
-                {!showReplaceUpload ? (
+                {!showReplaceUpload || agentRecordingActive ? (
                   <button
                     onClick={() => setShowReplaceUpload(true)}
+                    disabled={agentRecordingActive || uploadMutation.isPending}
+                    title={agentRecordingActive ? 'Stop the active Cap recording workflow before replacing this recording.' : undefined}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -949,7 +970,8 @@ export function ScenePage(props: ScenePageProps = {}) {
                       color: 'var(--fg-muted)',
                       border: '1px solid var(--border)',
                       borderRadius: 6,
-                      cursor: 'pointer',
+                      cursor: agentRecordingActive || uploadMutation.isPending ? 'not-allowed' : 'pointer',
+                      opacity: agentRecordingActive || uploadMutation.isPending ? 0.55 : 1,
                       fontSize: 12,
                       fontWeight: 600,
                     }}
@@ -1021,6 +1043,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                     </button>
                   </div>
                 )}
+                {agentRecordingActive && <p style={{ margin: '7px 0 0', color: 'var(--fg-muted)', fontSize: 11 }}>Stop the active Cap recording workflow before uploading a replacement.</p>}
               </div>
 
               {/* Per-scene out-transition. Hidden when this is the final scene
@@ -1377,13 +1400,17 @@ export function ScenePage(props: ScenePageProps = {}) {
                 No recording uploaded for this scene yet.
               </p>
               <ShotPlanSection projectId={projectId!} sceneId={sceneId!} />
-              <RecordingUpload
-                multiple={false}
-                isUploading={uploadMutation.isPending}
-                onFilesSelected={(files) => {
-                  if (files[0]) uploadMutation.mutate(files[0]);
-                }}
-              />
+              {agentRecordingActive ? (
+                <p className="agent-recording-notice">Stop the active Cap recording workflow before uploading a file manually.</p>
+              ) : (
+                <RecordingUpload
+                  multiple={false}
+                  isUploading={uploadMutation.isPending}
+                  onFilesSelected={(files) => {
+                    if (files[0]) uploadMutation.mutate(files[0]);
+                  }}
+                />
+              )}
               {uploadMutation.isError && (
                 <p style={{ color: 'var(--danger)', marginTop: 8, fontSize: 13 }}>
                   Upload failed: {uploadMutation.error instanceof Error ? uploadMutation.error.message : 'Unknown error'}
