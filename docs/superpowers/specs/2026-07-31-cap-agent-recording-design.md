@@ -1,5 +1,7 @@
 # Cap Agent Recording Design
 
+> **Superseded in part:** [VPA-Managed Cap and Codex CLI Integration Design](2026-07-31-vpa-cap-codex-integration-design.md) replaces this document's clipboard handoff, Codex Computer Use, direct agent-owned Cap lifecycle, and browser-authored session-update sections. The reviewed-plan, provenance, ingestion, manual-upload, and local-only safety foundations remain current.
+
 ## Summary
 
 Add a macOS-first, Cap-backed workflow for recording individual VPA scenes with Codex. VPA supplies a structured and reviewable recording plan. Cap's CLI controls capture. Codex Computer Use drives the target browser or desktop application. The resulting MP4 is attached through VPA's existing recording-ingestion route so metadata extraction and cache invalidation remain authoritative.

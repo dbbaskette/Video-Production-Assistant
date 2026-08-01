@@ -1,49 +1,74 @@
 ---
 name: vpa-agent-recording
-description: Use when a VPA scene should be rehearsed and captured from a supported macOS browser or desktop application with Cap and Computer Use.
+description: Use when VPA directly dispatches a supported macOS scene rehearsal or confirmed recording turn to Codex CLI.
 ---
 
-# Record a VPA Scene
+# Operate a VPA Recording Scene
 
 ## Core contract
 
-Treat VPA's reviewed plan as the authority. Rehearse without recording, reset the target, obtain explicit confirmation, record one scene locally, then attach only a validated export.
+Use the reviewed plan embedded by VPA as the complete authority. Use only `scripts/vpa-desktop-driver.mjs` for all GUI operations. VPA owns setup, capture, confirmation, local export, attachment, and session coordination.
 
-## Workflow
+## Hard boundaries
 
-1. Fetch the exact plan URL from the handoff. Validate project ID, scene ID, plan version, steps, checkpoints, and attachment endpoint. Register a `rehearsing` session.
-2. Reject terminal and ChatGPT targets because Computer Use cannot operate them. Reject plans containing credentials, payments, publishing, external messages, destructive actions, or private data. Ask for a safe fixture instead.
-3. Discover Cap's current interface; do not guess flags:
-   - `cap guide --json`
-   - `cap doctor --json`
-   - `cap targets --json`
-4. If Cap is missing or not capture-ready, report its diagnostics and stop. Do not install Cap automatically.
-5. Rehearse every action with Computer Use while not recording. Verify every checkpoint. On any deviation, PATCH the session to `failed` and stop.
-6. Reset the target to the plan's starting state. Show the user the exact window, dimensions, cursor, microphone, camera, system-audio settings, and ordered actions. Wait for explicit confirmation.
-7. Start Cap in detached mode. Store the exact recording ID and temporary Cap project path in the session only. PATCH the session to `recording`.
-8. Execute the plan with Computer Use, including the lead-in and tail. If a checkpoint fails, stop the exact recording ID, preserve diagnostics, PATCH `failed`, and do not attach.
-9. Stop the exact recording ID. Require stop metadata, validate the `.cap` project, PATCH `exporting`, and export an MP4 locally. Never drive Cap's UI.
-10. PATCH `attaching`. Upload the MP4 to the plan's attachment endpoint with `source_kind=cap-agent`, `capture_session_id`, and `captured_at`. Verify the response names the expected scene and includes recording metadata before PATCHing `completed`.
+- Never run `cap` or interact with Cap.
+- Never upload or attach recordings.
+- Never change VPA session state or call VPA APIs.
+- Never operate another app; the driver capability is bound to the approved target.
+- Never edit repository files, access secrets, publish, communicate externally, or perform destructive actions.
+- Do not fetch or reconstruct a plan. If the embedded plan or driver environment is missing, return failed evidence.
 
-Cap Cloud upload or sharing is never part of this workflow. It requires a separate user request and confirmation.
+## Desktop driver
 
-## Quick reference
+Run `node scripts/vpa-desktop-driver.mjs --help` for syntax. Available operations are `inspect`, `screenshot`, `click`, `set-value`, `type-text`, and `press-key`.
 
-| State | Required evidence |
-|---|---|
-| `rehearsing` | Plan fetched; target supported |
-| `recording` | Rehearsal passed; user confirmed; exact ID retained |
-| `exporting` | Exact session stopped; metadata present; project valid |
-| `attaching` | Local MP4 exists |
-| `completed` | VPA verified the expected scene metadata |
-| `failed` | Reason and safe retry point recorded |
+Inspect before each action. Element indexes expire after visible state changes. Use screenshots only to verify the approved window. A refused command is a hard stop, not permission to use another GUI tool.
+
+## Rehearsal turn
+
+1. Inspect the approved target and compare it with the embedded plan.
+2. Rehearse every ordered action and checkpoint without capture.
+3. Reset the target to its starting state and inspect again.
+4. Return only this JSON shape; `detail` and `diagnostic` are required and may be `null`:
+
+```json
+{
+  "success": true,
+  "targetApplication": "MeetingNotes",
+  "windowTitle": "MeetingNotes — Settings",
+  "windowBounds": { "x": 0, "y": 0, "width": 1512, "height": 982 },
+  "completedStepIndexes": [0, 1, 2],
+  "checkpoints": [{ "description": "Expected state", "passed": true, "detail": null }],
+  "resetConfirmed": true,
+  "diagnostic": null
+}
+```
+
+Set `success` false when any action, checkpoint, target check, or reset fails. Report only indexes actually completed and put a concise, non-secret reason in `diagnostic`.
+
+## Resumed recording turn
+
+When VPA resumes the same Codex thread after user confirmation, execute only the rehearsed actions, once, in their original order. Do not improvise or repeat rehearsal. Return only this execution evidence JSON; `detail` is required and may be `null`, while `diagnostic` is always a string:
+
+```json
+{
+  "success": true,
+  "completedStepIndexes": [0, 1, 2],
+  "checkpoints": [{ "description": "Expected state", "passed": true, "detail": null }],
+  "diagnostic": "All rehearsed actions and checkpoints completed."
+}
+```
+
+On deviation, stop target actions and return failed execution evidence. VPA decides what happens to the take.
 
 ## Common mistakes
 
-- Opening the preparation dialog is not a session.
-- Starting capture before rehearsal or explicit confirmation is a hard stop.
-- A successful Cap export is not a successful VPA attachment.
-- Never persist a local Cap project path in storyboard data.
-- Never claim completion from a command exit code alone; verify the returned IDs and metadata.
+| Mistake                              | Required response          |
+| ------------------------------------ | -------------------------- |
+| Missing embedded plan or capability  | Return failed evidence     |
+| Stale element index                  | Inspect again              |
+| Target differs from the plan         | Stop; do not switch apps   |
+| Driver refuses an action             | Stop; do not bypass it     |
+| Asked to manage capture or VPA state | Refuse that responsibility |
 
-Use [references/handoff-template.md](references/handoff-template.md) when reconstructing a handoff prompt.
+The [troubleshooting handoff](references/handoff-template.md) is diagnostic fallback only, not the recording workflow.

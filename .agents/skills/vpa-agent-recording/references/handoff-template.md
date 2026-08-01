@@ -1,13 +1,14 @@
-# VPA handoff shape
+# Non-primary troubleshooting handoff
 
-Use this compact structure when a handoff must be reconstructed:
+Use this only when VPA reports that its direct Codex CLI dispatch could not start. It is not a rehearsal or recording prompt and does not replace the in-VPA workflow.
 
 ```text
-Use $vpa-agent-recording in this repository.
-Fetch and follow this reviewed plan exactly: <PLAN_URL>
+Troubleshoot VPA's failed direct Codex dispatch in this repository.
 Project: <PROJECT_ID>
 Scene: <SCENE_ID>
-Rehearse first. Do not begin recording until you show me the target and capture settings and I explicitly confirm.
+VPA diagnostic: <BOUNDED_DIAGNOSTIC>
+
+Do not operate the target, run Cap, record, export, upload, attach, or mutate VPA session state. Identify the local Codex CLI/authentication problem and tell me how to retry from VPA. VPA will embed the reviewed plan and supply the scoped desktop-driver capability when it retries.
 ```
 
-Do not copy the full plan into the prompt. Fetching it prevents identity, steps, and attachment endpoints from drifting.
+Do not add the reviewed plan, capability token, local paths, credentials, or private application data to this handoff.
