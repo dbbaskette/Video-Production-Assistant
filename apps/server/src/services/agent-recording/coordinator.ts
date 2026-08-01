@@ -348,6 +348,10 @@ export function createAgentRecordingCoordinator(
         run.driverSessionId ?? '', run.recordingId ?? '', context?.driver.sessionId ?? '',
         context?.driver.token ?? '', stored?.codexThreadId ?? '', stored?.driverSessionId ?? '',
         stored?.recordingId ?? '', stored?.capProjectPath ?? '', stored?.exportPath ?? '',
+        context?.target.id ?? '', String(context?.driver.target.windowId ?? ''),
+        String(context?.driver.target.processId ?? ''), stored?.rehearsedTargetIdentity?.cap.id ?? '',
+        String(stored?.rehearsedTargetIdentity?.desktop.windowId ?? ''),
+        String(stored?.rehearsedTargetIdentity?.desktop.processId ?? ''),
       ],
     ).catch(() => undefined);
   }
@@ -1028,7 +1032,11 @@ export function createAgentRecordingCoordinator(
                 publicFailureMessage: 'Recording cleanup failed.',
                 privateFailureCategory: 'cap',
               };
-              await stopOnce(terminalRun, stored).catch(() => undefined);
+              try {
+                await stopOnce(terminalRun, stored);
+              } catch (error) {
+                await preservePrivateFailure(terminalRun, error, 'cap');
+              }
             }
             if (stored.driverSessionId)
               await deps.desktop.revoke(stored.id, stored.driverSessionId).catch(() => undefined);

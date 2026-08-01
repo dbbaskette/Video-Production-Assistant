@@ -91,6 +91,21 @@ describe('agent recording sessions', () => {
     });
   });
 
+  it('redacts quoted, escaped, spaced, and file URL paths without erasing useful detail', async () => {
+    const projectPath = await root();
+    const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
+    await appendAgentRecordingPrivateDiagnostic(projectPath, 'project', 'scene', created.id, {
+      category: 'local',
+      phase: 'diagnostic',
+      detail: "Could not open '/Applications/Cap.app/Contents/MacOS/Cap'; workspace \"/Users/demo/Video Projects/take.cap\"; escaped /Users/demo/Video\\ Projects/other.cap; source file:///private/tmp/take.mp4; remote file://localhost/private/tmp/other.mp4; Cap export failed with codec h264 at 30 fps.",
+    });
+    const diagnostic = (await readStoredAgentRecordingSession(projectPath, created.id)).privateDiagnostics?.[0]?.detail;
+    expect(diagnostic).toContain('Could not open');
+    expect(diagnostic).toContain('Cap export failed with codec h264 at 30 fps.');
+    expect(diagnostic).not.toMatch(/Applications\/Cap\.app|Users\/demo|Video Projects|Video\\ Projects|file:\/\/|private\/tmp/);
+    expect(diagnostic?.match(/\[path\]/g)).toHaveLength(5);
+  });
+
   it('leaves stale lifecycle decisions to the coordinator and finds recoverable exporting sessions', async () => {
     const projectPath = await root();
     const stale = await createAgentRecordingSession(projectPath, 'project', 'stale-scene');

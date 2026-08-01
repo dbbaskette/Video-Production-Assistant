@@ -285,7 +285,7 @@ describe('agent recording coordinator', () => {
     let capabilityToken = '';
     vi.mocked(ctx.codex.rehearse).mockImplementation(async (_prompt, _scratch, environment) => {
       capabilityToken = environment.VPA_DESKTOP_DRIVER_TOKEN ?? '';
-      throw new Error(`Codex helper failed\n\tin ${ctx.project.path} token=secret ${capabilityToken} recording-exact thread-1 /etc/passwd ${'x'.repeat(2_000)}`);
+      throw new Error(`Codex helper failed\n\tin ${ctx.project.path} token=secret ${capabilityToken} recording-exact thread-1 target 42 process 7 window 42 at 30 fps /etc/passwd ${'x'.repeat(2_000)}`);
     });
     const created = await ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update);
     const failed = await waitForSession(ctx.project.path, created.id, ['failed']);
@@ -302,6 +302,8 @@ describe('agent recording coordinator', () => {
     ]);
     expect(privateSession.privateDiagnostics?.[0]?.detail.length).toBeLessThanOrEqual(1_000);
     expect(privateSession.privateDiagnostics?.[0]?.detail).not.toMatch(/[\r\n\t]/);
+    expect(privateSession.privateDiagnostics?.[0]?.detail).toContain('at 30 fps');
+    expect(privateSession.privateDiagnostics?.[0]?.detail).not.toMatch(/\b(?:42|7)\b/);
     for (const sensitive of [ctx.project.path, 'secret', capabilityToken, 'recording-exact', 'thread-1', '/etc/passwd']) {
       expect(JSON.stringify(privateSession.privateDiagnostics)).not.toContain(sensitive);
     }
@@ -822,5 +824,40 @@ describe('agent recording coordinator', () => {
       state: 'attaching',
       retryAvailable: 'attachment',
     });
+  });
+
+  it('privately records a sanitized terminal exact-stop reconciliation failure', async () => {
+    const ctx = await fixture({
+      cap: {
+        stopRecording: vi.fn(async () => {
+          throw new Error("Cap CLI could not stop recording 9 at file:///private/tmp/take.cap token=stop-secret");
+        }),
+      },
+    });
+    const terminal = await createAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01');
+    await transitionAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01', terminal.id, 'awaiting_confirmation', {
+      planFingerprint: 'p', rehearsal, rehearsedTargetIdentity,
+    });
+    await persistAgentRecordingIdentity(ctx.project.path, ctx.project.id, 'scene-01', terminal.id, {
+      recordingId: '9', projectPath: '/private/tmp/take.cap',
+    }, '2026-07-31T12:00:00.000Z');
+    await transitionAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01', terminal.id, 'recording', {
+      confirmedCapture: true, planFingerprint: 'p',
+    });
+    await transitionAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01', terminal.id, 'failed', {
+      phase: 'failed', message: 'Recording workflow failed.',
+    });
+
+    await ctx.coordinator.reconcile();
+
+    const stored = await readStoredAgentRecordingSession(ctx.project.path, terminal.id);
+    expect(stored.state).toBe('failed');
+    expect(stored.privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'cap', detail: expect.stringContaining('Cap CLI could not stop recording') }),
+    ]);
+    expect(stored.privateDiagnostics?.[0]?.detail).not.toMatch(/\b9\b|stop-secret|file:\/\/\/private|private\/tmp/);
+    const publicSession = await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01');
+    expect(publicSession).toMatchObject({ state: 'failed', message: 'Recording workflow failed.' });
+    expect(publicSession).not.toHaveProperty('privateDiagnostics');
   });
 });

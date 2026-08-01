@@ -100,16 +100,32 @@ function sanitizePrivateDiagnostic(detail: string, privateValues: string[]): str
     .join('')
     .replace(/\s+/g, ' ')
     .trim();
-  for (const privateValue of [...new Set(privateValues.filter((value) => value.length >= 3))]
+  for (const privateValue of [...new Set(privateValues.filter((value) => value.length > 0))]
     .sort((left, right) => right.length - left.length)) {
-    sanitized = sanitized.replaceAll(privateValue, '[redacted]');
+    if (/^\d+$/.test(privateValue)) {
+      sanitized = sanitized.replace(
+        new RegExp(`(?<!\\d)${privateValue}(?!\\d)`, 'g'),
+        '[redacted]',
+      );
+    } else if (privateValue.length < 3) {
+      const escaped = privateValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      sanitized = sanitized.replace(
+        new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, 'g'),
+        '[redacted]',
+      );
+    } else {
+      sanitized = sanitized.replaceAll(privateValue, '[redacted]');
+    }
   }
   sanitized = sanitized
     .replace(/\bbearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
     .replace(/\b(token|secret|password|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[id]')
     .replace(/\b(?:thread|recording|session|driver)[-_][A-Za-z0-9._-]+\b/gi, '[id]')
-    .replace(/(^|[\s(])\/(?:[^\s),;]+)(?=$|[\s),;])/g, '$1[path]')
+    .replace(/\bfile:\/\/+((?:\\ )|[^\s"'),;])+/gi, '[path]')
+    .replace(/'\/(?:\\.|[^'])*'/g, '[path]')
+    .replace(/"\/(?:\\.|[^"])*"/g, '[path]')
+    .replace(/(^|[\s(=])\/(?:(?:\\ )|[^\s"'),;])+/g, '$1[path]')
     .replace(/\b[A-Za-z]:\\[^\s,;]+/g, '[path]')
     .replace(/\s+/g, ' ')
     .trim();
