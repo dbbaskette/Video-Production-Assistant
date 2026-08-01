@@ -16,6 +16,15 @@ import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Rec
 import { projectFiles } from '../services/project/paths.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { isAgentRecordingDomainError } from '../services/agent-recording/errors.js';
+import {
+  BULK_UPLOAD_MAX_FILE_BYTES,
+  BULK_UPLOAD_MAX_FILES,
+  StagedUploadError,
+  cleanupBulkUploadStagingDirectory,
+  createBulkUploadStagingDirectory,
+  stageUploadStream,
+  type StagedUpload,
+} from '../services/recording/staged-upload.js';
 
 interface Deps {
   store: ProjectStore;
@@ -25,10 +34,13 @@ interface Deps {
   registry?: ModelRegistry;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
+  /** Test seam for recording persistence failures. */
+  ingest?: typeof ingestRecording;
   agentRecordingCoordinator: Pick<
     AgentRecordingCoordinator,
     'recoverAttachment' | 'withManualUploadReservation'
   >;
+  bulkUploadLimits?: { fileSizeBytes: number; fileCount: number };
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -88,9 +100,33 @@ function sendUploadConflict(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
+class InvalidBulkSceneMappingError extends Error {
+  readonly code = 'invalid_scene_mapping';
+}
+
+function mapBulkScenes(scenes: Scene[], uploadCount: number): Scene[] {
+  if (uploadCount > scenes.length) {
+    throw new InvalidBulkSceneMappingError('Bulk upload has more files than scenes.');
+  }
+  const mapped = scenes.slice(0, uploadCount);
+  const sceneIds = mapped.map((scene) => scene.id);
+  if (
+    sceneIds.some((sceneId) => !sceneId.trim()) ||
+    new Set(sceneIds).size !== sceneIds.length
+  ) {
+    throw new InvalidBulkSceneMappingError('Bulk upload scene mapping is invalid.');
+  }
+  return mapped;
+}
+
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store, llm, workspaceRoot, registry } = deps;
   const probe = deps.probe ?? probeVideo;
+  const ingest = deps.ingest ?? ingestRecording;
+  const bulkUploadLimits = deps.bulkUploadLimits ?? {
+    fileSizeBytes: BULK_UPLOAD_MAX_FILE_BYTES,
+    fileCount: BULK_UPLOAD_MAX_FILES,
+  };
 
   // POST /api/projects/:id/scenes/:sceneId/recording — upload recording for a specific scene
   app.post('/api/projects/:id/scenes/:sceneId/recording', async (req, reply) => {
@@ -148,7 +184,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
             await mkdir(tmpDir, { recursive: true });
             await writeFile(tmpFile, upload);
             const metadata = await probe(tmpFile);
-            const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
+            const result = await ingest(projectPath, sceneId, tmpFile, metadata, provenance);
             await verifyManualIngestion(projectPath, sceneId, metadata, result, provenance);
             return result;
           },
@@ -171,35 +207,43 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
     }
 
-    const parts = req.parts();
-    const uploads: Buffer[] = [];
-
-    for await (const part of parts) {
-      if (part.type !== 'file') continue;
-      const chunks: Buffer[] = [];
-      for await (const chunk of part.file) chunks.push(chunk);
-      if (uploads.length < sb.scenes.length) uploads.push(Buffer.concat(chunks));
-    }
-    const scenes = sb.scenes.slice(0, uploads.length);
-    if (scenes.length === 0) {
-      return { results: [], assignedCount: 0, totalScenes: sb.scenes.length };
-    }
-    const tmpDir = path.join(projectPath, '.tmp');
-    const tmpFiles = uploads.map(() => path.join(tmpDir, `upload-${randomUUID()}.mp4`));
-    const provenance = RecordingProvenanceSchema.parse({ source_kind: 'bulk' });
+    const stagingDirectory = await createBulkUploadStagingDirectory();
+    let bulkError: unknown;
     try {
+      const stagedUploads: StagedUpload[] = [];
+      const parts = req.parts({
+        limits: {
+          fileSize: bulkUploadLimits.fileSizeBytes,
+          files: bulkUploadLimits.fileCount,
+        },
+      });
+      for await (const part of parts) {
+        if (part.type !== 'file') continue;
+        const staged = await stageUploadStream(
+          path.join(stagingDirectory, `${randomUUID()}.mp4`),
+          part.file,
+          bulkUploadLimits.fileSizeBytes,
+        );
+        if (part.file.truncated) {
+          throw new StagedUploadError('file_too_large', 'Uploaded file exceeds the byte limit.');
+        }
+        stagedUploads.push(staged);
+      }
+      const scenes = mapBulkScenes(sb.scenes, stagedUploads.length);
+      if (scenes.length === 0) {
+        return { results: [], assignedCount: 0, totalScenes: sb.scenes.length };
+      }
+      const provenance = RecordingProvenanceSchema.parse({ source_kind: 'bulk' });
       return await deps.agentRecordingCoordinator.withManualUploadReservation(
         id,
         scenes.map((scene) => scene.id),
         async () => {
-          await mkdir(tmpDir, { recursive: true });
           const results: IngestResult[] = [];
           for (let index = 0; index < scenes.length; index += 1) {
             const scene = scenes[index]!;
-            const tmpFile = tmpFiles[index]!;
-            await writeFile(tmpFile, uploads[index]!);
-            const metadata = await probe(tmpFile);
-            const result = await ingestRecording(projectPath, scene.id, tmpFile, metadata, provenance);
+            const staged = stagedUploads[index]!;
+            const metadata = await probe(staged.path);
+            const result = await ingest(projectPath, scene.id, staged.path, metadata, provenance);
             await verifyManualIngestion(projectPath, scene.id, metadata, result, provenance);
             results.push(result);
           }
@@ -207,10 +251,27 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
         },
       );
     } catch (error) {
-      return sendUploadConflict(reply, error);
+      bulkError = error;
     } finally {
-      await Promise.all(tmpFiles.map((tmpFile) => unlink(tmpFile).catch(() => {})));
+      await cleanupBulkUploadStagingDirectory(stagingDirectory);
     }
+    if (bulkError instanceof InvalidBulkSceneMappingError) {
+      return reply.status(400).send({
+        error: 'Bulk uploads must map once to existing scenes in order.',
+        code: bulkError.code,
+      });
+    }
+    if (
+      bulkError instanceof StagedUploadError ||
+      bulkError instanceof app.multipartErrors.RequestFileTooLargeError ||
+      bulkError instanceof app.multipartErrors.FilesLimitError
+    ) {
+      return reply.status(413).send({
+        error: 'Bulk upload exceeds the configured file size or count limit.',
+        code: 'upload_limit_exceeded',
+      });
+    }
+    return sendUploadConflict(reply, bulkError);
   });
 
   // GET /api/projects/:id/scenes/:sceneId/recording/video — stream the recording mp4.
