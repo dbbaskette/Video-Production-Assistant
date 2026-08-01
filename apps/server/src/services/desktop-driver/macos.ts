@@ -5,9 +5,7 @@ import {
   type JsonlProcessResult,
 } from '../process/jsonl-process.js';
 import type {
-  DesktopDriverAction,
   DesktopDriverPlatform,
-  DesktopDriverPlatformElement,
   DesktopDriverPlatformSnapshot,
   DesktopDriverTargetRequest,
   ResolvedDesktopDriverTarget,

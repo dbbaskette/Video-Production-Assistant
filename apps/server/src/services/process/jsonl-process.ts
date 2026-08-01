@@ -110,7 +110,6 @@ export async function runJsonlProcess(
     let stderrBuffer = Buffer.alloc(0);
     let terminationError: Error | undefined;
     let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
     let terminationGrace: NodeJS.Timeout | undefined;
     let forceKillWait: NodeJS.Timeout | undefined;
 
@@ -154,7 +153,7 @@ export async function runJsonlProcess(
       sendSignal('SIGTERM');
     };
 
-    timeout = setTimeout(() => {
+    const timeout = setTimeout(() => {
       terminate(new Error(`${request.executable} timed out after ${request.timeoutMs}ms`));
     }, request.timeoutMs);
 

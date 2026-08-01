@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global AbortSignal, URL, fetch, process */
 
 const ENV = {
   baseUrl: 'VPA_DESKTOP_DRIVER_BASE_URL',

@@ -8,7 +8,6 @@ import { CapLocator } from './locator.js';
 import type {
   CapDoctorResult,
   CapProcess,
-  CapProcessRequest,
   CapStartInput,
   CapTarget,
   LocatedCap,

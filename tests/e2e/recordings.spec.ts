@@ -39,13 +39,13 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   await expect(page.getByText('No recording uploaded')).toBeVisible();
   await expect(page.getByText('Drop MP4 files here')).toBeVisible();
 
-  // Agent recording is a reviewed handoff, not an automatic recorder launch.
-  await expect(page.getByRole('button', { name: 'Record with Codex' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Record with Codex' }).click();
-  await expect(page.getByRole('heading', { name: 'Prepare agent recording' })).toBeVisible();
-  await expect(page.getByText('VPA prepares the instructions')).toBeVisible();
-  await page.getByLabel('Target application').fill('Safari');
-  await expect(page.getByRole('button', { name: 'Save & copy Codex handoff' })).toBeEnabled();
+  // Agent recording is a reviewed direct workflow and still requires a separate rehearsal.
+  await expect(page.getByRole('button', { name: 'Set up recording' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Set up recording' }).click();
+  await expect(page.getByRole('heading', { name: 'Capture this scene' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Target and capture settings' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Install Cap' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Save & rehearse with Codex' })).toBeDisabled();
   await page.getByRole('button', { name: 'Close' }).click();
 });
 
