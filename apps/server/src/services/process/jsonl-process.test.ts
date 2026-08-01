@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runJsonlProcess } from './jsonl-process.js';
+import { MAX_JSONL_FRAME_BYTES, runJsonlProcess } from './jsonl-process.js';
 
 type FakeChild = ChildProcessWithoutNullStreams & {
   stdin: PassThrough;
@@ -59,6 +59,7 @@ describe('runJsonlProcess', () => {
     expect(spawnProcess).toHaveBeenCalledWith('codex', ['exec', '--json', '-'], {
       cwd: '/workspace',
       env: { TEST_TOKEN: 'safe' },
+      detached: process.platform !== 'win32',
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -124,25 +125,78 @@ describe('runJsonlProcess', () => {
     vi.useFakeTimers();
     const child = fakeChild();
     const spawnProcess = vi.fn(() => child) as unknown as typeof spawn;
+    const signalProcessTree = vi.fn();
 
-    const pending = runJsonlProcess(request({ timeoutMs: 25 }), { spawn: spawnProcess });
+    const pending = runJsonlProcess(request({ timeoutMs: 25 }), {
+      spawn: spawnProcess,
+      signalProcessTree,
+    });
     const rejection = expect(pending).rejects.toThrow('codex timed out after 25ms');
     await vi.advanceTimersByTimeAsync(25);
 
+    expect(signalProcessTree).toHaveBeenCalledWith(child, 'SIGTERM');
+    // A timeout is not reported until child close confirms termination.
+    child.emit('close', null);
     await rejection;
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
   it('terminates and rejects on abort', async () => {
     const controller = new AbortController();
     const child = fakeChild();
     const spawnProcess = vi.fn(() => child) as unknown as typeof spawn;
-    const pending = runJsonlProcess(request({ signal: controller.signal }), { spawn: spawnProcess });
+    const signalProcessTree = vi.fn();
+    const pending = runJsonlProcess(request({ signal: controller.signal }), {
+      spawn: spawnProcess,
+      signalProcessTree,
+    });
+    const rejection = expect(pending).rejects.toThrow('codex process aborted');
 
     controller.abort();
 
-    await expect(pending).rejects.toThrow('codex process aborted');
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(signalProcessTree).toHaveBeenCalledWith(child, 'SIGTERM');
+    child.emit('close', null);
+    await rejection;
+  });
+
+  it('escalates a process tree to SIGKILL and bounds the final close wait', async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const spawnProcess = vi.fn(() => child) as unknown as typeof spawn;
+    const signalProcessTree = vi.fn();
+    const pending = runJsonlProcess(request({ timeoutMs: 5 }), {
+      spawn: spawnProcess,
+      signalProcessTree,
+      terminationGraceMs: 10,
+      forceKillWaitMs: 20,
+    });
+    const rejection = expect(pending).rejects.toThrow(
+      'codex timed out after 5ms; process did not close after SIGKILL',
+    );
+
+    await vi.advanceTimersByTimeAsync(5);
+    expect(signalProcessTree).toHaveBeenNthCalledWith(1, child, 'SIGTERM');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(signalProcessTree).toHaveBeenNthCalledWith(2, child, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(20);
+    await rejection;
+  });
+
+  it('terminates an oversized unterminated JSONL frame', async () => {
+    const child = fakeChild();
+    const signalProcessTree = vi.fn();
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => child.stdout.write('x'.repeat(MAX_JSONL_FRAME_BYTES + 1)));
+      return child;
+    }) as unknown as typeof spawn;
+    const pending = runJsonlProcess(request(), { spawn: spawnProcess, signalProcessTree });
+    const rejection = expect(pending).rejects.toThrow(
+      `Malformed JSONL output from codex: JSONL frame exceeded ${MAX_JSONL_FRAME_BYTES} bytes`,
+    );
+
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(signalProcessTree).toHaveBeenCalledWith(child, 'SIGTERM');
+    child.emit('close', null);
+    await rejection;
   });
 
   it('normalizes asynchronous spawn failures', async () => {

@@ -28,10 +28,18 @@ function nestedRecord(value: unknown): Record<string, unknown> | undefined {
 
 export function codexEventError(event: Record<string, unknown>): string | undefined {
   const type = typeof event.type === 'string' ? event.type : '';
-  if (type !== 'error' && type !== 'turn.failed') return undefined;
+  const status = typeof event.status === 'string' ? event.status : '';
+  const item = nestedRecord(event.item);
+  const isFailure = type === 'error'
+    || type === 'turn.failed'
+    || (type === 'turn.completed' && ['failed', 'error', 'cancelled'].includes(status))
+    || (type === 'item.completed' && item?.type === 'error');
+  if (!isFailure) return undefined;
   if (typeof event.message === 'string' && event.message.trim()) return event.message.trim();
+  if (typeof event.error === 'string' && event.error.trim()) return event.error.trim();
   const error = nestedRecord(event.error);
   if (typeof error?.message === 'string' && error.message.trim()) return error.message.trim();
+  if (typeof item?.message === 'string' && item.message.trim()) return item.message.trim();
   return type === 'turn.failed' ? 'Codex turn failed' : 'Codex CLI reported an error';
 }
 
@@ -66,6 +74,9 @@ export function createCodexCliLlm(model?: string, deps: CodexCliLlmDeps = {}): L
       if (model && model !== 'default') args.push('--model', model);
       args.push('-');
 
+      // Failure events are often emitted early and may age out of the JSONL
+      // adapter's rolling event history before a long turn completes.
+      let streamedError: string | undefined;
       const result = await runProcess({
         executable,
         args,
@@ -73,12 +84,15 @@ export function createCodexCliLlm(model?: string, deps: CodexCliLlmDeps = {}): L
         stdin: promptFor(opts),
         env: deps.env ?? process.env,
         timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        onEvent: (event) => {
+          streamedError ??= codexEventError(event);
+        },
       });
 
       for (const event of result.events) {
-        const error = codexEventError(event);
-        if (error) throw new Error(`Codex CLI failed: ${error}`);
+        streamedError ??= codexEventError(event);
       }
+      if (streamedError) throw new Error(`Codex CLI failed: ${streamedError}`);
 
       const text = finalCodexAgentMessage(result.events);
       if (!text) {

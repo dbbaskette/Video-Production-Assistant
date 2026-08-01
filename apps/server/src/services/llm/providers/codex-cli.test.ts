@@ -31,6 +31,7 @@ describe('createCodexCliLlm', () => {
       stdin: 'system\n\nquestion',
       env,
       timeoutMs: 4321,
+      onEvent: expect.any(Function),
     });
   });
 
@@ -68,6 +69,24 @@ describe('createCodexCliLlm', () => {
 
     await expect(llm.complete({ systemPrompt: 's', userPrompt: 'u' }))
       .rejects.toThrow('Codex CLI failed: login expired');
+  });
+
+  it('preserves a streamed failure after it ages out of retained events', async () => {
+    const runProcess = vi.fn(async (request: JsonlProcessRequest) => {
+      request.onEvent?.({ type: 'turn.failed', error: { message: 'early terminal failure' } });
+      return {
+        events: [
+          ...Array.from({ length: 499 }, (_, index) => ({ type: 'item.completed', item: { type: 'reasoning', text: String(index) } })),
+          completed('late answer'),
+        ],
+        stderr: '',
+        exitCode: 0,
+      };
+    });
+    const llm = createCodexCliLlm(undefined, { workspaceRoot: '/workspace', runProcess });
+
+    await expect(llm.complete({ systemPrompt: 's', userPrompt: 'u' }))
+      .rejects.toThrow('Codex CLI failed: early terminal failure');
   });
 
   it('rejects output with no completed agent message and includes stderr', async () => {

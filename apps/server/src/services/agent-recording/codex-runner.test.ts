@@ -27,7 +27,12 @@ const rehearsal = {
   completedStepIndexes: [0, 1],
   checkpoints: [{ description: 'Ready', passed: true }],
   resetConfirmed: true,
-  diagnostic: 'Rehearsal completed and reset.',
+};
+
+const structuredRehearsal = {
+  ...rehearsal,
+  checkpoints: [{ description: 'Ready', passed: true, detail: null }],
+  diagnostic: null,
 };
 
 const message = (value: unknown) => ({
@@ -42,7 +47,7 @@ describe('CodexSceneRunner', () => {
       request.onEvent?.({ type: 'thread.started', thread_id: 'thread-123' });
       return {
         // The bounded process history may no longer retain thread.started.
-        events: [message({ ignored: true }), message(rehearsal)],
+        events: [message({ ignored: true }), message(structuredRehearsal)],
         stderr: '',
         exitCode: 0,
       };
@@ -56,6 +61,11 @@ describe('CodexSceneRunner', () => {
 
     const schemaPath = path.join(sessionScratchDir, 'rehearsal-output.schema.json');
     expect(JSON.parse(await readFile(schemaPath, 'utf8'))).toEqual(REHEARSAL_EVIDENCE_JSON_SCHEMA);
+    expect(REHEARSAL_EVIDENCE_JSON_SCHEMA.required).toContain('diagnostic');
+    expect(REHEARSAL_EVIDENCE_JSON_SCHEMA.properties.diagnostic.type).toEqual(['string', 'null']);
+    expect(REHEARSAL_EVIDENCE_JSON_SCHEMA.properties.checkpoints.items.required).toContain('detail');
+    expect(REHEARSAL_EVIDENCE_JSON_SCHEMA.properties.checkpoints.items.properties.detail.type)
+      .toEqual(['string', 'null']);
     expect(runProcess).toHaveBeenCalledWith({
       executable: 'codex',
       args: [
@@ -101,11 +111,15 @@ describe('CodexSceneRunner', () => {
     const evidence = {
       success: true,
       completedStepIndexes: [0, 1],
-      checkpoints: [{ description: 'Saved', passed: true, detail: 'Visible' }],
+      checkpoints: [{ description: 'Saved', passed: true }],
       diagnostic: 'Recording actions completed.',
     };
+    const structuredEvidence = {
+      ...evidence,
+      checkpoints: [{ description: 'Saved', passed: true, detail: null }],
+    };
     const runProcess = vi.fn(async (_request: JsonlProcessRequest) => ({
-      events: [message('old'), message(evidence)],
+      events: [message('old'), message(structuredEvidence)],
       stderr: '',
       exitCode: 0,
     }));
@@ -123,6 +137,7 @@ describe('CodexSceneRunner', () => {
       env,
       timeoutMs: 600_000,
       signal: controller.signal,
+      onEvent: expect.any(Function),
     });
     expect(runProcess.mock.calls[0]![0].stdin).toContain('"completedStepIndexes"');
   });
@@ -143,5 +158,19 @@ describe('CodexSceneRunner', () => {
     });
     await expect(failed.resumeForRecording('thread-1', 'prompt', {}))
       .rejects.toThrow('Codex CLI failed: desktop helper failed');
+
+    const evictedFailure = createCodexSceneRunner('/workspace', {
+      runProcess: vi.fn(async (request: JsonlProcessRequest) => {
+        request.onEvent?.({ type: 'turn.failed', error: { message: 'early driver failure' } });
+        return { events: [message({
+          success: true,
+          completedStepIndexes: [0],
+          checkpoints: [{ description: 'Done', passed: true, detail: null }],
+          diagnostic: 'late message',
+        })], stderr: '', exitCode: 0 };
+      }),
+    });
+    await expect(evictedFailure.resumeForRecording('thread-1', 'prompt', {}))
+      .rejects.toThrow('Codex CLI failed: early driver failure');
   });
 });

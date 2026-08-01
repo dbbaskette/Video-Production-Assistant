@@ -17,11 +17,11 @@ const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const checkpointJsonSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['description', 'passed'],
+  required: ['description', 'passed', 'detail'],
   properties: {
     description: { type: 'string' },
     passed: { type: 'boolean' },
-    detail: { type: 'string' },
+    detail: { type: ['string', 'null'] },
   },
 } as const;
 
@@ -37,6 +37,7 @@ export const REHEARSAL_EVIDENCE_JSON_SCHEMA = {
     'completedStepIndexes',
     'checkpoints',
     'resetConfirmed',
+    'diagnostic',
   ],
   properties: {
     success: { type: 'boolean' },
@@ -59,7 +60,7 @@ export const REHEARSAL_EVIDENCE_JSON_SCHEMA = {
     },
     checkpoints: { type: 'array', items: checkpointJsonSchema },
     resetConfirmed: { type: 'boolean' },
-    diagnostic: { type: 'string', maxLength: 2000 },
+    diagnostic: { type: ['string', 'null'], maxLength: 2000 },
   },
 } as const;
 
@@ -136,11 +137,14 @@ function threadIdFrom(events: Array<Record<string, unknown>>): string | undefine
   return undefined;
 }
 
-function requireSuccessfulEvents(result: JsonlProcessResult): string {
+function requireSuccessfulEvents(
+  result: JsonlProcessResult,
+  streamedError?: string,
+): string {
   for (const event of result.events) {
-    const error = codexEventError(event);
-    if (error) throw new Error(`Codex CLI failed: ${error}`);
+    streamedError ??= codexEventError(event);
   }
+  if (streamedError) throw new Error(`Codex CLI failed: ${streamedError}`);
   const message = finalCodexAgentMessage(result.events);
   if (!message) {
     const diagnostic = result.stderr.trim();
@@ -151,6 +155,21 @@ function requireSuccessfulEvents(result: JsonlProcessResult): string {
   return message;
 }
 
+function normalizeNullableEvidence(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const normalized = { ...value as Record<string, unknown> };
+  if (normalized.diagnostic === null) delete normalized.diagnostic;
+  if (Array.isArray(normalized.checkpoints)) {
+    normalized.checkpoints = normalized.checkpoints.map((checkpoint) => {
+      if (!checkpoint || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return checkpoint;
+      const normalizedCheckpoint = { ...checkpoint as Record<string, unknown> };
+      if (normalizedCheckpoint.detail === null) delete normalizedCheckpoint.detail;
+      return normalizedCheckpoint;
+    });
+  }
+  return normalized;
+}
+
 function parseEvidence<T>(label: string, message: string, schema: z.ZodType<T>): T {
   let value: unknown;
   try {
@@ -158,7 +177,7 @@ function parseEvidence<T>(label: string, message: string, schema: z.ZodType<T>):
   } catch {
     throw new Error(`Codex returned malformed ${label} JSON`);
   }
-  const parsed = schema.safeParse(value);
+  const parsed = schema.safeParse(normalizeNullableEvidence(value));
   if (!parsed.success) {
     throw new Error(`Codex returned invalid ${label}: ${parsed.error.issues[0]?.message ?? 'schema validation failed'}`);
   }
@@ -184,6 +203,7 @@ export function createCodexSceneRunner(
       // thread.started is normally the first event and can age out of the
       // process adapter's bounded event history during a long rehearsal.
       let streamedThreadId: string | undefined;
+      let streamedError: string | undefined;
       const result = await runProcess({
         executable,
         args: [
@@ -204,11 +224,12 @@ export function createCodexSceneRunner(
         signal,
         onEvent: (event) => {
           streamedThreadId ??= threadIdFrom([event]);
+          streamedError ??= codexEventError(event);
         },
       });
 
       // The fallback keeps simple injected process doubles ergonomic.
-      const message = requireSuccessfulEvents(result);
+      const message = requireSuccessfulEvents(result, streamedError);
       const threadId = streamedThreadId ?? threadIdFrom(result.events);
       if (!threadId) throw new Error('Codex rehearsal did not return a thread ID');
       return {
@@ -219,6 +240,7 @@ export function createCodexSceneRunner(
 
     async resumeForRecording(threadId, prompt, env, signal) {
       if (!threadId.trim()) throw new Error('Codex recording resume requires a thread ID');
+      let streamedError: string | undefined;
       const result = await runProcess({
         executable,
         args: ['exec', 'resume', threadId, '--json', '-'],
@@ -227,10 +249,13 @@ export function createCodexSceneRunner(
         env,
         timeoutMs,
         signal,
+        onEvent: (event) => {
+          streamedError ??= codexEventError(event);
+        },
       });
       return parseEvidence(
         'recording execution evidence',
-        requireSuccessfulEvents(result),
+        requireSuccessfulEvents(result, streamedError),
         CodexExecutionEvidenceSchema,
       );
     },

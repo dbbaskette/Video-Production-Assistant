@@ -3,6 +3,9 @@ import { StringDecoder } from 'node:string_decoder';
 
 const MAX_EVENTS = 500;
 const MAX_STDERR_BYTES = 16 * 1024;
+export const MAX_JSONL_FRAME_BYTES = 1024 * 1024;
+const DEFAULT_TERMINATION_GRACE_MS = 1_000;
+const DEFAULT_FORCE_KILL_WAIT_MS = 1_000;
 
 export interface JsonlProcessRequest {
   executable: string;
@@ -23,6 +26,9 @@ export interface JsonlProcessResult {
 
 export interface JsonlProcessDeps {
   spawn?: typeof spawn;
+  signalProcessTree?: (child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals) => void;
+  terminationGraceMs?: number;
+  forceKillWaitMs?: number;
 }
 
 function describeExit(request: JsonlProcessRequest, code: number, stderr: string): Error {
@@ -35,6 +41,24 @@ function describeExit(request: JsonlProcessRequest, code: number, stderr: string
 function malformedOutput(request: JsonlProcessRequest, line: string): Error {
   const preview = line.length > 200 ? `${line.slice(0, 200)}...` : line;
   return new Error(`Malformed JSONL output from ${request.executable}: ${preview}`);
+}
+
+function defaultSignalProcessTree(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals,
+): void {
+  // Detached POSIX children lead their own process group, so a negative PID
+  // reaches the CLI and every subprocess it launched. Fall back to the direct
+  // child on platforms without POSIX process groups or before a PID exists.
+  if (process.platform !== 'win32' && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+    }
+  }
+  child.kill(signal);
 }
 
 /**
@@ -53,6 +77,9 @@ export async function runJsonlProcess(
   }
 
   const spawnProcess = deps.spawn ?? spawn;
+  const signalProcessTree = deps.signalProcessTree ?? defaultSignalProcessTree;
+  const terminationGraceMs = deps.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+  const forceKillWaitMs = deps.forceKillWaitMs ?? DEFAULT_FORCE_KILL_WAIT_MS;
 
   return new Promise<JsonlProcessResult>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
@@ -60,6 +87,7 @@ export async function runJsonlProcess(
       child = spawnProcess(request.executable, request.args, {
         cwd: request.cwd,
         env: request.env,
+        detached: process.platform !== 'win32',
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -72,12 +100,18 @@ export async function runJsonlProcess(
     const events: Array<Record<string, unknown>> = [];
     const decoder = new StringDecoder('utf8');
     let stdoutBuffer = '';
+    let stdoutBufferBytes = 0;
     let stderrBuffer = Buffer.alloc(0);
-    let parseError: Error | undefined;
+    let terminationError: Error | undefined;
     let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let terminationGrace: NodeJS.Timeout | undefined;
+    let forceKillWait: NodeJS.Timeout | undefined;
 
     const cleanup = () => {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
+      if (terminationGrace) clearTimeout(terminationGrace);
+      if (forceKillWait) clearTimeout(forceKillWait);
       request.signal?.removeEventListener('abort', abort);
     };
 
@@ -88,13 +122,33 @@ export async function runJsonlProcess(
       reject(error);
     };
 
-    const terminate = (error: Error) => {
-      if (settled) return;
-      child.kill('SIGTERM');
-      finishWithError(error);
+    const sendSignal = (signal: NodeJS.Signals) => {
+      try {
+        signalProcessTree(child, signal);
+      } catch {
+        // Still wait for close and escalate. The bounded final timer prevents
+        // a failed signaling attempt from leaving this promise pending.
+      }
     };
 
-    const timeout = setTimeout(() => {
+    const terminate = (error: Error) => {
+      if (settled || terminationError) return;
+      terminationError = error;
+      if (timeout) clearTimeout(timeout);
+      request.signal?.removeEventListener('abort', abort);
+      terminationGrace = setTimeout(() => {
+        if (settled) return;
+        forceKillWait = setTimeout(() => {
+          finishWithError(new Error(
+            `${error.message}; process did not close after SIGKILL`,
+          ));
+        }, forceKillWaitMs);
+        sendSignal('SIGKILL');
+      }, terminationGraceMs);
+      sendSignal('SIGTERM');
+    };
+
+    timeout = setTimeout(() => {
       terminate(new Error(`${request.executable} timed out after ${request.timeoutMs}ms`));
     }, request.timeoutMs);
 
@@ -109,16 +163,16 @@ export async function runJsonlProcess(
     }
 
     const consumeLine = (line: string) => {
-      if (!line.trim() || parseError) return;
+      if (!line.trim() || terminationError) return;
       let parsed: unknown;
       try {
         parsed = JSON.parse(line);
       } catch {
-        parseError = malformedOutput(request, line);
+        terminate(malformedOutput(request, line));
         return;
       }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        parseError = malformedOutput(request, line);
+        terminate(malformedOutput(request, line));
         return;
       }
       const event = parsed as Record<string, unknown>;
@@ -127,19 +181,45 @@ export async function runJsonlProcess(
       try {
         request.onEvent?.(event);
       } catch (error) {
-        parseError = error instanceof Error ? error : new Error(String(error));
+        terminate(error instanceof Error ? error : new Error(String(error)));
       }
     };
 
     const consumeChunk = (text: string) => {
-      stdoutBuffer += text;
-      let newline = stdoutBuffer.indexOf('\n');
+      if (terminationError) return;
+      let start = 0;
+      let newline = text.indexOf('\n', start);
       while (newline !== -1) {
-        const line = stdoutBuffer.slice(0, newline).replace(/\r$/, '');
-        stdoutBuffer = stdoutBuffer.slice(newline + 1);
-        consumeLine(line);
-        newline = stdoutBuffer.indexOf('\n');
+        const fragment = text.slice(start, newline);
+        const fragmentBytes = Buffer.byteLength(fragment);
+        if (stdoutBufferBytes + fragmentBytes > MAX_JSONL_FRAME_BYTES) {
+          terminate(malformedOutput(
+            request,
+            `JSONL frame exceeded ${MAX_JSONL_FRAME_BYTES} bytes`,
+          ));
+          return;
+        }
+        stdoutBuffer += fragment;
+        stdoutBufferBytes += fragmentBytes;
+        consumeLine(stdoutBuffer.replace(/\r$/, ''));
+        stdoutBuffer = '';
+        stdoutBufferBytes = 0;
+        if (terminationError) return;
+        start = newline + 1;
+        newline = text.indexOf('\n', start);
       }
+
+      const fragment = text.slice(start);
+      const fragmentBytes = Buffer.byteLength(fragment);
+      if (stdoutBufferBytes + fragmentBytes > MAX_JSONL_FRAME_BYTES) {
+        terminate(malformedOutput(
+          request,
+          `JSONL frame exceeded ${MAX_JSONL_FRAME_BYTES} bytes`,
+        ));
+        return;
+      }
+      stdoutBuffer += fragment;
+      stdoutBufferBytes += fragmentBytes;
     };
 
     child.stdout.on('data', (chunk: Buffer | string) => {
@@ -161,12 +241,16 @@ export async function runJsonlProcess(
 
     child.once('close', (code) => {
       if (settled) return;
+      if (terminationError) {
+        finishWithError(terminationError);
+        return;
+      }
       consumeChunk(decoder.end());
       if (stdoutBuffer.trim()) consumeLine(stdoutBuffer.replace(/\r$/, ''));
 
       const stderr = stderrBuffer.toString('utf8');
-      if (parseError) {
-        finishWithError(parseError);
+      if (terminationError) {
+        finishWithError(terminationError);
         return;
       }
       if (typeof code !== 'number') {
