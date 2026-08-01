@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { AgentRecordingPlanUpdateSchema, AgentRecordingSessionCreateSchema } from '@vpa/shared';
+import { AgentRecordingPlanUpdateSchema } from '@vpa/shared';
 import type { ProjectStore } from '../services/project/store.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { readAgentRecordingPlan, saveAgentRecordingPlan } from '../services/agent-recording/plan.js';
-import { createAgentRecordingSession, getCurrentAgentRecordingSession, updateAgentRecordingSession } from '../services/agent-recording/session.js';
+import { getCurrentAgentRecordingSession } from '../services/agent-recording/session.js';
 
 async function context(store: ProjectStore, projectId: string, sceneId: string) {
   const project = await store.readProject(projectId);
@@ -29,15 +29,5 @@ export async function registerAgentRecordingRoutes(app: FastifyInstance, deps: {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     try { const { project } = await context(deps.store, id, sceneId); return await getCurrentAgentRecordingSession(project.path, id, sceneId); }
     catch (error) { return reply.status(404).send({ error: error instanceof Error ? error.message : String(error), code: 'not_found' }); }
-  });
-  app.post(`${base}/sessions`, async (req, reply) => {
-    const { id, sceneId } = req.params as { id: string; sceneId: string };
-    try { AgentRecordingSessionCreateSchema.parse(req.body); const { project } = await context(deps.store, id, sceneId); return await createAgentRecordingSession(project.path, id, sceneId); }
-    catch (error) { return reply.status(409).send({ error: error instanceof Error ? error.message : String(error), code: 'session_conflict' }); }
-  });
-  app.patch(`${base}/sessions/:sessionId`, async (req, reply) => {
-    const { id, sceneId, sessionId } = req.params as { id: string; sceneId: string; sessionId: string };
-    try { const { project } = await context(deps.store, id, sceneId); return await updateAgentRecordingSession(project.path, id, sceneId, sessionId, req.body); }
-    catch (error) { return reply.status(409).send({ error: error instanceof Error ? error.message : String(error), code: 'invalid_transition' }); }
   });
 }

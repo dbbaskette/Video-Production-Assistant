@@ -39,11 +39,10 @@ describe('agent recording routes', () => {
     expect(saved.json()).toMatchObject({ stale: false, capture: { targetApplication: 'Safari' }, checkpoints: ['Dashboard is visible'] });
   });
 
-  it('registers a real rehearsal session instead of treating plan views as active', async () => {
+  it('keeps only session reads public until coordinator routes are registered', async () => {
     const base = `/api/projects/${projectId}/scenes/scene-01/agent-recording`;
     expect((await app.inject({ method: 'GET', url: `${base}/sessions/current` })).json()).toBeNull();
-    const created = await app.inject({ method: 'POST', url: `${base}/sessions`, payload: { state: 'rehearsing' } });
-    expect(created.statusCode).toBe(200);
-    expect(created.json().state).toBe('rehearsing');
+    expect((await app.inject({ method: 'POST', url: `${base}/sessions`, payload: { state: 'rehearsing' } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'PATCH', url: `${base}/sessions/session-id`, payload: { state: 'recording', capProjectPath: '/private/path' } })).statusCode).toBe(404);
   });
 });

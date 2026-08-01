@@ -11,7 +11,7 @@ import { createFakeLlm } from '../services/llm/index.js';
 import { createFakeProbe } from '../services/recording/metadata.js';
 import { registerRecordingRoutes } from './recordings.js';
 import type { Storyboard } from '@vpa/shared';
-import { createAgentRecordingSession, updateAgentRecordingSession } from '../services/agent-recording/session.js';
+import { createAgentRecordingSession, transitionAgentRecordingSession } from '../services/agent-recording/session.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 
 function workspaceRoot(): string {
@@ -127,9 +127,11 @@ describe('recording routes', () => {
       const sb = makeSampleStoryboard(projectId, 'test-proj');
       await saveStoryboard(projectPath, sb);
       const session = await createAgentRecordingSession(projectPath, projectId, 'scene-01');
-      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'recording', recordingId: 'cap-1' });
-      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'exporting' });
-      await updateAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, { state: 'attaching' });
+      const rehearsal = { success: true, targetApplication: 'Safari', windowTitle: 'Demo', windowBounds: { x: 0, y: 0, width: 100, height: 100 }, completedStepIndexes: [0], checkpoints: [], resetConfirmed: true };
+      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1', recordingId: 'cap-1' });
+      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'exporting');
+      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'attaching');
 
       const form = new FormData();
       form.append('source_kind', 'cap-agent');

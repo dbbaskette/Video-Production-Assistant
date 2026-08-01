@@ -116,8 +116,11 @@ export async function transitionAgentRecordingSession(
 ): Promise<AgentRecordingSession> {
   const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
   if (!(transitions[current.state] as readonly AgentRecordingSessionState[]).includes(state)) throw new Error(`Cannot move recording session from ${current.state} to ${state}.`);
+  if (state === 'awaiting_confirmation') {
+    if (!details.planFingerprint?.trim() || details.rehearsal?.success !== true) throw new Error('Confirmation requires a successful rehearsal and plan fingerprint.');
+  }
   if (state === 'recording') {
-    if (!details.confirmedCapture || details.planFingerprint !== current.planFingerprint) throw new Error('Recording requires confirmation for the current plan fingerprint.');
+    if (!current.planFingerprint || current.rehearsal?.success !== true || !details.confirmedCapture || details.planFingerprint !== current.planFingerprint) throw new Error('Recording requires confirmation for the current successful rehearsal and plan fingerprint.');
   }
   const now = new Date().toISOString();
   const next: StoredSession = {
@@ -133,14 +136,6 @@ export async function transitionAgentRecordingSession(
   }
   await writeStoredAgentRecordingSession(projectPath, next);
   return publicSession(next);
-}
-
-/** @deprecated Browser-controlled transitions are retained only until the coordinator routes replace this legacy route. */
-export async function updateAgentRecordingSession(projectPath: string, projectId: string, sceneId: string, sessionId: string, input: unknown): Promise<AgentRecordingSession> {
-  const update = input as { state?: AgentRecordingSessionState } & SessionTransitionDetails;
-  if (!update.state) throw new Error('Recording session state is required.');
-  const { state, ...details } = update;
-  return transitionAgentRecordingSession(projectPath, projectId, sceneId, sessionId, state, details);
 }
 
 export async function requireAttachableSession(projectPath: string, projectId: string, sceneId: string, sessionId: string): Promise<AgentRecordingSession> {

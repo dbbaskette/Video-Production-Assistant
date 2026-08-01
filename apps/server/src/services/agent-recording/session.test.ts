@@ -18,8 +18,10 @@ describe('agent recording sessions', () => {
     const projectPath = await root();
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
     await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording')).rejects.toThrow('Cannot move');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation')).rejects.toThrow('successful rehearsal and plan fingerprint');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal: { ...rehearsal, success: false } })).rejects.toThrow('successful rehearsal and plan fingerprint');
     const awaiting = await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
-    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'stale' })).rejects.toThrow('current plan fingerprint');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'stale' })).rejects.toThrow('current successful rehearsal and plan fingerprint');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1', recordingId: 'cap-1' });
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'exporting', { capProjectPath: '/tmp/cap-project' });
     const attaching = await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'attaching', { exportPath: '/tmp/take.mp4' });

@@ -14,7 +14,7 @@ import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
 import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
-import { requireAttachableSession, updateAgentRecordingSession } from '../services/agent-recording/session.js';
+import { requireAttachableSession, transitionAgentRecordingSession } from '../services/agent-recording/session.js';
 
 interface Deps {
   store: ProjectStore;
@@ -91,7 +91,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       const metadata = await probe(tmpFile);
       const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
       if (provenance.source_kind === 'cap-agent') {
-        await updateAgentRecordingSession(projectPath, id, sceneId, provenance.capture_session_id!, { state: 'completed' });
+        await transitionAgentRecordingSession(projectPath, id, sceneId, provenance.capture_session_id!, 'completed');
       }
       return result;
     } finally {
