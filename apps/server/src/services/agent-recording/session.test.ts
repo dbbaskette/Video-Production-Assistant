@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession } from './session.js';
+import { createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, persistAgentRecordingStopped, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession, updateAgentRecordingSessionInternal } from './session.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -12,20 +12,37 @@ const rehearsal = {
   success: true, targetApplication: 'Safari', windowTitle: 'Demo', windowBounds: { x: 0, y: 0, width: 100, height: 100 },
   completedStepIndexes: [0], checkpoints: [{ description: 'Ready', passed: true }], resetConfirmed: true,
 };
+const targetIdentity = {
+  cap: { kind: 'window' as const, id: '42', name: 'Demo', application: 'Safari', width: 100, height: 100 },
+  desktop: { bundleId: 'com.apple.Safari', displayName: 'Safari', processId: 7, windowId: 42, windowTitle: 'Demo', bounds: { x: 0, y: 0, width: 100, height: 100 } },
+};
+
+async function reachRecording(projectPath: string, projectId: string, sceneId: string, sessionId: string) {
+  await transitionAgentRecordingSession(projectPath, projectId, sceneId, sessionId, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity });
+  await persistAgentRecordingIdentity(projectPath, projectId, sceneId, sessionId, { recordingId: 'cap-1', projectPath: '/tmp/cap-project' }, '2026-07-31T12:00:00.000Z');
+  await transitionAgentRecordingSession(projectPath, projectId, sceneId, sessionId, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' });
+}
 
 describe('agent recording sessions', () => {
   it('enforces rehearsal, confirmation, and attachment lifecycle', async () => {
     const projectPath = await root();
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
     await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording')).rejects.toThrow('Cannot move');
-    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation')).rejects.toThrow('successful rehearsal and plan fingerprint');
-    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal: { ...rehearsal, success: false } })).rejects.toThrow('successful rehearsal and plan fingerprint');
-    const awaiting = await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation')).rejects.toThrow('successful rehearsal, exact target identity, and plan fingerprint');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal: { ...rehearsal, success: false }, rehearsedTargetIdentity: targetIdentity })).rejects.toThrow('successful rehearsal, exact target identity, and plan fingerprint');
+    const awaiting = await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity });
     await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'stale' })).rejects.toThrow('current successful rehearsal and plan fingerprint');
-    await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1', recordingId: 'cap-1' });
-    await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'exporting', { capProjectPath: '/tmp/cap-project' });
-    const attaching = await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'attaching', { exportPath: '/tmp/take.mp4' });
+    await persistAgentRecordingIdentity(projectPath, 'project', 'scene', awaiting.id, { recordingId: 'cap-1', projectPath: '/tmp/cap-project' }, '2026-07-31T12:00:00.000Z');
+    await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' });
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'exporting')).rejects.toThrow('confirmed stop metadata');
+    await persistAgentRecordingStopped(projectPath, 'project', 'scene', awaiting.id, 'cap-1', '/tmp/cap-project');
+    await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'exporting');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'attaching', { exportPath: '/tmp/take.mp4' })).rejects.toThrow('validated Cap project');
+    await updateAgentRecordingSessionInternal(projectPath, 'project', 'scene', awaiting.id, { projectValidated: true });
+    const attaching = await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'attaching', { exportPath: '/tmp/take.mp4', exportVerified: { sizeBytes: 3, sha256: 'a'.repeat(64) } });
     expect(await requireAttachableSession(projectPath, 'project', 'scene', attaching.id)).toMatchObject({ state: 'attaching' });
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'completed')).rejects.toThrow('ingestion verification');
+    await updateAgentRecordingSessionInternal(projectPath, 'project', 'scene', awaiting.id, { ingestVerified: true });
     const completed = await transitionAgentRecordingSession(projectPath, 'project', 'scene', awaiting.id, 'completed');
     expect(completed).toMatchObject({ state: 'completed', confirmedCapture: true });
   });
@@ -34,13 +51,14 @@ describe('agent recording sessions', () => {
     const projectPath = await root();
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', {
-      planFingerprint: 'plan-1', rehearsal, recordingId: 'cap-1', capProjectPath: '/private/cap', exportPath: '/private/take.mp4',
+      planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity, recordingId: 'cap-1', capProjectPath: '/private/cap', exportPath: '/private/take.mp4',
       codexThreadId: 'thread', driverTokenHash: 'token', targetApplicationId: 'safari',
     });
     const publicSession = await getCurrentAgentRecordingSession(projectPath, 'project', 'scene');
     expect(publicSession).not.toHaveProperty('recordingId');
     expect(publicSession).not.toHaveProperty('capProjectPath');
     expect(publicSession).not.toHaveProperty('exportPath');
+    expect(publicSession).not.toHaveProperty('rehearsedTargetIdentity');
     expect(await readStoredAgentRecordingSession(projectPath, created.id)).toMatchObject({ recordingId: 'cap-1', capProjectPath: '/private/cap' });
 
     const stored = await readStoredAgentRecordingSession(projectPath, created.id);
@@ -48,6 +66,7 @@ describe('agent recording sessions', () => {
       ...stored,
       events: Array.from({ length: 100 }, (_, index) => ({ at: stored.createdAt, phase: 'progress', message: String(index) })),
     }));
+    await persistAgentRecordingIdentity(projectPath, 'project', 'scene', created.id, { recordingId: 'cap-1', projectPath: '/private/cap' }, '2026-07-31T12:00:00.000Z');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' });
     expect((await readStoredAgentRecordingSession(projectPath, created.id)).events).toHaveLength(100);
   });
@@ -55,7 +74,7 @@ describe('agent recording sessions', () => {
   it('persists exact Cap identity atomically before the recording transition', async () => {
     const projectPath = await root();
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
-    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity });
     await persistAgentRecordingIdentity(projectPath, 'project', 'scene', created.id, { recordingId: 'cap-exact', projectPath: '/private/take.cap' }, '2026-07-31T12:00:00.000Z');
     expect(await readStoredAgentRecordingSession(projectPath, created.id)).toMatchObject({
       state: 'awaiting_confirmation', recordingId: 'cap-exact', capProjectPath: '/private/take.cap', capturedAt: '2026-07-31T12:00:00.000Z',
@@ -71,9 +90,18 @@ describe('agent recording sessions', () => {
     expect(await getCurrentAgentRecordingSession(projectPath, 'project', 'stale-scene')).toMatchObject({ state: 'rehearsing' });
 
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
-    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
-    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' });
+    await reachRecording(projectPath, 'project', 'scene', created.id);
+    await persistAgentRecordingStopped(projectPath, 'project', 'scene', created.id, 'cap-1', '/tmp/cap-project');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'exporting');
+    await updateAgentRecordingSessionInternal(projectPath, 'project', 'scene', created.id, { projectValidated: true });
     expect(await findRecoverableAgentRecordingSession(projectPath, 'project', 'scene')).toMatchObject({ id: created.id, state: 'exporting' });
+  });
+
+  it('rejects lifecycle transitions that skip required durable artifacts', async () => {
+    const projectPath = await root();
+    const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal })).rejects.toThrow('exact target identity');
+    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity });
+    await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' })).rejects.toThrow('persisted exact Cap identity');
   });
 });

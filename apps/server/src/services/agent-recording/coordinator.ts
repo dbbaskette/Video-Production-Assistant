@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   AgentRecordingConfirmRequestSchema,
@@ -17,7 +18,7 @@ import { probeVideo as probe, type VideoMetadata } from '../recording/metadata.j
 import { ingestRecording, type IngestResult } from '../recording/ingest.js';
 import type { CapRuntime } from '../cap/runtime.js';
 import type { CapTarget } from '../cap/types.js';
-import { DESKTOP_DRIVER_ENV, type DesktopDriverCapability } from '../desktop-driver/types.js';
+import { DESKTOP_DRIVER_ENV, type DesktopDriverCapability, type ResolvedDesktopDriverTarget } from '../desktop-driver/types.js';
 import type { DesktopDriverSessionManager } from '../desktop-driver/session.js';
 import type { CodexSceneRunner } from './codex-runner.js';
 import { readAgentRecordingPlan, saveAgentRecordingPlan } from './plan.js';
@@ -42,6 +43,7 @@ const ALL_DRIVER_OPERATIONS = [
 ] as const;
 
 type SessionInternal = Awaited<ReturnType<typeof readStoredAgentRecordingSession>>;
+type RehearsedTargetIdentity = NonNullable<SessionInternal['rehearsedTargetIdentity']>;
 
 interface ActiveRun {
   sessionId: string;
@@ -53,6 +55,8 @@ interface ActiveRun {
   recordingId?: string;
   stopAttempted: boolean;
   driverSessionId?: string;
+  publicFailureMessage: string;
+  attachmentCritical?: boolean;
 }
 
 interface SessionContext {
@@ -89,6 +93,12 @@ export interface AgentRecordingCoordinator {
     input: AgentRecordingConfirmRequest,
   ): Promise<AgentRecordingSession>;
   cancel(projectId: string, sceneId: string, sessionId: string): Promise<AgentRecordingSession>;
+  recoverAttachment(
+    projectId: string,
+    sceneId: string,
+    sessionId: string,
+    input: { capturedAt: string; uploadedPath: string },
+  ): Promise<IngestResult>;
   reconcile(): Promise<void>;
 }
 
@@ -104,15 +114,8 @@ function normalized(value: string | undefined): string {
   return (value ?? '').trim().toLocaleLowerCase();
 }
 
-function errorMessage(error: unknown, privateValues: Array<string | undefined> = []): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const redacted = privateValues
-    .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    .sort((left, right) => right.length - left.length)
-    .reduce((value, privateValue) => value.replaceAll(privateValue, '[local path]'), message);
-  return (
-    Buffer.from(redacted).subarray(0, 2_000).toString('utf8') || 'Recording coordination failed.'
-  );
+function publicMessage(value: string): string {
+  return Buffer.from(value.replaceAll('\r', ' ').replaceAll('\n', ' ').replaceAll('\t', ' ').replaceAll('\0', ' ')).subarray(0, 500).toString('utf8');
 }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
@@ -161,6 +164,38 @@ function targetRequest(target: CapTarget) {
     windowId,
     windowTitle: target.name,
   };
+}
+
+function targetIdentity(target: CapTarget, desktop: ResolvedDesktopDriverTarget): RehearsedTargetIdentity {
+  if (target.kind !== 'window' || !target.application) throw new Error('Target identity is incomplete.');
+  return {
+    cap: {
+      kind: 'window', id: target.id, name: target.name, application: target.application,
+      ...(target.width === undefined ? {} : { width: target.width }),
+      ...(target.height === undefined ? {} : { height: target.height }),
+    },
+    desktop: {
+      bundleId: desktop.bundleId, displayName: desktop.displayName, processId: desktop.processId,
+      windowId: desktop.windowId, windowTitle: desktop.windowTitle, bounds: { ...desktop.bounds },
+    },
+  };
+}
+
+function sameTargetIdentity(left: RehearsedTargetIdentity, right: RehearsedTargetIdentity): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function fileEvidence(filePath: string): Promise<{ sizeBytes: number; sha256: string }> {
+  const info = await stat(filePath);
+  if (!info.isFile() || info.size <= 0) throw new Error('Export is not a readable nonempty file.');
+  const hash = createHash('sha256');
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', resolve);
+    stream.once('error', reject);
+  });
+  return { sizeBytes: info.size, sha256: hash.digest('hex') };
 }
 
 function uniqueTarget(plan: AgentRecordingPlan, targets: CapTarget[]): CapTarget {
@@ -320,21 +355,18 @@ export function createAgentRecordingCoordinator(
   async function terminate(
     run: ActiveRun,
     state: 'failed' | 'interrupted',
-    error: unknown,
+    _error?: unknown,
   ): Promise<void> {
     const stored = await readStoredAgentRecordingSession(run.projectPath, run.sessionId).catch(
       () => undefined,
     );
-    let diagnostic = errorMessage(error, [
-      run.projectPath,
-      deps.workspaceRoot,
-      stored?.capProjectPath,
-      stored?.exportPath,
-    ]);
+    let diagnostic = state === 'interrupted'
+      ? 'Recording workflow cancelled or interrupted.'
+      : run.publicFailureMessage;
     try {
       await stopOnce(run, stored);
-    } catch (stopError) {
-      diagnostic = `${diagnostic} Cap stop also failed: ${errorMessage(stopError, [run.projectPath, deps.workspaceRoot, stored?.capProjectPath, stored?.exportPath])}`;
+    } catch {
+      diagnostic = `${diagnostic} Cap could not confirm that the exact recording stopped.`;
     }
     try {
       const latest = await readStoredAgentRecordingSession(run.projectPath, run.sessionId);
@@ -345,7 +377,7 @@ export function createAgentRecordingCoordinator(
           run.sceneId,
           run.sessionId,
           state,
-          { phase: state, message: diagnostic },
+          { phase: state, message: publicMessage(diagnostic) },
         );
       }
     } finally {
@@ -372,9 +404,9 @@ export function createAgentRecordingCoordinator(
     target: CapTarget,
     capability: DesktopDriverCapability,
     evidence: Awaited<ReturnType<CodexSceneRunner['rehearse']>>['evidence'],
-  ): Promise<void> {
+  ): Promise<{ evidence: AgentRecordingSession['rehearsal']; identity: RehearsedTargetIdentity }> {
     if (!evidence.success || !evidence.resetConfirmed)
-      throw new Error(evidence.diagnostic || 'Codex did not complete and reset the rehearsal.');
+      throw new Error('Codex did not complete and reset the rehearsal.');
     if (!exactStepIndexes(plan, evidence.completedStepIndexes))
       throw new Error('Codex did not rehearse every reviewed step exactly once.');
     const checkpoints = requiredCheckpoints(plan);
@@ -406,6 +438,19 @@ export function createAgentRecordingCoordinator(
     ) {
       throw new Error('Final target inspection did not match the rehearsal evidence.');
     }
+    const identity = targetIdentity(target, capability.target);
+    return {
+      identity,
+      evidence: {
+        success: true,
+        targetApplication: plan.capture.targetApplication,
+        windowTitle: target.name,
+        windowBounds: { ...inspected.windowBounds },
+        completedStepIndexes: plan.steps.map((step) => step.index),
+        checkpoints: requiredCheckpoints(plan).map((description) => ({ description, passed: true })),
+        resetConfirmed: true,
+      },
+    };
   }
 
   return {
@@ -433,6 +478,7 @@ export function createAgentRecordingCoordinator(
             projectPath: project.path,
             controller: new AbortController(),
             stopAttempted: false,
+            publicFailureMessage: 'Rehearsal could not be verified.',
           },
           async (currentRun) => {
             try {
@@ -447,6 +493,7 @@ export function createAgentRecordingCoordinator(
                   message: 'Checking Cap and the reviewed target.',
                 },
               );
+              currentRun.publicFailureMessage = 'Cap or the reviewed target was not ready for rehearsal.';
               const target = await freshCapTarget(plan);
               currentRun.controller.signal.throwIfAborted();
               const capability = await deps.desktop.createFromWindowOwner({
@@ -479,6 +526,7 @@ export function createAgentRecordingCoordinator(
                 session.id,
                 'rehearsal',
               );
+              currentRun.publicFailureMessage = 'Codex rehearsal or final target verification failed.';
               const result = await deps.codex.rehearse(
                 rehearsalPrompt(plan),
                 scratch,
@@ -486,7 +534,7 @@ export function createAgentRecordingCoordinator(
                 currentRun.controller.signal,
               );
               currentRun.controller.signal.throwIfAborted();
-              await verifyRehearsal(plan, target, capability, result.evidence);
+              const verified = await verifyRehearsal(plan, target, capability, result.evidence);
               await transitionAgentRecordingSession(
                 project.path,
                 projectId,
@@ -495,7 +543,8 @@ export function createAgentRecordingCoordinator(
                 'awaiting_confirmation',
                 {
                   planFingerprint: fingerprint,
-                  rehearsal: result.evidence,
+                  rehearsal: verified.evidence,
+                  rehearsedTargetIdentity: verified.identity,
                   codexThreadId: result.threadId,
                   driverSessionId: capability.sessionId,
                   targetApplicationId: capability.target.bundleId,
@@ -536,6 +585,9 @@ export function createAgentRecordingCoordinator(
           throw new Error('Recording confirmation does not match the rehearsed plan.');
         if (!stored.codexThreadId || !stored.rehearsal?.success)
           throw new Error('Recording confirmation requires verified rehearsal evidence.');
+        if (!stored.rehearsedTargetIdentity)
+          throw new Error('Recording confirmation requires exact rehearsed target identity.');
+        const rehearsedTargetIdentity = stored.rehearsedTargetIdentity;
         const codexThreadId = stored.codexThreadId;
         const context = contexts.get(sessionId);
         if (!context)
@@ -550,6 +602,7 @@ export function createAgentRecordingCoordinator(
             controller: new AbortController(),
             stopAttempted: stored.stopAttempted === true,
             driverSessionId: context.driver.sessionId,
+            publicFailureMessage: 'Confirmed recording could not start safely.',
           },
           async (currentRun) => {
             try {
@@ -559,25 +612,19 @@ export function createAgentRecordingCoordinator(
                 throw new Error('The reviewed plan changed after rehearsal; rehearse again.');
               const target = await freshCapTarget(currentPlan);
               currentRun.controller.signal.throwIfAborted();
-              if (
-                target.id !== context.target.id ||
-                target.kind !== context.target.kind ||
-                target.name !== context.target.name ||
-                target.application !== context.target.application
-              ) {
-                throw new Error('The Cap target changed after rehearsal; rehearse again.');
+              const binding = {
+                agentRecordingSessionId: sessionId, projectId, sceneId,
+                planFingerprint: stored.planFingerprint, operations: [...ALL_DRIVER_OPERATIONS],
+                phase: 'recording' as const,
+              };
+              const freshlyResolved = await deps.desktop.resolveWindowOwnerTarget(targetRequest(target), binding);
+              currentRun.controller.signal.throwIfAborted();
+              if (!sameTargetIdentity(rehearsedTargetIdentity, targetIdentity(target, freshlyResolved))) {
+                throw new Error('The exact application/window identity changed after rehearsal.');
               }
 
               await deps.desktop.revoke(sessionId, context.driver.sessionId);
-              const capability = await deps.desktop.createFromWindowOwner({
-                agentRecordingSessionId: sessionId,
-                projectId,
-                sceneId,
-                planFingerprint: stored.planFingerprint,
-                target: targetRequest(target),
-                operations: [...ALL_DRIVER_OPERATIONS],
-                phase: 'recording',
-              });
+              const capability = await deps.desktop.create({ ...binding, target: freshlyResolved });
               currentRun.driverSessionId = capability.sessionId;
               contexts.set(sessionId, { target, driver: capability });
               await updateAgentRecordingSessionInternal(
@@ -607,7 +654,6 @@ export function createAgentRecordingCoordinator(
                 systemAudio: currentPlan.capture.systemAudio,
               });
               currentRun.recordingId = started.recordingId;
-              currentRun.controller.signal.throwIfAborted();
               const capturedAt = now().toISOString();
               await persistAgentRecordingIdentity(
                 project.path,
@@ -617,6 +663,7 @@ export function createAgentRecordingCoordinator(
                 started,
                 capturedAt,
               );
+              currentRun.controller.signal.throwIfAborted();
               await transitionAgentRecordingSession(
                 project.path,
                 projectId,
@@ -633,6 +680,7 @@ export function createAgentRecordingCoordinator(
               );
 
               await delay(currentPlan.leadInSec * 1_000, currentRun.controller.signal);
+              currentRun.publicFailureMessage = 'Codex could not complete the recorded scene.';
               const evidence = await deps.codex.resumeForRecording(
                 codexThreadId,
                 recordingPrompt(currentPlan),
@@ -650,11 +698,10 @@ export function createAgentRecordingCoordinator(
                     ),
                 )
               ) {
-                throw new Error(
-                  evidence.diagnostic || 'Codex did not complete the recorded scene safely.',
-                );
+                throw new Error('Codex did not complete the recorded scene safely.');
               }
               await delay(currentPlan.tailSec * 1_000, currentRun.controller.signal);
+              currentRun.publicFailureMessage = 'Cap could not finalize the exact recording.';
               currentRun.stopAttempted = true;
               await updateAgentRecordingSessionInternal(
                 project.path,
@@ -689,13 +736,23 @@ export function createAgentRecordingCoordinator(
                   message: 'Validating the captured Cap project.',
                 },
               );
+              currentRun.publicFailureMessage = 'Cap project validation failed.';
               await deps.cap.validateProject(stopped.projectPath);
+              currentRun.controller.signal.throwIfAborted();
+              await updateAgentRecordingSessionInternal(project.path, projectId, sceneId, sessionId, {
+                projectValidated: true,
+                phase: 'exporting',
+                message: 'Cap project validated. Exporting the recording.',
+              });
               const exportPath = path.join(captureDirectory, 'take.mp4');
+              currentRun.publicFailureMessage = 'Validated Cap project export failed.';
               await deps.cap.exportProject(
                 stopped.projectPath,
                 exportPath,
                 currentRun.controller.signal,
               );
+              currentRun.controller.signal.throwIfAborted();
+              const exportVerified = await fileEvidence(exportPath);
               await transitionAgentRecordingSession(
                 project.path,
                 projectId,
@@ -704,12 +761,17 @@ export function createAgentRecordingCoordinator(
                 'attaching',
                 {
                   exportPath,
-                  retryAvailable: 'attachment',
+                  exportVerified,
                   phase: 'attaching',
                   message: 'Attaching the verified recording to the scene.',
                 },
               );
+              currentRun.publicFailureMessage = 'Verified recording attachment failed.';
+              currentRun.controller.signal.throwIfAborted();
               const metadata = await deps.probeVideo(exportPath);
+              currentRun.controller.signal.throwIfAborted();
+              if (metadata.size_bytes !== exportVerified.sizeBytes) throw new Error('Probed export size changed.');
+              currentRun.attachmentCritical = true;
               const ingested = await deps.ingest(project.path, sceneId, exportPath, metadata, {
                 source_kind: 'cap-agent',
                 capture_session_id: sessionId,
@@ -723,6 +785,11 @@ export function createAgentRecordingCoordinator(
                 metadata,
                 ingested,
               );
+              await updateAgentRecordingSessionInternal(project.path, projectId, sceneId, sessionId, {
+                ingestVerified: true,
+                phase: 'verifying-attachment',
+                message: 'Authoritative scene recording metadata verified.',
+              });
               await transitionAgentRecordingSession(
                 project.path,
                 projectId,
@@ -740,7 +807,7 @@ export function createAgentRecordingCoordinator(
               const latest = await readStoredAgentRecordingSession(project.path, sessionId).catch(
                 () => undefined,
               );
-              if (latest?.state === 'exporting' && !currentRun.controller.signal.aborted) {
+              if (latest?.state === 'exporting' && latest.projectValidated && !currentRun.controller.signal.aborted) {
                 await updateAgentRecordingSessionInternal(
                   project.path,
                   projectId,
@@ -749,13 +816,13 @@ export function createAgentRecordingCoordinator(
                   {
                     retryAvailable: latest.capProjectPath ? 'export' : undefined,
                     phase: 'export-interrupted',
-                    message: `Export stopped: ${errorMessage(error, [project.path, deps.workspaceRoot, latest.capProjectPath, latest.exportPath])}`,
+                    message: 'Validated Cap project export failed. Explicit export retry is available.',
                   },
                 ).catch(() => undefined);
                 await revoke(currentRun).catch(() => undefined);
                 return;
               }
-              if (latest?.state === 'attaching' && !currentRun.controller.signal.aborted) {
+              if (latest?.state === 'attaching' && latest.exportVerified && !currentRun.controller.signal.aborted) {
                 await updateAgentRecordingSessionInternal(
                   project.path,
                   projectId,
@@ -764,7 +831,7 @@ export function createAgentRecordingCoordinator(
                   {
                     retryAvailable: latest.exportPath ? 'attachment' : undefined,
                     phase: 'attachment-interrupted',
-                    message: `Attachment stopped: ${errorMessage(error, [project.path, deps.workspaceRoot, latest.capProjectPath, latest.exportPath])}`,
+                    message: 'Verified recording attachment failed. Explicit attachment retry is available.',
                   },
                 ).catch(() => undefined);
                 await revoke(currentRun).catch(() => undefined);
@@ -775,6 +842,8 @@ export function createAgentRecordingCoordinator(
                 currentRun.controller.signal.aborted ? 'interrupted' : 'failed',
                 error,
               );
+            } finally {
+              currentRun.attachmentCritical = false;
             }
           },
         );
@@ -788,7 +857,7 @@ export function createAgentRecordingCoordinator(
     async cancel(projectId, sceneId, sessionId) {
       const key = sceneKey(projectId, sceneId);
       const initiallyRunning = active.get(key);
-      if (initiallyRunning?.sessionId === sessionId) {
+      if (initiallyRunning?.sessionId === sessionId && !initiallyRunning.attachmentCritical) {
         initiallyRunning.controller.abort(new Error('Recording cancelled by the user.'));
       }
       const { project } = await projectContext(projectId, sceneId);
@@ -799,7 +868,7 @@ export function createAgentRecordingCoordinator(
         return AgentRecordingSessionSchemaSafe(stored);
       const running = active.get(key);
       if (running && running.sessionId === sessionId) {
-        if (!running.controller.signal.aborted)
+        if (!running.attachmentCritical && !running.controller.signal.aborted)
           running.controller.abort(new Error('Recording cancelled by the user.'));
         await running.promise;
       } else {
@@ -813,12 +882,82 @@ export function createAgentRecordingCoordinator(
           recordingId: stored.recordingId,
           stopAttempted: false,
           driverSessionId: stored.driverSessionId,
+          publicFailureMessage: 'Recording workflow failed.',
         };
         await terminate(run, 'interrupted', new Error('Recording cancelled by the user.'));
       }
       return AgentRecordingSessionSchemaSafe(
         await readStoredAgentRecordingSession(project.path, sessionId),
       );
+    },
+
+    async recoverAttachment(projectId, sceneId, sessionId, input) {
+      const key = sceneKey(projectId, sceneId);
+      if (active.has(key) || reservations.has(key)) throw new Error('A recording operation is already active for this scene.');
+      reservations.add(key);
+      try {
+        const { project } = await projectContext(projectId, sceneId);
+        const stored = await readStoredAgentRecordingSession(project.path, sessionId);
+        if (stored.projectId !== projectId || stored.sceneId !== sceneId) throw new Error('Recovery session does not belong to this scene.');
+        if (stored.state !== 'attaching' || stored.retryAvailable !== 'attachment'
+          || !stored.projectValidated || !stored.exportPath || !stored.exportVerified || !stored.capturedAt) {
+          throw new Error('This session has no coordinator-verified attachment recovery available.');
+        }
+        if (input.capturedAt !== stored.capturedAt) throw new Error('Recovery capture time does not match the verified session.');
+        let result: IngestResult | undefined;
+        let failed = false;
+        const run = schedule({
+          sessionId, projectId, sceneId, projectPath: project.path,
+          controller: new AbortController(), stopAttempted: false,
+          publicFailureMessage: 'Verified recording recovery attachment failed.',
+        }, async (currentRun) => {
+          try {
+            const [uploadedEvidence, storedEvidence] = await Promise.all([
+              fileEvidence(input.uploadedPath), fileEvidence(stored.exportPath!),
+            ]);
+            currentRun.controller.signal.throwIfAborted();
+            if (uploadedEvidence.sha256 !== stored.exportVerified!.sha256
+              || uploadedEvidence.sizeBytes !== stored.exportVerified!.sizeBytes
+              || storedEvidence.sha256 !== stored.exportVerified!.sha256
+              || storedEvidence.sizeBytes !== stored.exportVerified!.sizeBytes) {
+              throw new Error('Recovery upload does not match the verified export.');
+            }
+            const metadata = await deps.probeVideo(stored.exportPath!);
+            currentRun.controller.signal.throwIfAborted();
+            if (metadata.size_bytes !== stored.exportVerified!.sizeBytes) throw new Error('Verified export metadata changed.');
+            currentRun.attachmentCritical = true;
+            result = await deps.ingest(project.path, sceneId, stored.exportPath!, metadata, {
+              source_kind: 'cap-agent', capture_session_id: sessionId, captured_at: stored.capturedAt,
+            });
+            await verifyIngestion(project.path, sceneId, sessionId, stored.capturedAt!, metadata, result);
+            await updateAgentRecordingSessionInternal(project.path, projectId, sceneId, sessionId, {
+              ingestVerified: true, phase: 'verifying-attachment',
+              message: 'Authoritative scene recording metadata verified.',
+            });
+            await transitionAgentRecordingSession(project.path, projectId, sceneId, sessionId, 'completed', {
+              retryAvailable: undefined, phase: 'completed', message: 'Recording attached and verified.',
+            });
+          } catch (error) {
+            failed = true;
+            if (currentRun.controller.signal.aborted) {
+              await terminate(currentRun, 'interrupted', error);
+            } else {
+              await updateAgentRecordingSessionInternal(project.path, projectId, sceneId, sessionId, {
+                retryAvailable: 'attachment', phase: 'attachment-interrupted',
+                message: 'Verified recording recovery attachment failed. Explicit retry remains available.',
+              }).catch(() => undefined);
+            }
+          } finally {
+            currentRun.attachmentCritical = false;
+          }
+        });
+        reservations.delete(key);
+        await run.promise;
+        if (failed || !result) throw new Error('Verified recording recovery attachment failed.');
+        return result;
+      } finally {
+        reservations.delete(key);
+      }
     },
 
     async reconcile() {
@@ -838,6 +977,7 @@ export function createAgentRecordingCoordinator(
                 recordingId: stored.recordingId,
                 stopAttempted: false,
                 driverSessionId: stored.driverSessionId,
+                publicFailureMessage: 'Recording cleanup failed.',
               };
               await stopOnce(terminalRun, stored).catch(() => undefined);
             }
@@ -846,6 +986,19 @@ export function createAgentRecordingCoordinator(
             continue;
           }
           if (stored.state === 'exporting' || stored.state === 'attaching') {
+            const recoverable = stored.state === 'exporting'
+              ? Boolean(stored.projectValidated && stored.capProjectPath)
+              : Boolean(stored.exportVerified && stored.exportPath);
+            if (!recoverable) {
+              await transitionAgentRecordingSession(
+                project.path, stored.projectId, stored.sceneId, stored.id, 'failed',
+                { phase: 'failed', message: stored.state === 'exporting'
+                    ? 'Interrupted project validation cannot be retried.'
+                    : 'Interrupted attachment has no verified export to retry.' },
+              );
+              if (stored.driverSessionId) await deps.desktop.revoke(stored.id, stored.driverSessionId).catch(() => undefined);
+              continue;
+            }
             await updateAgentRecordingSessionInternal(
               project.path,
               stored.projectId,
@@ -853,18 +1006,18 @@ export function createAgentRecordingCoordinator(
               stored.id,
               {
                 retryAvailable:
-                  stored.state === 'exporting' && stored.capProjectPath
+                  stored.state === 'exporting' && stored.projectValidated && stored.capProjectPath
                     ? 'export'
-                    : stored.state === 'attaching' && stored.exportPath
+                    : stored.state === 'attaching' && stored.exportVerified && stored.exportPath
                       ? 'attachment'
                       : undefined,
                 phase: `${stored.state}-interrupted`,
                 message:
                   stored.state === 'exporting'
-                    ? stored.capProjectPath
+                    ? stored.projectValidated && stored.capProjectPath
                       ? 'Export was interrupted. Retry is available only for the verified Cap project.'
                       : 'Export was interrupted, but no verified Cap project is available to retry.'
-                    : stored.exportPath
+                    : stored.exportVerified && stored.exportPath
                       ? 'Attachment was interrupted. Retry is available only for the verified export.'
                       : 'Attachment was interrupted, but no verified export is available to retry.',
               },
@@ -883,6 +1036,7 @@ export function createAgentRecordingCoordinator(
             recordingId: stored.recordingId,
             stopAttempted: false,
             driverSessionId: stored.driverSessionId,
+            publicFailureMessage: 'Recording workflow was interrupted by server restart.',
           };
           await terminate(
             run,

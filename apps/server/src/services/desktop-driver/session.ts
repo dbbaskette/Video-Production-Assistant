@@ -249,18 +249,34 @@ export class DesktopDriverSessionManager {
   }
 
   async createFromWindowOwner(input: DesktopDriverWindowOwnerSessionCreateInput): Promise<DesktopDriverCapability> {
-    assertTargetInput({ ...input, target: { ...input.target, bundleId: 'local.vpa.pending-target' } });
-    assertNonEmpty(input.target.displayName, 'Target display name');
-    assertNonEmpty(input.target.windowTitle, 'Target window title');
-    if (!Number.isSafeInteger(input.target.windowId) || input.target.windowId <= 0) throw new DesktopDriverError('INVALID_REQUEST', 'Target window ID is invalid');
-    if (isExcludedTarget('', input.target.displayName)) throw new DesktopDriverError('FORBIDDEN_TARGET', 'That application cannot be controlled');
+    const resolved = await this.resolveWindowOwnerTarget(input.target, input);
+    return this.create({ ...input, target: resolved });
+  }
+
+  async resolveWindowOwnerTarget(
+    target: DesktopDriverWindowOwnerSessionCreateInput['target'],
+    binding?: Omit<DesktopDriverWindowOwnerSessionCreateInput, 'target'>,
+  ): Promise<ResolvedDesktopDriverTarget> {
+    assertTargetInput({
+      agentRecordingSessionId: binding?.agentRecordingSessionId ?? '00000000-0000-4000-8000-000000000000',
+      projectId: binding?.projectId ?? 'trusted-coordinator-resolution',
+      sceneId: binding?.sceneId ?? 'trusted-coordinator-resolution',
+      planFingerprint: binding?.planFingerprint ?? 'trusted-coordinator-resolution',
+      operations: binding?.operations ?? ['inspect'],
+      phase: binding?.phase ?? 'rehearsal',
+      target: { ...target, bundleId: 'local.vpa.pending-target' },
+    });
+    assertNonEmpty(target.displayName, 'Target display name');
+    assertNonEmpty(target.windowTitle, 'Target window title');
+    if (!Number.isSafeInteger(target.windowId) || target.windowId <= 0) throw new DesktopDriverError('INVALID_REQUEST', 'Target window ID is invalid');
+    if (isExcludedTarget('', target.displayName)) throw new DesktopDriverError('FORBIDDEN_TARGET', 'That application cannot be controlled');
     if (!this.options.platform.resolveWindowOwnerTarget) throw new DesktopDriverError('TARGET_CHANGED', 'Target application identity could not be resolved');
-    const resolved = await this.options.platform.resolveWindowOwnerTarget({ ...input.target });
+    const resolved = await this.options.platform.resolveWindowOwnerTarget({ ...target });
     assertResolvedTarget(resolved);
-    if (resolved.displayName !== input.target.displayName || resolved.windowId !== input.target.windowId || resolved.windowTitle !== input.target.windowTitle) {
+    if (resolved.displayName !== target.displayName || resolved.windowId !== target.windowId || resolved.windowTitle !== target.windowTitle) {
       throw new DesktopDriverError('TARGET_CHANGED', 'Resolved application does not match the Cap target');
     }
-    return this.create({ ...input, target: resolved });
+    return resolved;
   }
 
   async create(input: DesktopDriverSessionCreateInput): Promise<DesktopDriverCapability> {
@@ -545,9 +561,13 @@ export class DesktopDriverSessionManager {
       }
     }
     if (action.kind === 'set-value' || action.kind === 'type-text') {
+      const hasControlCharacter = typeof action.value === 'string' && [...action.value].some((character) => {
+        const code = character.charCodeAt(0);
+        return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+      });
       if (typeof action.value !== 'string'
         || action.value.length > DESKTOP_DRIVER_MAX_TEXT_LENGTH
-        || /[\u0000-\u001f\u007f-\u009f]/u.test(action.value)) {
+        || hasControlCharacter) {
         throw new DesktopDriverError('INVALID_REQUEST', 'Text value is invalid or too long');
       }
     }

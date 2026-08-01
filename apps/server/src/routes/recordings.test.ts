@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,8 +11,8 @@ import { createFakeLlm } from '../services/llm/index.js';
 import { createFakeProbe } from '../services/recording/metadata.js';
 import { registerRecordingRoutes } from './recordings.js';
 import type { Storyboard } from '@vpa/shared';
-import { createAgentRecordingSession, transitionAgentRecordingSession } from '../services/agent-recording/session.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
+import { ingestRecording } from '../services/recording/ingest.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -24,13 +24,19 @@ async function buildTestServer() {
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
   const llm = createFakeLlm();
   const probe = createFakeProbe();
+  const recoverAttachment = vi.fn(async (projectId: string, sceneId: string, sessionId: string, input: { capturedAt: string; uploadedPath: string }) => {
+    const project = await store.readProject(projectId);
+    return ingestRecording(project.path, sceneId, input.uploadedPath, await probe(input.uploadedPath), {
+      source_kind: 'cap-agent', capture_session_id: sessionId, captured_at: input.capturedAt,
+    });
+  });
 
   const app = Fastify();
   await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024, files: 10 } });
   await app.register(async (i) =>
-    registerRecordingRoutes(i, { store, llm, workspaceRoot: workspaceRoot(), probe }),
+    registerRecordingRoutes(i, { store, llm, workspaceRoot: workspaceRoot(), probe, agentRecordingCoordinator: { recoverAttachment } }),
   );
-  return { app, store, llm, home, projects };
+  return { app, store, llm, home, projects, recoverAttachment };
 }
 
 function makeSampleStoryboard(projectId: string, projectName: string): Storyboard {
@@ -123,38 +129,33 @@ describe('recording routes', () => {
       expect(res.json().code).toBe('scene_not_found');
     });
 
-    it('attaches Cap output only from an attaching session and saves provenance', async () => {
+    it('delegates Cap attachment recovery to the coordinator and saves provenance', async () => {
       const sb = makeSampleStoryboard(projectId, 'test-proj');
       await saveStoryboard(projectPath, sb);
-      const session = await createAgentRecordingSession(projectPath, projectId, 'scene-01');
-      const rehearsal = { success: true, targetApplication: 'Safari', windowTitle: 'Demo', windowBounds: { x: 0, y: 0, width: 100, height: 100 }, completedStepIndexes: [0], checkpoints: [], resetConfirmed: true };
-      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
-      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1', recordingId: 'cap-1' });
-      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'exporting');
-      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'attaching');
+      const sessionId = '11111111-1111-4111-8111-111111111111';
 
       const form = new FormData();
       form.append('source_kind', 'cap-agent');
-      form.append('capture_session_id', session.id);
+      form.append('capture_session_id', sessionId);
       form.append('captured_at', '2026-07-31T12:00:00.000Z');
       form.append('file', Buffer.from('fake-mp4-data'), { filename: 'take.mp4', contentType: 'video/mp4' });
       const res = await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/scenes/scene-01/recording`, payload: form.getBuffer(), headers: form.getHeaders() });
 
       expect(res.statusCode).toBe(200);
+      expect(ctx.recoverAttachment).toHaveBeenCalledWith(projectId, 'scene-01', sessionId, expect.objectContaining({ capturedAt: '2026-07-31T12:00:00.000Z' }));
       const saved = await loadStoryboard(projectPath);
-      expect(saved?.scenes[0]?.recording).toMatchObject({ source_kind: 'cap-agent', capture_session_id: session.id, captured_at: '2026-07-31T12:00:00.000Z' });
+      expect(saved?.scenes[0]?.recording).toMatchObject({ source_kind: 'cap-agent', capture_session_id: sessionId, captured_at: '2026-07-31T12:00:00.000Z' });
     });
 
     it('rejects troubleshooting Cap provenance while the session still awaits confirmation', async () => {
       const sb = makeSampleStoryboard(projectId, 'test-proj');
       await saveStoryboard(projectPath, sb);
-      const session = await createAgentRecordingSession(projectPath, projectId, 'scene-01');
-      const rehearsal = { success: true, targetApplication: 'Safari', windowTitle: 'Demo', windowBounds: { x: 0, y: 0, width: 100, height: 100 }, completedStepIndexes: [0], checkpoints: [], resetConfirmed: true };
-      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+      const sessionId = '22222222-2222-4222-8222-222222222222';
+      ctx.recoverAttachment.mockRejectedValueOnce(new Error('not coordinator verified'));
 
       const form = new FormData();
       form.append('source_kind', 'cap-agent');
-      form.append('capture_session_id', session.id);
+      form.append('capture_session_id', sessionId);
       form.append('captured_at', '2026-07-31T12:00:00.000Z');
       form.append('file', Buffer.from('fake-mp4-data'), { filename: 'take.mp4', contentType: 'video/mp4' });
       const res = await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/scenes/scene-01/recording`, payload: form.getBuffer(), headers: form.getHeaders() });

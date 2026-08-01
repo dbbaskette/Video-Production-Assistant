@@ -6,15 +6,15 @@ import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
 import type { ModelRegistry } from '../services/llm/model-registry.js';
-import { probeVideo, createFakeProbe, type VideoMetadata } from '../services/recording/metadata.js';
+import { probeVideo, type VideoMetadata } from '../services/recording/metadata.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
-import { loadStoryboard, saveStoryboard, createStoryboard, addScene, updateScene } from '../services/storyboard/index.js';
+import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '../services/storyboard/index.js';
 import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
 import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
-import { requireAttachableSession, transitionAgentRecordingSession } from '../services/agent-recording/session.js';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 
 interface Deps {
   store: ProjectStore;
@@ -24,6 +24,7 @@ interface Deps {
   registry?: ModelRegistry;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
+  agentRecordingCoordinator?: Pick<AgentRecordingCoordinator, 'recoverAttachment'>;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -72,14 +73,6 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       capture_session_id: multipartValue('capture_session_id'),
       captured_at: multipartValue('captured_at'),
     });
-    if (provenance.source_kind === 'cap-agent') {
-      try {
-        await requireAttachableSession(projectPath, id, sceneId, provenance.capture_session_id!);
-      } catch (error) {
-        return reply.status(409).send({ error: error instanceof Error ? error.message : 'Cap attachment session is invalid.', code: 'invalid_capture_session' });
-      }
-    }
-
     // Save to temp, probe, then ingest
     const tmpDir = path.join(projectPath, '.tmp');
     await mkdir(tmpDir, { recursive: true });
@@ -92,11 +85,21 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       }
       await writeFile(tmpFile, Buffer.concat(chunks));
 
+      if (provenance.source_kind === 'cap-agent') {
+        if (!deps.agentRecordingCoordinator) {
+          return reply.status(409).send({ error: 'Coordinator recovery is unavailable.', code: 'invalid_capture_session' });
+        }
+        try {
+          return await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
+            capturedAt: provenance.captured_at!, uploadedPath: tmpFile,
+          });
+        } catch {
+          return reply.status(409).send({ error: 'Verified Cap attachment recovery was rejected.', code: 'invalid_capture_session' });
+        }
+      }
+
       const metadata = await probe(tmpFile);
       const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
-      if (provenance.source_kind === 'cap-agent') {
-        await transitionAgentRecordingSession(projectPath, id, sceneId, provenance.capture_session_id!, 'completed');
-      }
       return result;
     } finally {
       await unlink(tmpFile).catch(() => {});

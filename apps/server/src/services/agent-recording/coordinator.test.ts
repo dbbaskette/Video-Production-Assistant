@@ -15,12 +15,15 @@ import type {
 import type { CodexSceneRunner } from './codex-runner.js';
 import { createAgentRecordingCoordinator } from './coordinator.js';
 import { ingestRecording } from '../recording/ingest.js';
-import { createFakeProbe } from '../recording/metadata.js';
+import type { probeVideo } from '../recording/metadata.js';
 import {
   createAgentRecordingSession,
   getCurrentAgentRecordingSession,
+  persistAgentRecordingIdentity,
+  persistAgentRecordingStopped,
   readStoredAgentRecordingSession,
   transitionAgentRecordingSession,
+  updateAgentRecordingSessionInternal,
 } from './session.js';
 
 const roots: string[] = [];
@@ -73,6 +76,10 @@ const target: CapTarget = {
   width: 800,
   height: 600,
 };
+const rehearsedTargetIdentity = {
+  cap: { kind: 'window' as const, id: '42', name: 'Settings', application: 'MeetingNotes', width: 800, height: 600 },
+  desktop: { bundleId: 'MeetingNotes', displayName: 'MeetingNotes', processId: 7, windowId: 42, windowTitle: 'Settings', bounds: { x: 10, y: 20, width: 800, height: 600 } },
+};
 
 const rehearsal = {
   success: true,
@@ -102,6 +109,7 @@ interface FixtureOverrides {
   cap?: Partial<CapRuntime>;
   codex?: Partial<CodexSceneRunner>;
   ingest?: typeof ingestRecording;
+  probeVideo?: typeof probeVideo;
   snapshotTitle?: string;
 }
 
@@ -198,7 +206,9 @@ async function fixture(overrides: FixtureOverrides = {}) {
     desktop,
     store,
     workspaceRoot: join(project.path, 'workspace'),
-    probeVideo: createFakeProbe(),
+    probeVideo: overrides.probeVideo ?? (async () => ({
+      duration_sec: 47.2, width: 1920, height: 1080, codec: 'h264', fps: 30, size_bytes: 3,
+    })),
     ingest: overrides.ingest ?? ingestRecording,
     platform: 'darwin',
     driverBaseUrl: 'http://127.0.0.1:3000',
@@ -206,7 +216,7 @@ async function fixture(overrides: FixtureOverrides = {}) {
       if (signal.aborted) throw signal.reason;
     },
   });
-  return { coordinator, project, store, cap, codex, desktop };
+  return { coordinator, project, store, cap, codex, desktop, platform, resolved };
 }
 
 async function waitForSession(
@@ -239,7 +249,17 @@ describe('agent recording coordinator', () => {
       planFingerprint: expect.any(String),
       codexThreadId: 'thread-1',
     });
-    expect(ready.rehearsal).toEqual(rehearsal);
+    expect(ready.rehearsal).toEqual({
+      ...rehearsal,
+      checkpoints: [
+        { description: 'Model visible', passed: true },
+        { description: 'General visible', passed: true },
+      ],
+    });
+    expect(ready.rehearsal).not.toHaveProperty('diagnostic');
+    expect(ready.rehearsal?.checkpoints.every((checkpoint) => !('detail' in checkpoint))).toBe(true);
+    expect(await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01')).not.toHaveProperty('rehearsedTargetIdentity');
+    expect(await readStoredAgentRecordingSession(ctx.project.path, ready.id)).toHaveProperty('rehearsedTargetIdentity');
     const environment = vi.mocked(ctx.codex.rehearse).mock.calls[0]![2];
     expect(environment.VPA_DESKTOP_DRIVER_TOKEN).toBeTruthy();
     expect(environment.VPA_TEST_SECRET).toBeUndefined();
@@ -256,17 +276,20 @@ describe('agent recording coordinator', () => {
     });
     const created = await ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update);
     const failed = await waitForSession(ctx.project.path, created.id, ['failed']);
-    expect(failed.message).toContain('did not match');
+    expect(failed.message).toBe('Codex rehearsal or final target verification failed.');
     expect((ctx.desktop as unknown as { sessions: Map<string, unknown> }).sessions.size).toBe(0);
   });
 
-  it('redacts local paths from public failure diagnostics', async () => {
+  it('publishes only allow-listed failure diagnostics without paths, tokens, or IDs', async () => {
     const ctx = await fixture();
-    vi.mocked(ctx.codex.rehearse).mockRejectedValue(new Error(`failed in ${ctx.project.path}`));
+    const secret = `failed in ${ctx.project.path} token=secret recording-exact thread-1 /etc/passwd`;
+    vi.mocked(ctx.codex.rehearse).mockRejectedValue(new Error(secret));
     const created = await ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update);
     const failed = await waitForSession(ctx.project.path, created.id, ['failed']);
-    expect(failed.message).not.toContain(ctx.project.path);
-    expect(failed.message).toContain('[local path]');
+    expect(failed.message).toBe('Codex rehearsal or final target verification failed.');
+    for (const sensitive of [ctx.project.path, 'secret', 'recording-exact', 'thread-1', '/etc/passwd']) {
+      expect(JSON.stringify(failed)).not.toContain(sensitive);
+    }
   });
 
   it('rejects a non-unique target and duplicate scene work', async () => {
@@ -283,8 +306,8 @@ describe('agent recording coordinator', () => {
       targets: [target, { ...target, id: '43', name: 'Other settings' }],
     });
     const duplicate = await other.coordinator.rehearse(other.project.id, 'scene-01', update);
-    expect((await waitForSession(other.project.path, duplicate.id, ['failed'])).message).toContain(
-      'unique',
+    expect((await waitForSession(other.project.path, duplicate.id, ['failed'])).message).toBe(
+      'Cap or the reviewed target was not ready for rehearsal.',
     );
   });
 
@@ -319,7 +342,40 @@ describe('agent recording coordinator', () => {
       planFingerprint: ready.planFingerprint!,
     });
     const failed = await waitForSession(ctx.project.path, ready.id, ['failed']);
-    expect(failed.message).toContain('changed after rehearsal');
+    expect(failed.message).toBe('Confirmed recording could not start safely.');
+    expect(ctx.cap.startRecording).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['restarted process', { processId: 8 }],
+    ['reused window ID', { windowTitle: 'Different Settings' }],
+    ['resized window', { bounds: { x: 10, y: 20, width: 801, height: 600 } }],
+    ['substituted application', { bundleId: 'com.example.impostor' }],
+  ] as const)('refuses confirmation when the rehearsed desktop target has a %s', async (_label, drift) => {
+    const ctx = await fixture();
+    const ready = await rehearseReady(ctx);
+    vi.mocked(ctx.platform.resolveWindowOwnerTarget!).mockResolvedValueOnce({ ...ctx.resolved, ...drift });
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
+      confirmed: true,
+      planFingerprint: ready.planFingerprint!,
+    });
+    const failed = await waitForSession(ctx.project.path, ready.id, ['failed']);
+    expect(failed.message).toBe('Confirmed recording could not start safely.');
+    expect(ctx.cap.startRecording).not.toHaveBeenCalled();
+    expect(ctx.platform.resolveTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses confirmation when Cap reports changed target dimensions', async () => {
+    const ctx = await fixture();
+    const ready = await rehearseReady(ctx);
+    vi.mocked(ctx.cap.targets).mockResolvedValueOnce([{ ...target, width: 801 }]);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
+      confirmed: true,
+      planFingerprint: ready.planFingerprint!,
+    });
+    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toBe(
+      'Confirmed recording could not start safely.',
+    );
     expect(ctx.cap.startRecording).not.toHaveBeenCalled();
   });
 
@@ -364,8 +420,8 @@ describe('agent recording coordinator', () => {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
     });
-    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toContain(
-      'Codex failed',
+    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toBe(
+      'Codex could not complete the recorded scene.',
     );
     expect(ctx.cap.stopRecording).toHaveBeenCalledTimes(1);
     expect(ctx.cap.stopRecording).toHaveBeenCalledWith('recording-exact');
@@ -385,8 +441,8 @@ describe('agent recording coordinator', () => {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
     });
-    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toContain(
-      'metadata missing',
+    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toBe(
+      'Cap could not finalize the exact recording.',
     );
     expect(ctx.cap.stopRecording).toHaveBeenCalledTimes(1);
     expect(ctx.cap.validateProject).not.toHaveBeenCalled();
@@ -406,32 +462,28 @@ describe('agent recording coordinator', () => {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
     });
-    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toContain(
-      'unexpected project',
+    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toBe(
+      'Cap could not finalize the exact recording.',
     );
     expect(ctx.cap.validateProject).not.toHaveBeenCalled();
     expect(ctx.cap.stopRecording).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    [
-      'validation',
-      {
-        validateProject: vi.fn(async () => {
-          throw new Error('invalid project');
-        }),
-      },
-    ],
-    [
-      'export',
-      {
-        exportProject: vi.fn(async () => {
-          throw new Error('export failed');
-        }),
-      },
-    ],
-  ] as const)('preserves the verified Cap project when %s fails', async (_label, capOverride) => {
-    const ctx = await fixture({ cap: capOverride });
+  it('does not offer retry when Cap project validation fails', async () => {
+    const ctx = await fixture({ cap: { validateProject: vi.fn(async () => { throw new Error('invalid project'); }) } });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
+      confirmed: true,
+      planFingerprint: ready.planFingerprint!,
+    });
+    const failed = await waitForSession(ctx.project.path, ready.id, ['failed']);
+    expect(failed.retryAvailable).toBeUndefined();
+    expect(failed.projectValidated).toBeUndefined();
+    expect(failed.message).toBe('Cap project validation failed.');
+  });
+
+  it('offers export retry only after the Cap project was durably validated', async () => {
+    const ctx = await fixture({ cap: { exportProject: vi.fn(async () => { throw new Error('export failed'); }) } });
     const ready = await rehearseReady(ctx);
     await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
       confirmed: true,
@@ -439,6 +491,7 @@ describe('agent recording coordinator', () => {
     });
     const recoverable = await waitForSession(ctx.project.path, ready.id, ['exporting']);
     expect(recoverable.retryAvailable).toBe('export');
+    expect(recoverable.projectValidated).toBe(true);
     expect(recoverable.capProjectPath).toContain('take.cap');
   });
 
@@ -486,6 +539,112 @@ describe('agent recording coordinator', () => {
     expect(ctx.cap.stopRecording).toHaveBeenCalledWith('recording-exact');
   });
 
+  it('persists start identity before honoring cancellation and restart cleanup never double-stops', async () => {
+    const started = deferred<{ recordingId: string; projectPath: string }>();
+    const ctx = await fixture({ cap: { startRecording: vi.fn(() => started.promise) } });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
+      confirmed: true,
+      planFingerprint: ready.planFingerprint!,
+    });
+    await vi.waitFor(() => expect(ctx.cap.startRecording).toHaveBeenCalledTimes(1));
+    const cancel = ctx.coordinator.cancel(ctx.project.id, 'scene-01', ready.id);
+    started.resolve({ recordingId: 'race-exact', projectPath: join(ctx.project.path, 'race.cap') });
+    expect((await cancel).state).toBe('interrupted');
+    expect(await readStoredAgentRecordingSession(ctx.project.path, ready.id)).toMatchObject({
+      state: 'interrupted', recordingId: 'race-exact', capProjectPath: join(ctx.project.path, 'race.cap'),
+      capturedAt: expect.any(String), recordingStopped: true,
+    });
+    expect(ctx.cap.stopRecording).toHaveBeenCalledTimes(1);
+    expect(ctx.cap.stopRecording).toHaveBeenCalledWith('race-exact');
+    await ctx.coordinator.reconcile();
+    expect(ctx.cap.stopRecording).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels during export probing before ingestion can mutate the storyboard', async () => {
+    const probe = deferred<{ duration_sec: number; width: number; height: number; codec: string; fps: number; size_bytes: number }>();
+    const ingest = vi.fn(ingestRecording);
+    const probeVideo = vi.fn(() => probe.promise);
+    const ctx = await fixture({ probeVideo, ingest });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, { confirmed: true, planFingerprint: ready.planFingerprint! });
+    await waitForSession(ctx.project.path, ready.id, ['attaching']);
+    await vi.waitFor(() => expect(probeVideo).toHaveBeenCalledTimes(1));
+    const cancel = ctx.coordinator.cancel(ctx.project.id, 'scene-01', ready.id);
+    probe.resolve({ duration_sec: 47.2, width: 1920, height: 1080, codec: 'h264', fps: 30, size_bytes: 3 });
+    expect((await cancel).state).toBe('interrupted');
+    expect(ingest).not.toHaveBeenCalled();
+    expect((await loadStoryboard(ctx.project.path))?.scenes[0]?.recording).toBeUndefined();
+  });
+
+  it('lets a non-abortable ingestion commit finish truthfully when cancellation races it', async () => {
+    const gate = deferred<void>();
+    const ingest = vi.fn(async (...args: Parameters<typeof ingestRecording>) => {
+      await gate.promise;
+      return ingestRecording(...args);
+    });
+    const ctx = await fixture({ ingest });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, { confirmed: true, planFingerprint: ready.planFingerprint! });
+    await vi.waitFor(() => expect(ingest).toHaveBeenCalledTimes(1));
+    let settled = false;
+    const cancel = ctx.coordinator.cancel(ctx.project.id, 'scene-01', ready.id).finally(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    gate.resolve();
+    expect((await cancel).state).toBe('completed');
+    expect((await loadStoryboard(ctx.project.path))?.scenes[0]?.recording).toMatchObject({ capture_session_id: ready.id });
+  });
+
+  it('recovers only the coordinator-verified export and rejects mismatched uploads', async () => {
+    let failAttachment = true;
+    const ingest: typeof ingestRecording = vi.fn(async (...args: Parameters<typeof ingestRecording>) => {
+      if (failAttachment) throw new Error('first attachment failed');
+      return ingestRecording(...args);
+    });
+    const ctx = await fixture({ ingest });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, { confirmed: true, planFingerprint: ready.planFingerprint! });
+    await waitForSession(ctx.project.path, ready.id, ['attaching']);
+    await vi.waitFor(async () => expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).retryAvailable).toBe('attachment'));
+    const stored = await readStoredAgentRecordingSession(ctx.project.path, ready.id);
+    await updateAgentRecordingSessionInternal(ctx.project.path, ctx.project.id, 'scene-01', ready.id, { retryAvailable: undefined });
+    await expect(ctx.coordinator.recoverAttachment(ctx.project.id, 'scene-01', ready.id, {
+      capturedAt: stored.capturedAt!, uploadedPath: stored.exportPath!,
+    })).rejects.toThrow('no coordinator-verified attachment recovery');
+    await updateAgentRecordingSessionInternal(ctx.project.path, ctx.project.id, 'scene-01', ready.id, { retryAvailable: 'attachment' });
+    const badUpload = join(ctx.project.path, 'bad-upload.mp4');
+    await writeFile(badUpload, 'different');
+    await expect(ctx.coordinator.recoverAttachment(ctx.project.id, 'scene-01', ready.id, {
+      capturedAt: stored.capturedAt!, uploadedPath: badUpload,
+    })).rejects.toThrow('recovery attachment failed');
+    expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).state).toBe('attaching');
+
+    failAttachment = false;
+    const result = await ctx.coordinator.recoverAttachment(ctx.project.id, 'scene-01', ready.id, {
+      capturedAt: stored.capturedAt!, uploadedPath: stored.exportPath!,
+    });
+    expect(result.relativePath).toBe('recordings/scene-01.mp4');
+    expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).state).toBe('completed');
+  });
+
+  it('rejects attachment recovery while the scene coordinator is active', async () => {
+    const gate = deferred<void>();
+    const ingest = vi.fn(async (...args: Parameters<typeof ingestRecording>) => {
+      await gate.promise;
+      return ingestRecording(...args);
+    });
+    const ctx = await fixture({ ingest });
+    const ready = await rehearseReady(ctx);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, { confirmed: true, planFingerprint: ready.planFingerprint! });
+    await vi.waitFor(() => expect(ingest).toHaveBeenCalledTimes(1));
+    await expect(ctx.coordinator.recoverAttachment(ctx.project.id, 'scene-01', ready.id, {
+      capturedAt: new Date().toISOString(), uploadedPath: join(ctx.project.path, 'anything.mp4'),
+    })).rejects.toThrow('already active');
+    gate.resolve();
+    await waitForSession(ctx.project.path, ready.id, ['completed']);
+  });
+
   it('reconciles active capture by exact-ID stop but leaves export and attachment recoverable', async () => {
     const ctx = await fixture();
     const recording = await createAgentRecordingSession(
@@ -499,8 +658,9 @@ describe('agent recording coordinator', () => {
       'scene-01',
       recording.id,
       'awaiting_confirmation',
-      { planFingerprint: 'p', rehearsal },
+      { planFingerprint: 'p', rehearsal, rehearsedTargetIdentity },
     );
+    await persistAgentRecordingIdentity(ctx.project.path, ctx.project.id, 'scene-01', recording.id, { recordingId: 'restart-id', projectPath: '/verified/restart.cap' }, '2026-07-31T12:00:00.000Z');
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
@@ -510,7 +670,6 @@ describe('agent recording coordinator', () => {
       {
         confirmedCapture: true,
         planFingerprint: 'p',
-        recordingId: 'restart-id',
         stopAttempted: true,
       },
     );
@@ -531,24 +690,27 @@ describe('agent recording coordinator', () => {
       'scene-02',
       exporting.id,
       'awaiting_confirmation',
-      { planFingerprint: 'p', rehearsal },
+      { planFingerprint: 'p', rehearsal, rehearsedTargetIdentity },
     );
+    await persistAgentRecordingIdentity(ctx.project.path, ctx.project.id, 'scene-02', exporting.id, { recordingId: 'already-stopped', projectPath: '/verified/take.cap' }, '2026-07-31T12:00:00.000Z');
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
       'scene-02',
       exporting.id,
       'recording',
-      { confirmedCapture: true, planFingerprint: 'p', recordingId: 'already-stopped' },
+      { confirmedCapture: true, planFingerprint: 'p' },
     );
+    await persistAgentRecordingStopped(ctx.project.path, ctx.project.id, 'scene-02', exporting.id, 'already-stopped', '/verified/take.cap');
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
       'scene-02',
       exporting.id,
       'exporting',
-      { capProjectPath: '/verified/take.cap', stopAttempted: true },
+      { stopAttempted: true },
     );
+    await updateAgentRecordingSessionInternal(ctx.project.path, ctx.project.id, 'scene-02', exporting.id, { projectValidated: true });
 
     const attaching = await createAgentRecordingSession(
       ctx.project.path,
@@ -561,31 +723,34 @@ describe('agent recording coordinator', () => {
       'scene-03',
       attaching.id,
       'awaiting_confirmation',
-      { planFingerprint: 'p', rehearsal },
+      { planFingerprint: 'p', rehearsal, rehearsedTargetIdentity },
     );
+    await persistAgentRecordingIdentity(ctx.project.path, ctx.project.id, 'scene-03', attaching.id, { recordingId: 'already-stopped-2', projectPath: '/verified/other.cap' }, '2026-07-31T12:00:00.000Z');
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
       'scene-03',
       attaching.id,
       'recording',
-      { confirmedCapture: true, planFingerprint: 'p', recordingId: 'already-stopped-2' },
+      { confirmedCapture: true, planFingerprint: 'p' },
     );
+    await persistAgentRecordingStopped(ctx.project.path, ctx.project.id, 'scene-03', attaching.id, 'already-stopped-2', '/verified/other.cap');
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
       'scene-03',
       attaching.id,
       'exporting',
-      { capProjectPath: '/verified/other.cap', stopAttempted: true },
+      { stopAttempted: true },
     );
+    await updateAgentRecordingSessionInternal(ctx.project.path, ctx.project.id, 'scene-03', attaching.id, { projectValidated: true });
     await transitionAgentRecordingSession(
       ctx.project.path,
       ctx.project.id,
       'scene-03',
       attaching.id,
       'attaching',
-      { exportPath: '/verified/take.mp4' },
+      { exportPath: '/verified/take.mp4', exportVerified: { sizeBytes: 3, sha256: 'a'.repeat(64) } },
     );
     await ctx.coordinator.reconcile();
     expect(await readStoredAgentRecordingSession(ctx.project.path, exporting.id)).toMatchObject({

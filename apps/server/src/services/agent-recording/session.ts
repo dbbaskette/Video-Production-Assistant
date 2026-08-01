@@ -16,6 +16,13 @@ interface StoredSession extends AgentRecordingSession {
   stopAttempted?: boolean;
   recordingStopped?: boolean;
   retryAvailable?: 'export' | 'attachment';
+  rehearsedTargetIdentity?: {
+    cap: { kind: 'window'; id: string; name: string; application: string; width?: number; height?: number };
+    desktop: { bundleId: string; displayName: string; processId: number; windowId: number; windowTitle: string; bounds: { x: number; y: number; width: number; height: number } };
+  };
+  projectValidated?: boolean;
+  exportVerified?: { sizeBytes: number; sha256: string };
+  ingestVerified?: boolean;
   events?: Array<{ at: string; phase: string; message: string }>;
 }
 
@@ -36,6 +43,10 @@ interface SessionTransitionDetails {
   stopAttempted?: boolean;
   recordingStopped?: boolean;
   retryAvailable?: 'export' | 'attachment';
+  rehearsedTargetIdentity?: StoredSession['rehearsedTargetIdentity'];
+  projectValidated?: boolean;
+  exportVerified?: StoredSession['exportVerified'];
+  ingestVerified?: boolean;
 }
 
 const terminal = new Set<AgentRecordingSessionState>(['completed', 'failed', 'interrupted']);
@@ -117,10 +128,22 @@ export async function transitionAgentRecordingSession(
   const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
   if (!(transitions[current.state] as readonly AgentRecordingSessionState[]).includes(state)) throw new Error(`Cannot move recording session from ${current.state} to ${state}.`);
   if (state === 'awaiting_confirmation') {
-    if (!details.planFingerprint?.trim() || details.rehearsal?.success !== true) throw new Error('Confirmation requires a successful rehearsal and plan fingerprint.');
+    if (!details.planFingerprint?.trim() || details.rehearsal?.success !== true || !details.rehearsedTargetIdentity) throw new Error('Confirmation requires a successful rehearsal, exact target identity, and plan fingerprint.');
   }
   if (state === 'recording') {
     if (!current.planFingerprint || current.rehearsal?.success !== true || !details.confirmedCapture || details.planFingerprint !== current.planFingerprint) throw new Error('Recording requires confirmation for the current successful rehearsal and plan fingerprint.');
+    if (!current.recordingId?.trim() || !current.capProjectPath?.trim() || !current.capturedAt) throw new Error('Recording requires a persisted exact Cap identity, project path, and capture time.');
+  }
+  if (state === 'exporting' && (!current.recordingStopped || !current.capProjectPath?.trim())) {
+    throw new Error('Exporting requires confirmed stop metadata and a Cap project path.');
+  }
+  if (state === 'attaching') {
+    if (!current.projectValidated || !details.exportPath?.trim() || !details.exportVerified || details.exportVerified.sizeBytes <= 0 || !/^[0-9a-f]{64}$/.test(details.exportVerified.sha256)) {
+      throw new Error('Attaching requires a validated Cap project and verified nonempty export.');
+    }
+  }
+  if (state === 'completed' && !current.ingestVerified) {
+    throw new Error('Completion requires authoritative public ingestion verification.');
   }
   const now = new Date().toISOString();
   const next: StoredSession = {
@@ -156,7 +179,7 @@ export async function persistAgentRecordingIdentity(
   projectPath: string, projectId: string, sceneId: string, sessionId: string,
   started: { recordingId: string; projectPath: string }, capturedAt: string,
 ): Promise<AgentRecordingSession> {
-  if (!started.recordingId.trim() || !started.projectPath.trim()) throw new Error('Cap recording identity is incomplete.');
+  if (!started.recordingId.trim() || !started.projectPath.trim() || !Number.isFinite(Date.parse(capturedAt))) throw new Error('Cap recording identity is incomplete.');
   const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
   if (current.state !== 'awaiting_confirmation') throw new Error('Cap recording identity can only be persisted before entering recording.');
   return updateAgentRecordingSessionInternal(projectPath, projectId, sceneId, sessionId, {
