@@ -18,6 +18,8 @@ const target: ResolvedDesktopDriverTarget = {
   windowTitle: 'Settings',
   bounds: { x: 10, y: 20, width: 1200, height: 800 },
 };
+const agentRecordingSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const otherAgentRecordingSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 function element(overrides: Partial<DesktopDriverPlatformElement> = {}): DesktopDriverPlatformElement {
   return {
@@ -37,7 +39,9 @@ function fixture() {
   let currentTarget = structuredClone(target);
   const platform: DesktopDriverPlatform = {
     resolveTarget: vi.fn(async () => structuredClone(currentTarget)),
-    inspect: vi.fn(async () => ({ target: structuredClone(currentTarget), elements: structuredClone(currentElements) })),
+    inspect: vi.fn(async () => ({
+      target: structuredClone(currentTarget), windowFocused: true, elements: structuredClone(currentElements),
+    })),
     screenshot: vi.fn(async () => undefined),
     act: vi.fn(async () => undefined),
   };
@@ -52,6 +56,7 @@ function fixture() {
     remove,
   });
   const input: DesktopDriverSessionCreateInput = {
+    agentRecordingSessionId,
     projectId: 'project-1',
     sceneId: 'scene-01',
     planFingerprint: 'fingerprint-1',
@@ -87,8 +92,20 @@ describe('DesktopDriverSessionManager', () => {
     expect(stored).not.toHaveProperty('token');
     expect(stored.tokenHash).toBeInstanceOf(Buffer);
     expect(stored).toMatchObject({
-      projectId: 'project-1', sceneId: 'scene-01', planFingerprint: 'fingerprint-1', phase: 'rehearsal',
+      agentRecordingSessionId, projectId: 'project-1',
+      sceneId: 'scene-01', planFingerprint: 'fingerprint-1', phase: 'rehearsal',
     });
+  });
+
+  it('requires a recording-session binding and rejects lifecycle authority from another recording', async () => {
+    const missing = fixture();
+    missing.input.agentRecordingSessionId = undefined as never;
+    await expect(missing.manager.create(missing.input)).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+
+    const { value, capability: created } = await capability();
+    await expect(value.manager.revoke(otherAgentRecordingSessionId, created.sessionId))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(value.manager.inspect(created.sessionId, created.token)).resolves.toMatchObject({ generation: 1 });
   });
 
   it.each([
@@ -198,6 +215,10 @@ describe('DesktopDriverSessionManager', () => {
     const { value, capability: created } = await capability();
     await expect(value.manager.act(created.sessionId, created.token, { kind: 'type-text', value: 'x'.repeat(2_001) }))
       .rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    for (const unsafe of ['line\nbreak', 'tab\ttext', `escape${String.fromCharCode(27)}`]) {
+      await expect(value.manager.act(created.sessionId, created.token, { kind: 'type-text', value: unsafe }))
+        .rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    }
     await expect(value.manager.act(created.sessionId, created.token, { kind: 'press-key', key: 'Delete' } as never))
       .rejects.toMatchObject({ code: 'INVALID_REQUEST' });
     await expect(value.manager.act(created.sessionId, created.token, { kind: 'click', elementIndex: -1 }))
@@ -208,6 +229,104 @@ describe('DesktopDriverSessionManager', () => {
     await expect(value.manager.act(created.sessionId, created.token, { kind: 'set-value', elementIndex: 0, value: 'nope' }))
       .rejects.toMatchObject({ code: 'OPERATION_NOT_ALLOWED' });
     expect(value.platform.act).not.toHaveBeenCalled();
+  });
+
+  it('binds typing and activating keys to a fresh focused control in the approved window', async () => {
+    const noSnapshot = await capability();
+    await expect(noSnapshot.value.manager.act(noSnapshot.capability.sessionId, noSnapshot.capability.token, {
+      kind: 'type-text', value: 'fixture text',
+    })).rejects.toMatchObject({ code: 'STALE_SNAPSHOT' });
+
+    const unfocused = await capability();
+    unfocused.value.setElements([element({ role: 'AXTextField', focused: true })]);
+    (unfocused.value.platform.inspect as ReturnType<typeof vi.fn>).mockResolvedValue({
+      target, windowFocused: false, elements: [element({ role: 'AXTextField', focused: true })],
+    });
+    await unfocused.value.manager.inspect(unfocused.capability.sessionId, unfocused.capability.token);
+    await expect(unfocused.value.manager.act(unfocused.capability.sessionId, unfocused.capability.token, {
+      kind: 'type-text', value: 'fixture text',
+    })).rejects.toMatchObject({ code: 'STALE_SNAPSHOT' });
+
+    const drifted = await capability();
+    drifted.value.setElements([element({ role: 'AXTextField', title: 'Notes', focused: true })]);
+    await drifted.value.manager.inspect(drifted.capability.sessionId, drifted.capability.token);
+    drifted.value.setElements([element({ role: 'AXTextField', title: 'Other dialog', focused: true })]);
+    await expect(drifted.value.manager.act(drifted.capability.sessionId, drifted.capability.token, {
+      kind: 'type-text', value: 'fixture text',
+    })).rejects.toMatchObject({ code: 'STALE_SNAPSHOT' });
+    expect(drifted.value.platform.act).not.toHaveBeenCalled();
+
+    const sensitive = await capability();
+    sensitive.value.setElements([element({ title: 'Publish now', focused: true })]);
+    await sensitive.value.manager.inspect(sensitive.capability.sessionId, sensitive.capability.token);
+    for (const key of ['Return', 'space'] as const) {
+      await expect(sensitive.value.manager.act(sensitive.capability.sessionId, sensitive.capability.token, {
+        kind: 'press-key', key,
+      })).rejects.toMatchObject({ code: 'OPERATION_NOT_ALLOWED' });
+    }
+  });
+
+  it('rejects cross-window and dialog focus changes before dispatching text', async () => {
+    const otherWindow = await capability();
+    otherWindow.value.setElements([element({ role: 'AXTextField', title: 'Notes', focused: true })]);
+    await otherWindow.value.manager.inspect(otherWindow.capability.sessionId, otherWindow.capability.token);
+    otherWindow.value.setTarget({ ...target, windowId: 78, windowTitle: 'Unexpected dialog' });
+    await expect(otherWindow.value.manager.act(otherWindow.capability.sessionId, otherWindow.capability.token, {
+      kind: 'type-text', value: 'fixture text',
+    })).rejects.toMatchObject({ code: 'TARGET_CHANGED' });
+    expect(otherWindow.value.platform.act).not.toHaveBeenCalled();
+
+    const dialogFocus = await capability();
+    const focusedField = element({ role: 'AXTextField', title: 'Notes', focused: true });
+    dialogFocus.value.setElements([focusedField]);
+    await dialogFocus.value.manager.inspect(dialogFocus.capability.sessionId, dialogFocus.capability.token);
+    (dialogFocus.value.platform.inspect as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      target, windowFocused: false, elements: [focusedField],
+    });
+    await expect(dialogFocus.value.manager.act(dialogFocus.capability.sessionId, dialogFocus.capability.token, {
+      kind: 'type-text', value: 'fixture text',
+    })).rejects.toMatchObject({ code: 'STALE_SNAPSHOT' });
+    expect(dialogFocus.value.platform.act).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent actions so one inspection generation is consumed once', async () => {
+    const { value, capability: created } = await capability();
+    value.setElements([element({ focused: true })]);
+    await value.manager.inspect(created.sessionId, created.token);
+    let releaseInspection!: () => void;
+    const inspectionGate = new Promise<void>((resolve) => { releaseInspection = resolve; });
+    (value.platform.inspect as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      await inspectionGate;
+      return { target, windowFocused: true, elements: [element({ focused: true })] };
+    });
+
+    const first = value.manager.act(created.sessionId, created.token, { kind: 'click', elementIndex: 0 });
+    const second = value.manager.act(created.sessionId, created.token, { kind: 'click', elementIndex: 0 });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    releaseInspection();
+
+    await expect(first).resolves.toEqual({ ok: true, snapshotInvalidated: true });
+    await expect(second).rejects.toMatchObject({ code: 'STALE_SNAPSHOT' });
+    expect(value.platform.act).toHaveBeenCalledTimes(1);
+  });
+
+  it('orders an inspect behind an in-flight action and publishes only the next generation', async () => {
+    const { value, capability: created } = await capability();
+    await value.manager.inspect(created.sessionId, created.token);
+    let releaseInspection!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseInspection = resolve; });
+    (value.platform.inspect as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () => {
+        await gate;
+        return { target, windowFocused: true, elements: [element()] };
+      })
+      .mockResolvedValueOnce({ target, windowFocused: true, elements: [element({ title: 'After action' })] });
+    const action = value.manager.act(created.sessionId, created.token, { kind: 'click', elementIndex: 0 });
+    const nextInspect = value.manager.inspect(created.sessionId, created.token);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    releaseInspection();
+    await expect(action).resolves.toEqual({ ok: true, snapshotInvalidated: true });
+    await expect(nextInspect).resolves.toMatchObject({ generation: 2, elements: [{ index: 500, title: 'After action' }] });
   });
 
   it('allows fixture text only on editable controls and rejects sensitive or destructive controls', async () => {
@@ -233,11 +352,46 @@ describe('DesktopDriverSessionManager', () => {
     const { value, capability: created } = await capability();
     const result = await value.manager.screenshot(created.sessionId, created.token);
     expect(result.path).toBe('/tmp/vpa-driver-session-safe/window-shot-id.png');
-    expect(value.platform.screenshot).toHaveBeenCalledWith(target, result.path);
+    expect(value.platform.screenshot).toHaveBeenCalledWith(target, result.path, expect.any(AbortSignal));
 
-    await value.manager.revoke(created.sessionId);
+    await value.manager.revoke(agentRecordingSessionId, created.sessionId);
     expect(value.remove).toHaveBeenCalledWith('/tmp/vpa-driver-session-safe');
     await expect(value.manager.inspect(created.sessionId, created.token)).rejects.toBeInstanceOf(DesktopDriverError);
-    await expect(value.manager.revoke(created.sessionId)).resolves.toBeUndefined();
+    await expect(value.manager.revoke(agentRecordingSessionId, created.sessionId)).resolves.toBeUndefined();
+  });
+
+  it('fences and aborts in-flight work before cleanup', async () => {
+    const { value, capability: created } = await capability();
+    const lifecycle: string[] = [];
+    value.remove.mockImplementationOnce(async () => { lifecycle.push('cleanup'); });
+    let operationStarted!: () => void;
+    const started = new Promise<void>((resolve) => { operationStarted = resolve; });
+    (value.platform.screenshot as ReturnType<typeof vi.fn>).mockImplementationOnce(async (_target, _path, signal) => {
+      operationStarted();
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          lifecycle.push('operation-aborted');
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        }, { once: true });
+      });
+    });
+    const screenshot = value.manager.screenshot(created.sessionId, created.token);
+    await started;
+    const revoke = value.manager.revoke(agentRecordingSessionId, created.sessionId);
+    await expect(screenshot).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(revoke).resolves.toBeUndefined();
+    expect(lifecycle).toEqual(['operation-aborted', 'cleanup']);
+    await expect(value.manager.inspect(created.sessionId, created.token)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('retains a revoked cleanup tombstone and retries screenshot deletion', async () => {
+    const value = fixture();
+    value.remove.mockRejectedValueOnce(new Error('temporary cleanup failure'));
+    const created = await value.manager.create(value.input);
+    await value.manager.screenshot(created.sessionId, created.token);
+    await expect(value.manager.revoke(agentRecordingSessionId, created.sessionId)).rejects.toThrow('temporary cleanup failure');
+    await expect(value.manager.inspect(created.sessionId, created.token)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(value.manager.revoke(agentRecordingSessionId, created.sessionId)).resolves.toBeUndefined();
+    expect(value.remove).toHaveBeenCalledTimes(2);
   });
 });

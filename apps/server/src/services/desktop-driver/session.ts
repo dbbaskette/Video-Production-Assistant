@@ -91,6 +91,7 @@ interface SnapshotState {
 interface StoredDesktopDriverSession {
   id: string;
   tokenHash: Buffer;
+  agentRecordingSessionId: string;
   projectId: string;
   sceneId: string;
   planFingerprint: string;
@@ -103,6 +104,9 @@ interface StoredDesktopDriverSession {
   screenshots: Set<string>;
   generation: number;
   snapshot?: SnapshotState;
+  queueTail: Promise<void>;
+  abortController: AbortController;
+  cleanupPromise?: Promise<void>;
 }
 
 export interface DesktopDriverSessionManagerOptions {
@@ -126,13 +130,17 @@ function isExcludedTarget(bundleId: string, displayName: string): boolean {
     || EXCLUDED_NAME_PATTERNS.some((pattern) => pattern.test(normalizedName));
 }
 
-function assertNonEmpty(value: string, label: string, maxLength = 1_000): void {
-  if (!value.trim() || value.length > maxLength || value.includes('\0')) {
+function assertNonEmpty(value: unknown, label: string, maxLength = 1_000): asserts value is string {
+  if (typeof value !== 'string' || !value.trim() || value.length > maxLength || value.includes('\0')) {
     throw new DesktopDriverError('INVALID_REQUEST', `${label} is invalid`);
   }
 }
 
 function assertTargetInput(input: DesktopDriverSessionCreateInput): void {
+  assertNonEmpty(input.agentRecordingSessionId, 'Agent recording session ID');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.agentRecordingSessionId)) {
+    throw new DesktopDriverError('INVALID_REQUEST', 'Agent recording session ID is invalid');
+  }
   assertNonEmpty(input.projectId, 'Project ID');
   assertNonEmpty(input.sceneId, 'Scene ID');
   assertNonEmpty(input.planFingerprint, 'Plan fingerprint');
@@ -203,11 +211,13 @@ function snapshotFingerprint(snapshot: DesktopDriverPlatformSnapshot): string {
     enabled: element.enabled,
     actions: element.actions,
     secure: element.secure === true,
+    focused: element.focused === true,
   }));
   return createHash('sha256').update(JSON.stringify({
     target: {
       identity: targetIdentity(snapshot.target),
       bounds: snapshot.target.bounds,
+      windowFocused: snapshot.windowFocused,
     },
     elements,
   })).digest('hex');
@@ -273,6 +283,7 @@ export class DesktopDriverSessionManager {
     const session: StoredDesktopDriverSession = {
       id,
       tokenHash: hashToken(token),
+      agentRecordingSessionId: input.agentRecordingSessionId,
       projectId: input.projectId,
       sceneId: input.sceneId,
       planFingerprint: input.planFingerprint,
@@ -284,6 +295,8 @@ export class DesktopDriverSessionManager {
       tempDirectory,
       screenshots: new Set(),
       generation: 0,
+      queueTail: Promise.resolve(),
+      abortController: new AbortController(),
     };
     this.sessions.set(id, session);
     return {
@@ -296,105 +309,184 @@ export class DesktopDriverSessionManager {
   }
 
   async inspect(sessionId: string, token: string): Promise<DesktopDriverSnapshot> {
-    const session = this.authorize(sessionId, token, 'inspect');
-    session.snapshot = undefined;
-    const platformSnapshot = await this.options.platform.inspect(session.target);
-    assertSameTarget(session.target, platformSnapshot.target);
-    const bounded = platformSnapshot.elements.slice(0, DESKTOP_DRIVER_MAX_ELEMENTS);
-    bounded.forEach(validateElementReference);
-    session.generation += 1;
-    const indexBase = (session.generation - 1) * DESKTOP_DRIVER_MAX_ELEMENTS;
-    if (!Number.isSafeInteger(indexBase + bounded.length)) {
-      throw new DesktopDriverError('STALE_SNAPSHOT', 'Accessibility snapshot generation limit reached');
-    }
-    const elementsByIndex = new Map<number, DesktopDriverPlatformElement>();
-    const elements = bounded.map((element, offset) => {
-      const index = indexBase + offset;
-      elementsByIndex.set(index, element);
-      return sanitizeElement(element, index);
+    return this.withSerializedOperation(sessionId, token, 'inspect', async (session, signal) => {
+      session.snapshot = undefined;
+      const platformSnapshot = await this.options.platform.inspect(session.target, signal);
+      this.assertActive(session);
+      assertSameTarget(session.target, platformSnapshot.target);
+      const bounded = platformSnapshot.elements.slice(0, DESKTOP_DRIVER_MAX_ELEMENTS);
+      bounded.forEach(validateElementReference);
+      if (bounded.filter((element) => element.focused).length > 1) {
+        throw new DesktopDriverError('TARGET_CHANGED', 'Accessibility snapshot reported multiple focused elements');
+      }
+      session.generation += 1;
+      const indexBase = (session.generation - 1) * DESKTOP_DRIVER_MAX_ELEMENTS;
+      if (!Number.isSafeInteger(indexBase + bounded.length)) {
+        throw new DesktopDriverError('STALE_SNAPSHOT', 'Accessibility snapshot generation limit reached');
+      }
+      const elementsByIndex = new Map<number, DesktopDriverPlatformElement>();
+      let focusedElementIndex: number | undefined;
+      const elements = bounded.map((element, offset) => {
+        const index = indexBase + offset;
+        elementsByIndex.set(index, element);
+        if (element.focused) focusedElementIndex = index;
+        return sanitizeElement(element, index);
+      });
+      session.snapshot = {
+        generation: session.generation,
+        platform: platformSnapshot,
+        elementsByIndex,
+        fingerprint: snapshotFingerprint(platformSnapshot),
+      };
+      return {
+        generation: session.generation,
+        target: {
+          bundleId: session.target.bundleId,
+          displayName: session.target.displayName,
+          windowId: session.target.windowId,
+          windowTitle: session.target.windowTitle,
+        },
+        windowBounds: { ...platformSnapshot.target.bounds },
+        windowFocused: platformSnapshot.windowFocused,
+        ...(focusedElementIndex === undefined ? {} : { focusedElementIndex }),
+        elements,
+      };
     });
-    session.snapshot = {
-      generation: session.generation,
-      platform: platformSnapshot,
-      elementsByIndex,
-      fingerprint: snapshotFingerprint(platformSnapshot),
-    };
-    return {
-      generation: session.generation,
-      target: {
-        bundleId: session.target.bundleId,
-        displayName: session.target.displayName,
-        windowId: session.target.windowId,
-        windowTitle: session.target.windowTitle,
-      },
-      windowBounds: { ...platformSnapshot.target.bounds },
-      elements,
-    };
   }
 
   async screenshot(sessionId: string, token: string): Promise<{ path: string }> {
-    const session = this.authorize(sessionId, token, 'screenshot');
-    const screenshotId = this.randomId();
-    if (!/^[a-zA-Z0-9-]{1,100}$/.test(screenshotId)) {
-      throw new Error('Desktop screenshot generator returned an invalid ID');
-    }
-    const outputPath = join(session.tempDirectory, `window-${screenshotId}.png`);
-    if (!isAbsolute(outputPath) || !outputPath.startsWith(`${session.tempDirectory}/`)) {
-      throw new Error('Desktop screenshot path escaped its session directory');
-    }
-    await this.options.platform.screenshot(session.target, outputPath);
-    session.screenshots.add(outputPath);
-    return { path: outputPath };
+    return this.withSerializedOperation(sessionId, token, 'screenshot', async (session, signal) => {
+      const screenshotId = this.randomId();
+      if (!/^[a-zA-Z0-9-]{1,100}$/.test(screenshotId)) {
+        throw new Error('Desktop screenshot generator returned an invalid ID');
+      }
+      const outputPath = join(session.tempDirectory, `window-${screenshotId}.png`);
+      if (!isAbsolute(outputPath) || !outputPath.startsWith(`${session.tempDirectory}/`)) {
+        throw new Error('Desktop screenshot path escaped its session directory');
+      }
+      await this.options.platform.screenshot(session.target, outputPath, signal);
+      this.assertActive(session);
+      session.screenshots.add(outputPath);
+      return { path: outputPath };
+    });
   }
 
   async act(sessionId: string, token: string, action: DesktopDriverAction): Promise<DesktopDriverActionResult> {
     this.validateAction(action);
-    const session = this.authorize(sessionId, token, action.kind);
-    let element: DesktopDriverPlatformElement | undefined;
-    if (action.kind === 'click' || action.kind === 'set-value') {
+    return this.withSerializedOperation(sessionId, token, action.kind, async (session, signal) => {
       const snapshot = session.snapshot;
-      element = snapshot?.elementsByIndex.get(action.elementIndex);
-      if (!snapshot || !element) {
-        throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect again before using that element index');
+      if (!snapshot) throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect again before acting');
+      if (!snapshot.platform.windowFocused) {
+        session.snapshot = undefined;
+        throw new DesktopDriverError('STALE_SNAPSHOT', 'The approved window is not focused; inspect again');
       }
-      if (!element.enabled) throw new DesktopDriverError('INVALID_REQUEST', 'Accessibility element is disabled');
-      if (SENSITIVE_CONTROL_PATTERN.test(`${element.role} ${element.title}`)) {
-        throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Sensitive or destructive controls cannot be operated');
+
+      let element: DesktopDriverPlatformElement | undefined;
+      if (action.kind === 'click' || action.kind === 'set-value') {
+        element = snapshot.elementsByIndex.get(action.elementIndex);
+        if (!element) throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect again before using that element index');
+        this.assertSafeElement(element);
+        if (action.kind === 'click'
+          && !element.actions.some((name) => /^(AXPress|press|click)$/i.test(name))) {
+          throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Accessibility element is not clickable');
+        }
+        if (action.kind === 'set-value') this.assertEditableElement(element);
+      } else {
+        element = [...snapshot.elementsByIndex.values()].find((candidate) => candidate.focused);
+        if (action.kind === 'type-text') {
+          if (!element) throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect a focused editable control before typing');
+          this.assertSafeElement(element);
+          this.assertEditableElement(element);
+        }
+        if (action.kind === 'press-key' && (action.key === 'Return' || action.key === 'space')) {
+          if (!element) throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect a focused control before activating it');
+          this.assertSafeElement(element);
+        }
       }
-      if (action.kind === 'click'
-        && !element.actions.some((name) => /^(AXPress|press|click)$/i.test(name))) {
-        throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Accessibility element is not clickable');
-      }
-      if (action.kind === 'set-value' && element.secure) {
-        throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Secure fields cannot be changed');
-      }
-      if (action.kind === 'set-value'
-        && !/^(AXTextField|AXTextArea|AXSearchField|AXComboBox)$/i.test(element.role)) {
-        throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Accessibility element is not an editable text control');
-      }
-      const current = await this.options.platform.inspect(session.target);
+
+      // Reserve the generation before any asynchronous verification so a
+      // concurrent action cannot reuse it and a concurrent inspect is ordered.
+      session.snapshot = undefined;
+      const current = await this.options.platform.inspect(session.target, signal);
+      this.assertActive(session);
       assertSameTarget(session.target, current.target);
       if (snapshot.fingerprint !== snapshotFingerprint(current)) {
-        session.snapshot = undefined;
         throw new DesktopDriverError('STALE_SNAPSHOT', 'The application changed; inspect again before acting');
       }
-    }
-
-    // Consume the snapshot before handing control to the platform. A retry or
-    // any second action therefore requires another inspect, even if the OS
-    // operation fails after partially changing application state.
-    session.snapshot = undefined;
-    await this.options.platform.act(session.target, action, element);
-    return { ok: true, snapshotInvalidated: true };
+      await this.options.platform.act(session.target, action, element, signal);
+      this.assertActive(session);
+      return { ok: true, snapshotInvalidated: true };
+    });
   }
 
-  async revoke(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
+  async revoke(agentRecordingSessionId: string, driverSessionId: string): Promise<void> {
+    const session = this.sessions.get(driverSessionId);
     if (!session) return;
-    session.revoked = true;
-    session.snapshot = undefined;
-    this.sessions.delete(sessionId);
-    await this.remove(session.tempDirectory);
+    if (typeof agentRecordingSessionId !== 'string'
+      || !agentRecordingSessionId.trim()
+      || session.agentRecordingSessionId !== agentRecordingSessionId) {
+      throw new DesktopDriverError('UNAUTHORIZED', 'Desktop capability is not bound to that recording session');
+    }
+    if (!session.revoked) {
+      session.revoked = true;
+      session.snapshot = undefined;
+      session.abortController.abort();
+    }
+    session.cleanupPromise ??= (async () => {
+      await session.queueTail.catch(() => undefined);
+      await this.remove(session.tempDirectory);
+      if (this.sessions.get(driverSessionId) === session) this.sessions.delete(driverSessionId);
+    })();
+    try {
+      await session.cleanupPromise;
+    } catch (error) {
+      // Retain the revoked tombstone and its directory for an exact retry.
+      session.cleanupPromise = undefined;
+      throw error;
+    }
+  }
+
+  private async withSerializedOperation<T>(
+    sessionId: string,
+    token: string,
+    operation: DesktopDriverOperation,
+    task: (session: StoredDesktopDriverSession, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const session = this.authorize(sessionId, token, operation);
+    const previous = session.queueTail.catch(() => undefined);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    session.queueTail = previous.then(() => gate);
+    await previous;
+    try {
+      const authorized = this.authorize(sessionId, token, operation);
+      if (authorized !== session) throw new DesktopDriverError('UNAUTHORIZED', 'Desktop capability changed');
+      return await task(session, session.abortController.signal);
+    } finally {
+      release();
+    }
+  }
+
+  private assertActive(session: StoredDesktopDriverSession): void {
+    if (this.sessions.get(session.id) !== session
+      || session.revoked
+      || session.abortController.signal.aborted
+      || this.now().getTime() >= session.expiresAt) {
+      throw new DesktopDriverError('UNAUTHORIZED', 'Desktop capability is invalid or expired');
+    }
+  }
+
+  private assertSafeElement(element: DesktopDriverPlatformElement): void {
+    if (!element.enabled) throw new DesktopDriverError('INVALID_REQUEST', 'Accessibility element is disabled');
+    if (element.secure || SENSITIVE_CONTROL_PATTERN.test(`${element.role} ${element.title}`)) {
+      throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Sensitive or destructive controls cannot be operated');
+    }
+  }
+
+  private assertEditableElement(element: DesktopDriverPlatformElement): void {
+    if (!/^(AXTextField|AXTextArea|AXSearchField|AXComboBox)$/i.test(element.role)) {
+      throw new DesktopDriverError('OPERATION_NOT_ALLOWED', 'Accessibility element is not an editable text control');
+    }
   }
 
   private authorize(
@@ -408,7 +500,11 @@ export class DesktopDriverSessionManager {
     const suppliedHash = hashToken(typeof token === 'string' ? token : '');
     const expectedHash = session?.tokenHash ?? Buffer.alloc(32);
     const tokenMatches = timingSafeEqual(expectedHash, suppliedHash);
-    if (!session || !tokenMatches || session.revoked || this.now().getTime() >= session.expiresAt) {
+    if (!session
+      || !tokenMatches
+      || !session.agentRecordingSessionId.trim()
+      || session.revoked
+      || this.now().getTime() >= session.expiresAt) {
       throw new DesktopDriverError('UNAUTHORIZED', 'Desktop capability is invalid or expired');
     }
     if (!session.operations.has(operation)) {
@@ -429,7 +525,7 @@ export class DesktopDriverSessionManager {
     if (action.kind === 'set-value' || action.kind === 'type-text') {
       if (typeof action.value !== 'string'
         || action.value.length > DESKTOP_DRIVER_MAX_TEXT_LENGTH
-        || action.value.includes('\0')) {
+        || /[\u0000-\u001f\u007f-\u009f]/u.test(action.value)) {
         throw new DesktopDriverError('INVALID_REQUEST', 'Text value is invalid or too long');
       }
     }

@@ -237,4 +237,20 @@ describe('runJsonlProcess', () => {
     await expect(runJsonlProcess(request(), { spawn: spawnProcess }))
       .rejects.toThrow('Failed to spawn codex: ENOENT');
   });
+
+  it('handles stdin EPIPE without rejecting before the child close is known', async () => {
+    const child = fakeChild();
+    const spawnProcess = vi.fn(() => child) as unknown as typeof spawn;
+    let settled = false;
+    const pending = runJsonlProcess(request(), { spawn: spawnProcess });
+    void pending.finally(() => { settled = true; }).catch(() => undefined);
+
+    child.stdin.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(settled).toBe(false);
+
+    child.stderr.end('child closed input');
+    child.emit('close', 9);
+    await expect(pending).rejects.toThrow('codex exited with code 9: child closed input');
+  });
 });

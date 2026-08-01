@@ -62,6 +62,7 @@ export interface DesktopDriverPlatformElement {
   enabled: boolean;
   actions: string[];
   secure?: boolean;
+  focused?: boolean;
 }
 
 export interface DesktopDriverElement {
@@ -82,26 +83,31 @@ export interface DesktopDriverSnapshot {
     windowTitle: string;
   };
   windowBounds: DesktopWindowBounds;
+  windowFocused: boolean;
+  focusedElementIndex?: number;
   elements: DesktopDriverElement[];
 }
 
 export interface DesktopDriverPlatformSnapshot {
   target: ResolvedDesktopDriverTarget;
+  windowFocused: boolean;
   elements: DesktopDriverPlatformElement[];
 }
 
 export interface DesktopDriverPlatform {
   resolveTarget(target: DesktopDriverTargetRequest): Promise<ResolvedDesktopDriverTarget>;
-  inspect(target: ResolvedDesktopDriverTarget): Promise<DesktopDriverPlatformSnapshot>;
-  screenshot(target: ResolvedDesktopDriverTarget, outputPath: string): Promise<void>;
+  inspect(target: ResolvedDesktopDriverTarget, signal?: AbortSignal): Promise<DesktopDriverPlatformSnapshot>;
+  screenshot(target: ResolvedDesktopDriverTarget, outputPath: string, signal?: AbortSignal): Promise<void>;
   act(
     target: ResolvedDesktopDriverTarget,
     action: DesktopDriverAction,
     element?: DesktopDriverPlatformElement,
+    signal?: AbortSignal,
   ): Promise<void>;
 }
 
 export interface DesktopDriverSessionCreateInput {
+  agentRecordingSessionId: string;
   projectId: string;
   sceneId: string;
   planFingerprint: string;
