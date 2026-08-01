@@ -14,7 +14,7 @@ import { useUi } from '../components/ui/UiProvider.js';
 import { estimateTtsCost, formatUsd } from '../lib/tts-pricing.js';
 import { GenerationModal } from '../components/ui/GenerationModal.js';
 import { FieldStatus, type FieldSaveState } from '../components/ui/FieldStatus.js';
-import { RefreshCcw, Sparkles, Upload } from 'lucide-react';
+import { MonitorPlay, RefreshCcw, Sparkles, Upload } from 'lucide-react';
 import { SCENE_TYPE_COLOR, STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry, Expressiveness } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
@@ -24,7 +24,6 @@ import { LowerThirdsTimeline } from '../components/LowerThirdsTimeline.js';
 import { confirmDestructiveSave } from '../lib/destructive-save.js';
 import { AgentRecordingDialog } from '../components/AgentRecordingDialog.js';
 import { AgentRecordingStatus } from '../components/AgentRecordingStatus.js';
-import { MonitorPlay } from 'lucide-react';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -903,8 +902,8 @@ export function ScenePage(props: ScenePageProps = {}) {
         <div>
           {projectId && sceneId && <AgentRecordingStatus projectId={projectId} sceneId={sceneId} />}
           <div className="agent-recording-entry">
-            <div><strong>Record this scene with Codex</strong><span>Review the steps, rehearse the target app, then let Cap capture the final take.</span></div>
-            <button type="button" className="btn--accent" disabled={scene.type === 'terminal'} title={scene.type === 'terminal' ? 'Computer Use cannot drive terminal applications.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Record with Codex</button>
+            <div><strong>Capture with Cap + Codex</strong><span>Review the scene, run a safe rehearsal, then confirm the exact take you want recorded.</span></div>
+            <button type="button" className="btn--accent" disabled={scene.type === 'terminal'} title={scene.type === 'terminal' ? 'Terminal scenes cannot use guided recording.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Set up recording</button>
           </div>
           {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { setAgentRecordingOpen(false); setShowReplaceUpload(true); }} />}
           {/* Re-analyze blocking modal — running this also calls Gemini Files

@@ -1443,34 +1443,159 @@ pre code {
 .agent-recording-entry > div { display: flex; flex-direction: column; gap: 3px; }
 .agent-recording-entry strong { font-size: 13px; }
 .agent-recording-entry span { color: var(--fg-muted); font-size: 11px; }
-.agent-recording-entry button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-.agent-recording-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(5,8,14,.58); }
-.agent-recording-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elev); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
-.agent-recording-dialog header, .agent-recording-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
-.agent-recording-dialog header span { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .09em; }
-.agent-recording-dialog header h2 { margin: 3px 0 0; font-size: 19px; }
-.agent-recording-dialog header button { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; }
-.agent-recording-dialog__body { padding: 20px; overflow-y: auto; }
-.agent-recording-dialog footer { border-top: 1px solid var(--border); border-bottom: 0; }
-.agent-recording-dialog footer button { display: inline-flex; align-items: center; gap: 7px; }
+.agent-recording-entry button, .agent-recording-actions button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+
+.agent-recording-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(5, 8, 14, .58); }
+.agent-recording-dialog { position: relative; width: min(840px, calc(100vw - 32px)); max-height: min(880px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-elev); box-shadow: 0 24px 80px rgba(0, 0, 0, .35); }
+.agent-recording-dialog > header, .agent-recording-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot)); }
+.agent-recording-dialog > header span, .agent-recording-section-heading > div > span { color: var(--accent-2); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; }
+.agent-recording-dialog > header h2 { margin: 3px 0 0; font-size: 19px; }
+.agent-recording-dialog > header button { border: 0; background: transparent; color: var(--fg-muted); cursor: pointer; box-shadow: none; }
+.agent-recording-dialog__body { padding: 18px 20px 22px; overflow-y: auto; }
+.agent-recording-dialog > footer { flex-wrap: wrap; border-top: 1px solid var(--border); border-bottom: 0; }
+.agent-recording-dialog > footer > button { flex: 0 0 auto; }
+.agent-recording-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.agent-recording-dialog button:focus-visible, .agent-recording-dialog a:focus-visible, .agent-recording-dialog input:focus-visible, .agent-recording-dialog select:focus-visible, .agent-recording-dialog summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.agent-recording-setup { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 58px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--accent-2); }
+.agent-recording-setup > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.agent-recording-setup strong { color: var(--fg); font-size: 12px; }
+.agent-recording-setup span { color: var(--fg-muted); font-size: 11px; line-height: 1.4; }
+.agent-recording-setup--ready { border-color: color-mix(in srgb, var(--success) 38%, var(--border)); color: var(--success); }
+.agent-recording-setup--attention { border-color: color-mix(in srgb, var(--warn) 42%, var(--border)); color: var(--warn); }
+.agent-recording-setup--error { border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); color: var(--danger); }
+.agent-recording-setup__ready { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 999px; background: var(--success-bg); color: var(--success) !important; white-space: nowrap; }
+.agent-recording-button-link { display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--fg); background: linear-gradient(180deg, var(--button-grad-top), var(--button-grad-bot)); font-size: 12px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+
+/* The take rail is the workflow's single signature element. */
+.agent-recording-take-rail { display: grid; grid-template-columns: repeat(6, 1fr); margin: 17px 4px 18px; padding: 0; list-style: none; }
+.agent-recording-take-rail li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; color: var(--fg-dim); }
+.agent-recording-take-rail li::after { content: ''; position: absolute; z-index: 0; top: 10px; left: calc(50% + 12px); width: calc(100% - 24px); height: 1px; background: var(--border); }
+.agent-recording-take-rail li:last-child::after { display: none; }
+.agent-recording-take-rail li > span { position: relative; z-index: 1; width: 21px; height: 21px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-elev); font-family: var(--font-mono); font-size: 9px; }
+.agent-recording-take-rail small { font-family: var(--font-mono); font-size: 9px; letter-spacing: .02em; }
+.agent-recording-take-rail .is-done { color: var(--success); }
+.agent-recording-take-rail .is-done::after { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.agent-recording-take-rail .is-done > span { border-color: var(--success); background: var(--success-bg); }
+.agent-recording-take-rail .is-active { color: var(--accent); font-weight: 700; }
+.agent-recording-take-rail .is-active > span { border-color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.agent-recording-take-rail .is-failed { color: var(--danger); }
+.agent-recording-take-rail .is-failed > span { border-color: var(--danger); background: var(--danger-bg); box-shadow: none; }
+
+.agent-recording-loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 140px; color: var(--fg-muted); font-size: 12px; }
+.agent-recording-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.agent-recording-section-heading h3 { margin: 3px 0 0; color: var(--fg); font-size: 14px; }
+.agent-recording-section-heading > small { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-muted); font-size: 10px; }
+
+.agent-recording-progress, .agent-recording-evidence, .agent-recording-session-panel { margin: 0 0 16px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent-2) 34%, var(--border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent-2-bg) 38%, var(--surface)); }
+.agent-recording-progress .agent-recording-section-heading { color: var(--accent-2); }
+.agent-recording-progress ol { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin: 13px 0 9px; padding: 0; list-style: none; }
+.agent-recording-progress li { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--fg-dim); font-size: 9px; line-height: 1.3; }
+.agent-recording-progress li > span { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; border: 1px solid var(--border); }
+.agent-recording-progress li.is-active { color: var(--accent-2); font-weight: 700; }
+.agent-recording-progress li.is-done { color: var(--success); }
+.agent-recording-progress > p { margin: 0; color: var(--fg-muted); font-size: 11px; }
+
+.agent-recording-editor { padding: 15px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.agent-recording-editor fieldset { margin: 14px 0 0; padding: 0; border: 0; }
+.agent-recording-editor fieldset:disabled { opacity: .68; }
 .agent-recording-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .agent-recording-grid label, .agent-recording-plan label { display: flex; flex-direction: column; gap: 5px; color: var(--fg-muted); font-size: 11px; }
-.agent-recording-grid input, .agent-recording-grid select, .agent-recording-plan input { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); }
-.agent-recording-dialog fieldset { display: flex; flex-wrap: wrap; gap: 14px; margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 7px; }
-.agent-recording-dialog legend { color: var(--fg-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-.agent-recording-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.agent-recording-grid input, .agent-recording-grid select, .agent-recording-plan input { width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--fg); font: inherit; font-size: 12px; }
+.agent-recording-grid input[type='number'] { font-family: var(--font-mono); }
+.agent-recording-toggles { display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0; padding: 10px 11px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-elev); }
+.agent-recording-check { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
 .agent-recording-plan h3, .agent-recording-readiness h3 { margin: 14px 0 8px; font-size: 12px; }
 .agent-recording-plan label { position: relative; flex-direction: row; align-items: center; margin-bottom: 7px; }
-.agent-recording-plan label span { width: 22px; height: 22px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-size: 10px; font-weight: 700; }
+.agent-recording-plan label span { width: 22px; height: 22px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-2-bg); color: var(--accent-2); font-family: var(--font-mono); font-size: 9px; font-weight: 700; }
+
+.agent-recording-readiness { padding: 0 3px; }
 .agent-recording-readiness p { display: flex; align-items: center; gap: 7px; margin: 5px 0; color: var(--fg-muted); font-size: 11px; }
-.agent-recording-note, .agent-recording-warning, .agent-recording-notice { margin: 16px 0 0; padding: 10px 12px; border-radius: 6px; font-size: 11px; line-height: 1.45; }
+.agent-recording-readiness svg { color: var(--success); }
+.agent-recording-note, .agent-recording-warning, .agent-recording-notice { margin: 16px 0 0; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 11px; line-height: 1.45; }
 .agent-recording-note { background: var(--accent-bg); color: var(--fg-muted); }
-.agent-recording-warning { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
-.agent-recording-notice { background: color-mix(in srgb, var(--warn, #d4a017) 14%, transparent); color: var(--warn, #d4a017); }
+.agent-recording-warning { background: var(--danger-bg); color: var(--danger); }
+.agent-recording-notice { background: var(--warn-bg); color: var(--warn); }
+
+.agent-recording-evidence { border-color: color-mix(in srgb, var(--success) 42%, var(--border)); background: color-mix(in srgb, var(--success-bg) 32%, var(--surface)); }
+.agent-recording-evidence .agent-recording-section-heading { color: var(--success); }
+.agent-recording-capture-off { display: flex; align-items: center; gap: 7px; margin: 11px 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface); color: var(--fg-muted); font-size: 11px; }
+.agent-recording-capture-off > span { width: 8px; height: 8px; border: 2px solid var(--fg-dim); border-radius: 50%; background: transparent; }
+.agent-recording-specs { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; overflow: hidden; margin: 0 0 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--border-soft); }
+.agent-recording-specs > div { min-width: 0; padding: 8px 10px; background: var(--surface); }
+.agent-recording-specs dt { color: var(--fg-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.agent-recording-specs dd { margin: 3px 0 0; overflow-wrap: anywhere; font-size: 11px; }
+.agent-recording-specs code { font-family: var(--font-mono); font-size: 10px; }
+.agent-recording-source-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 13px; }
+.agent-recording-source-summary span { padding: 4px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-muted); font-size: 9px; }
+.agent-recording-source-summary span.is-on { border-color: color-mix(in srgb, var(--success) 42%, var(--border)); background: var(--success-bg); color: var(--success); }
+.agent-recording-evidence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.agent-recording-evidence-grid h4 { margin: 0 0 7px; font-size: 11px; }
+.agent-recording-evidence-grid ol, .agent-recording-evidence-grid ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.agent-recording-evidence-grid li { display: flex; align-items: flex-start; gap: 6px; color: var(--fg-muted); font-size: 10px; line-height: 1.4; }
+.agent-recording-evidence-grid li svg { flex: 0 0 auto; margin-top: 1px; }
+.agent-recording-evidence-grid li.is-passed svg { color: var(--success); }
+.agent-recording-evidence-grid li.is-failed svg { color: var(--danger); }
+.agent-recording-evidence-grid li small { display: block; margin-top: 2px; color: var(--fg-dim); }
+.agent-recording-reset { display: flex; align-items: center; gap: 6px; margin: 13px 0 0; font-size: 11px; font-weight: 600; }
+.agent-recording-reset.is-passed { color: var(--success); }
+.agent-recording-reset.is-failed { color: var(--danger); }
+.agent-recording-evidence__diagnostic { margin: 9px 0 0; color: var(--fg-muted); font-size: 10px; }
+.agent-recording-fingerprint { display: flex; align-items: baseline; gap: 8px; margin-top: 11px; padding-top: 9px; border-top: 1px solid var(--border-soft); color: var(--fg-muted); font-size: 9px; }
+.agent-recording-fingerprint code { min-width: 0; overflow-wrap: anywhere; color: var(--fg); font-family: var(--font-mono); font-size: 9px; }
+
+.agent-recording-session-panel { display: flex; align-items: center; gap: 10px; color: var(--accent); background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); }
+.agent-recording-session-panel > div { display: flex; flex-direction: column; gap: 3px; }
+.agent-recording-session-panel span, .agent-recording-session-panel small { color: var(--fg-muted); font-size: 10px; }
+.agent-recording-session-panel.is-done { color: var(--success); background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); }
+.agent-recording-session-panel.is-failed { color: var(--danger); background: var(--danger-bg); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); }
+
+.agent-recording-troubleshooting { margin-top: 15px; border-top: 1px solid var(--border-soft); padding-top: 11px; }
+.agent-recording-troubleshooting summary { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; font-size: 11px; font-weight: 600; }
+.agent-recording-troubleshooting p { margin: 8px 0; color: var(--fg-muted); font-size: 10px; line-height: 1.45; }
+.agent-recording-troubleshooting button { display: inline-flex; align-items: center; gap: 6px; }
+
+.agent-recording-sheet-backdrop { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(3px); }
+.agent-recording-sheet { width: min(470px, 100%); padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: 0 18px 55px rgba(0, 0, 0, .3); }
+.agent-recording-sheet__icon { width: 36px; height: 36px; display: grid; place-items: center; margin-bottom: 12px; border-radius: 50%; background: var(--accent-bg); color: var(--accent); }
+.agent-recording-sheet h3 { margin: 0 0 8px; font-size: 17px; }
+.agent-recording-sheet p { margin: 0; color: var(--fg-muted); font-size: 12px; line-height: 1.55; }
+.agent-recording-sheet .agent-recording-sheet__detail { margin-top: 9px; color: var(--fg-dim); font-size: 10px; }
+.agent-recording-sheet__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
 .agent-recording-status { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
-.agent-recording-status > div { display: flex; gap: 3px; flex-direction: column; }
+.agent-recording-status > div { display: flex; flex: 1; gap: 3px; flex-direction: column; min-width: 0; }
 .agent-recording-status span, .agent-recording-status small { color: var(--fg-muted); }
+.agent-recording-status button { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.agent-recording-status .agent-recording-status__error { color: var(--danger); }
 .agent-recording-status--active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .agent-recording-status--done { color: var(--success); }
 .agent-recording-status--failed { color: var(--danger); }
-@media (max-width: 640px) { .agent-recording-grid { grid-template-columns: 1fr; } .agent-recording-entry { align-items: flex-start; flex-direction: column; } }
+
+@media (max-width: 720px) {
+  .agent-recording-backdrop { align-items: end; padding: 0; }
+  .agent-recording-dialog { width: 100vw; max-height: 94vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .agent-recording-dialog__body { padding: 14px; }
+  .agent-recording-dialog > header, .agent-recording-dialog > footer { padding: 13px 14px; }
+  .agent-recording-setup { grid-template-columns: auto minmax(0, 1fr); }
+  .agent-recording-setup > button, .agent-recording-setup > a, .agent-recording-setup__ready { grid-column: 2; justify-self: start; }
+  .agent-recording-take-rail small { font-size: 8px; }
+  .agent-recording-progress ol { grid-template-columns: 1fr; }
+  .agent-recording-grid, .agent-recording-specs, .agent-recording-evidence-grid { grid-template-columns: 1fr; }
+  .agent-recording-actions { width: 100%; margin-left: 0; }
+  .agent-recording-actions .primary { flex: 1; justify-content: center; }
+  .agent-recording-entry { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 460px) {
+  .agent-recording-take-rail small { max-width: 45px; overflow: hidden; text-overflow: ellipsis; }
+  .agent-recording-dialog > footer > button { width: 100%; justify-content: center; }
+  .agent-recording-actions > button { flex: 1; justify-content: center; }
+  .agent-recording-fingerprint { align-items: flex-start; flex-direction: column; }
+  .agent-recording-sheet__actions { flex-direction: column-reverse; }
+  .agent-recording-sheet__actions button { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-recording-dialog *, .agent-recording-status * { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}

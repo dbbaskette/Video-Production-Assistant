@@ -15,12 +15,13 @@ import {
   type Expressiveness,
   WorkflowStatusSchema,
   type WorkflowStatus,
+  CapSetupStatusSchema,
   AgentRecordingPlanSchema,
   AgentRecordingSessionSchema,
+  type CapSetupStatus,
   type AgentRecordingPlan,
   type AgentRecordingPlanUpdate,
   type AgentRecordingSession,
-  type AgentRecordingSessionState,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -447,11 +448,27 @@ export const agentRecordingApi = {
     const data = await request<unknown>('GET', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/current`);
     return data === null ? null : AgentRecordingSessionSchema.parse(data);
   },
-  async createSession(projectId: string, sceneId: string): Promise<AgentRecordingSession> {
-    return AgentRecordingSessionSchema.parse(await request('POST', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions`, { state: 'rehearsing' }));
+  async rehearse(projectId: string, sceneId: string, update: AgentRecordingPlanUpdate): Promise<AgentRecordingSession> {
+    return AgentRecordingSessionSchema.parse(await request('POST', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/rehearse`, update));
   },
-  async updateSession(projectId: string, sceneId: string, sessionId: string, state: AgentRecordingSessionState, extra: { message?: string; recordingId?: string; capProjectPath?: string; exportPath?: string } = {}): Promise<AgentRecordingSession> {
-    return AgentRecordingSessionSchema.parse(await request('PATCH', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/${sessionId}`, { state, ...extra }));
+  async confirm(projectId: string, sceneId: string, sessionId: string, planFingerprint: string): Promise<AgentRecordingSession> {
+    return AgentRecordingSessionSchema.parse(await request('POST', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/${sessionId}/confirm`, { confirmed: true, planFingerprint }));
+  },
+  async cancel(projectId: string, sceneId: string, sessionId: string): Promise<AgentRecordingSession> {
+    return AgentRecordingSessionSchema.parse(await request('POST', `/api/projects/${projectId}/scenes/${sceneId}/agent-recording/sessions/${sessionId}/cancel`));
+  },
+};
+
+export const capSetupApi = {
+  queryKey: ['setup', 'cap'] as const,
+  async status(): Promise<CapSetupStatus> {
+    return CapSetupStatusSchema.parse(await request('GET', '/api/setup/cap'));
+  },
+  async check(): Promise<CapSetupStatus> {
+    return CapSetupStatusSchema.parse(await request('POST', '/api/setup/cap/check'));
+  },
+  async install(): Promise<{ installationId: string; state: 'installing' }> {
+    return request('POST', '/api/setup/cap/install', { confirmed: true });
   },
 };
 
