@@ -34,6 +34,7 @@ import {
   updateAgentRecordingSessionInternal,
   type AgentRecordingPrivateDiagnosticCategory,
 } from './session.js';
+import { AgentRecordingDomainError } from './errors.js';
 
 const ALL_DRIVER_OPERATIONS = [
   'inspect',
@@ -219,22 +220,47 @@ function uniqueTarget(plan: AgentRecordingPlan, targets: CapTarget[]): CapTarget
   return matches[0]!;
 }
 
+function assertSupportedWorkflow(
+  scene: Scene,
+  capture: AgentRecordingPlanUpdate['capture'],
+  platform: NodeJS.Platform,
+): void {
+  if (platform !== 'darwin') {
+    throw new AgentRecordingDomainError('INVALID_PLAN', 'Agent recording currently requires macOS.');
+  }
+  if (scene.type === 'terminal') {
+    throw new AgentRecordingDomainError('INVALID_PLAN', 'Terminal scenes cannot use agent recording.');
+  }
+  if (capture.targetKind !== 'window') {
+    throw new AgentRecordingDomainError('INVALID_PLAN', 'Only application-window agent recording is supported.');
+  }
+  if (!capture.targetApplication.trim()) {
+    throw new AgentRecordingDomainError('INVALID_PLAN', 'A target application is required.');
+  }
+  if (capture.camera || capture.microphone) {
+    throw new AgentRecordingDomainError(
+      'INVALID_PLAN',
+      'Camera and microphone device selection is not supported by this recording workflow.',
+    );
+  }
+  if (!capture.cursor) {
+    throw new AgentRecordingDomainError(
+      'INVALID_PLAN',
+      'Cursor-disabled capture is not supported by the installed Cap recording contract.',
+    );
+  }
+}
+
 function assertSupportedScene(
   scene: Scene,
   plan: AgentRecordingPlan,
   platform: NodeJS.Platform,
 ): void {
-  if (platform !== 'darwin') throw new Error('Agent recording currently requires macOS.');
-  if (scene.type === 'terminal') throw new Error('Terminal scenes cannot use agent recording.');
-  if (plan.stale) throw new Error('The recording plan is stale and must be reviewed again.');
-  if (plan.capture.camera || plan.capture.microphone) {
-    throw new Error(
-      'Camera and microphone device selection is not supported by this recording workflow.',
-    );
-  }
-  if (!plan.capture.cursor) {
-    throw new Error(
-      'Cursor-disabled capture is not supported by the installed Cap recording contract.',
+  assertSupportedWorkflow(scene, plan.capture, platform);
+  if (plan.stale) {
+    throw new AgentRecordingDomainError(
+      'CONFLICT',
+      'The recording plan is stale and must be reviewed again.',
     );
   }
 }
@@ -299,10 +325,14 @@ export function createAgentRecordingCoordinator(
   const contexts = new Map<string, SessionContext>();
 
   async function projectContext(projectId: string, sceneId: string) {
+    const tracker = await deps.store.readTracker();
+    if (!tracker.projects.some((candidate) => candidate.id === projectId)) {
+      throw new AgentRecordingDomainError('NOT_FOUND', `Project not found: ${projectId}`);
+    }
     const project = await deps.store.readProject(projectId);
     const storyboard = await loadStoryboard(project.path);
     const scene = storyboard?.scenes.find((candidate) => candidate.id === sceneId);
-    if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+    if (!scene) throw new AgentRecordingDomainError('NOT_FOUND', `Scene not found: ${sceneId}`);
     return { project, scene };
   }
 
@@ -489,15 +519,20 @@ export function createAgentRecordingCoordinator(
     async rehearse(projectId, sceneId, update) {
       const key = sceneKey(projectId, sceneId);
       if (active.has(key) || reservations.has(key))
-        throw new Error('An agent recording operation is already active for this scene.');
+        throw new AgentRecordingDomainError('CONFLICT', 'An agent recording operation is already active for this scene.');
       reservations.add(key);
       try {
         const { project, scene } = await projectContext(projectId, sceneId);
         const current = await getCurrentAgentRecordingSession(project.path, projectId, sceneId);
         if (current && !['completed', 'failed', 'interrupted'].includes(current.state)) {
-          throw new Error('An agent recording session is already active for this scene.');
+          throw new AgentRecordingDomainError('CONFLICT', 'An agent recording session is already active for this scene.');
         }
-        const editable = AgentRecordingPlanUpdateSchema.parse(update);
+        const parsed = AgentRecordingPlanUpdateSchema.safeParse(update);
+        if (!parsed.success) {
+          throw new AgentRecordingDomainError('INVALID_PLAN', 'Recording plan is invalid.');
+        }
+        const editable = parsed.data;
+        assertSupportedWorkflow(scene, editable.capture, platform);
         const plan = await saveAgentRecordingPlan(project.path, project, scene, editable);
         assertSupportedScene(scene, plan, platform);
         const fingerprint = planFingerprint(plan);
@@ -604,29 +639,33 @@ export function createAgentRecordingCoordinator(
     },
 
     async confirmAndRecord(projectId, sceneId, sessionId, input) {
-      const confirmation = AgentRecordingConfirmRequestSchema.parse(input);
+      const parsed = AgentRecordingConfirmRequestSchema.safeParse(input);
+      if (!parsed.success) {
+        throw new AgentRecordingDomainError('INVALID_CONFIRMATION', 'Recording confirmation is invalid.');
+      }
+      const confirmation = parsed.data;
       const key = sceneKey(projectId, sceneId);
       if (active.has(key) || reservations.has(key))
-        throw new Error('An agent recording operation is already active for this scene.');
+        throw new AgentRecordingDomainError('CONFLICT', 'An agent recording operation is already active for this scene.');
       reservations.add(key);
       try {
         const { project, scene } = await projectContext(projectId, sceneId);
         const stored = await readStoredAgentRecordingSession(project.path, sessionId);
         if (stored.projectId !== projectId || stored.sceneId !== sceneId)
-          throw new Error('Recording session does not belong to this scene.');
+          throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session does not belong to this scene.');
         if (stored.state !== 'awaiting_confirmation')
-          throw new Error('Recording confirmation requires an awaiting-confirmation session.');
+          throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires an awaiting-confirmation session.');
         if (!stored.planFingerprint || confirmation.planFingerprint !== stored.planFingerprint)
-          throw new Error('Recording confirmation does not match the rehearsed plan.');
+          throw new AgentRecordingDomainError('INVALID_CONFIRMATION', 'Recording confirmation does not match the rehearsed plan.');
         if (!stored.codexThreadId || !stored.rehearsal?.success)
-          throw new Error('Recording confirmation requires verified rehearsal evidence.');
+          throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires verified rehearsal evidence.');
         if (!stored.rehearsedTargetIdentity)
-          throw new Error('Recording confirmation requires exact rehearsed target identity.');
+          throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires exact rehearsed target identity.');
         const rehearsedTargetIdentity = stored.rehearsedTargetIdentity;
         const codexThreadId = stored.codexThreadId;
         const context = contexts.get(sessionId);
         if (!context)
-          throw new Error('The rehearsal capability is no longer available; rehearse again.');
+          throw new AgentRecordingDomainError('CONFLICT', 'The rehearsal capability is no longer available; rehearse again.');
 
         const run = schedule(
           {
@@ -912,7 +951,7 @@ export function createAgentRecordingCoordinator(
       const { project } = await projectContext(projectId, sceneId);
       const stored = await readStoredAgentRecordingSession(project.path, sessionId);
       if (stored.projectId !== projectId || stored.sceneId !== sceneId)
-        throw new Error('Recording session does not belong to this scene.');
+        throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session does not belong to this scene.');
       if (['completed', 'failed', 'interrupted'].includes(stored.state))
         return AgentRecordingSessionSchemaSafe(stored);
       const running = active.get(key);

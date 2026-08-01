@@ -24,6 +24,7 @@ import {
   createAgentRecordingSession,
 } from '../services/agent-recording/session.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+import { AgentRecordingDomainError } from '../services/agent-recording/errors.js';
 
 const SESSION_ID = '64d79770-ee07-4f70-b084-2115dc28e0d3';
 const NOW = '2026-07-31T12:00:00.000Z';
@@ -185,6 +186,52 @@ describe('agent recording routes', () => {
     expect(confirmAndRecord).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for a structurally valid but unsupported workflow without a session side effect', async () => {
+    const base = `/api/projects/${projectId}/scenes/scene-01/agent-recording`;
+    const update = await reviewedUpdate();
+    rehearse.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'INVALID_PLAN',
+      'Only application-window agent recording is supported at /private/plan token=plan-secret.',
+    ));
+    const response = await app.inject({
+      method: 'POST',
+      url: `${base}/rehearse`,
+      payload: { ...update, capture: { ...update.capture, targetKind: 'screen' } },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Recording plan is invalid for agent recording',
+      code: 'invalid_plan',
+    });
+    expect(JSON.stringify(response.json())).not.toMatch(/private\/plan|plan-secret/);
+    expect((await app.inject({
+      method: 'GET',
+      url: `${base}/sessions/current`,
+    })).json()).toBeNull();
+  });
+
+  it('rejects every non-UUID session path, including encoded traversal, before dispatch', async () => {
+    const base = `/api/projects/${projectId}/scenes/scene-01/agent-recording/sessions`;
+    const traversal = '..%2F..%2Farbitrary';
+    const confirmation = await app.inject({
+      method: 'POST',
+      url: `${base}/${traversal}/confirm`,
+      payload: { confirmed: true, planFingerprint: 'reviewed-fingerprint' },
+    });
+    const cancellation = await app.inject({
+      method: 'POST',
+      url: `${base}/${traversal}/cancel`,
+    });
+    expect(confirmation.statusCode).toBe(404);
+    expect(cancellation.statusCode).toBe(404);
+    expect(confirmation.json()).toEqual({
+      error: 'Project, scene, or recording session was not found',
+      code: 'not_found',
+    });
+    expect(confirmAndRecord).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it('maps missing scoped resources, conflicts, stale state, and invalid confirmation', async () => {
     const base = `/api/projects/${projectId}/scenes/scene-01/agent-recording`;
     const update = await reviewedUpdate();
@@ -203,9 +250,9 @@ describe('agent recording routes', () => {
     });
     expect(missingScene.statusCode).toBe(404);
 
-    confirmAndRecord.mockRejectedValueOnce(Object.assign(
-      new Error('Session file is missing at /private/project/session.json'),
-      { code: 'ENOENT' },
+    confirmAndRecord.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'NOT_FOUND',
+      'Session file is missing at /private/project/session.json token=missing-secret',
     ));
     const missingSession = await app.inject({
       method: 'POST',
@@ -213,17 +260,27 @@ describe('agent recording routes', () => {
       payload: { confirmed: true, planFingerprint: 'reviewed-fingerprint' },
     });
     expect(missingSession.statusCode).toBe(404);
-    expect(JSON.stringify(missingSession.json())).not.toContain('/private/project');
+    expect(JSON.stringify(missingSession.json())).not.toMatch(/private\/project|missing-secret/);
 
-    rehearse.mockRejectedValueOnce(new Error('An agent recording operation is already active for this scene.'));
+    rehearse.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'CONFLICT',
+      'An agent recording operation is already active token=conflict-secret at /private/conflict.',
+    ));
     const active = await app.inject({ method: 'POST', url: `${base}/rehearse`, payload: update });
     expect(active.statusCode).toBe(409);
+    expect(JSON.stringify(active.json())).not.toMatch(/conflict-secret|private\/conflict/);
 
-    rehearse.mockRejectedValueOnce(new Error('The recording plan is stale and must be reviewed again.'));
+    rehearse.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'CONFLICT',
+      'The recording plan is stale and must be reviewed again.',
+    ));
     const stale = await app.inject({ method: 'POST', url: `${base}/rehearse`, payload: update });
     expect(stale.statusCode).toBe(409);
 
-    confirmAndRecord.mockRejectedValueOnce(new Error('Recording confirmation does not match the rehearsed plan.'));
+    confirmAndRecord.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'INVALID_CONFIRMATION',
+      'Recording confirmation does not match the rehearsed plan.',
+    ));
     const invalidConfirmation = await app.inject({
       method: 'POST',
       url: `${base}/sessions/${SESSION_ID}/confirm`,
@@ -231,13 +288,27 @@ describe('agent recording routes', () => {
     });
     expect(invalidConfirmation.statusCode).toBe(400);
 
-    confirmAndRecord.mockRejectedValueOnce(new Error('Recording confirmation requires an awaiting-confirmation session.'));
+    confirmAndRecord.mockRejectedValueOnce(new AgentRecordingDomainError(
+      'CONFLICT',
+      'Recording confirmation requires an awaiting-confirmation session.',
+    ));
     const illegalState = await app.inject({
       method: 'POST',
       url: `${base}/sessions/${SESSION_ID}/confirm`,
       payload: { confirmed: true, planFingerprint: 'reviewed-fingerprint' },
     });
     expect(illegalState.statusCode).toBe(409);
+
+    rehearse.mockRejectedValueOnce(new Error(
+      'already active stale invalid plan token=phrase-secret /private/phrase',
+    ));
+    const unknown = await app.inject({ method: 'POST', url: `${base}/rehearse`, payload: update });
+    expect(unknown.statusCode).toBe(500);
+    expect(unknown.json()).toEqual({
+      error: 'Agent recording request failed',
+      code: 'agent_recording_failed',
+    });
+    expect(JSON.stringify(unknown.json())).not.toMatch(/phrase-secret|private\/phrase/);
   });
 
   it('keeps public reads sanitized and leaves arbitrary session mutation routes removed', async () => {

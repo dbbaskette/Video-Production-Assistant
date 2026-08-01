@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentRecordingPlanUpdate, AgentRecordingSession, Storyboard } from '@vpa/shared';
@@ -238,6 +238,33 @@ async function rehearseReady(ctx: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('agent recording coordinator', () => {
+  it.each([
+    ['screen target', { ...update, capture: { ...update.capture, targetKind: 'screen' as const } }],
+    ['missing target application', { ...update, capture: { ...update.capture, targetApplication: '' } }],
+    ['camera capture', { ...update, capture: { ...update.capture, camera: true } }],
+    ['microphone capture', { ...update, capture: { ...update.capture, microphone: true } }],
+    ['hidden cursor', { ...update, capture: { ...update.capture, cursor: false } }],
+  ] satisfies Array<[string, AgentRecordingPlanUpdate]>) (
+    'rejects the locally unsupported %s before creating or scheduling a session',
+    async (_label, invalidUpdate) => {
+      const ctx = await fixture();
+      await expect(
+        ctx.coordinator.rehearse(ctx.project.id, 'scene-01', invalidUpdate),
+      ).rejects.toMatchObject({ code: 'INVALID_PLAN' });
+      expect(await getCurrentAgentRecordingSession(
+        ctx.project.path,
+        ctx.project.id,
+        'scene-01',
+      )).toBeNull();
+      await expect(readFile(
+        join(ctx.project.path, 'recording-plans', 'scene-01.json'),
+        'utf8',
+      )).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(ctx.cap.getStatus).not.toHaveBeenCalled();
+      expect(ctx.codex.rehearse).not.toHaveBeenCalled();
+    },
+  );
+
   it('schedules and verifies a successful rehearsal before confirmation', async () => {
     vi.stubEnv('VPA_TEST_SECRET', 'must-not-reach-codex');
     const ctx = await fixture();

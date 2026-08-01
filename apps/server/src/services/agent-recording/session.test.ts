@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { appendAgentRecordingPrivateDiagnostic, createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, persistAgentRecordingStopped, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession, updateAgentRecordingSessionInternal } from './session.js';
@@ -128,5 +128,45 @@ describe('agent recording sessions', () => {
     await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal })).rejects.toThrow('exact target identity');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity });
     await expect(transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'recording', { confirmedCapture: true, planFingerprint: 'plan-1' })).rejects.toThrow('persisted exact Cap identity');
+  });
+
+  it('rejects traversal and mismatched stored IDs at every session filename boundary', async () => {
+    const projectPath = await root();
+    const outsidePath = join(projectPath, 'arbitrary.json');
+    await writeFile(outsidePath, JSON.stringify({ marker: 'must-not-change' }));
+
+    for (const maliciousId of ['../../arbitrary', '../arbitrary', '..%2F..%2Farbitrary']) {
+      await expect(readStoredAgentRecordingSession(projectPath, maliciousId)).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+      await expect(updateAgentRecordingSessionInternal(
+        projectPath,
+        'project',
+        'scene',
+        maliciousId,
+        { phase: 'malicious-write' },
+      )).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(transitionAgentRecordingSession(
+        projectPath,
+        'project',
+        'scene',
+        maliciousId,
+        'failed',
+      )).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+    expect(await readFile(outsidePath, 'utf8')).toBe(JSON.stringify({ marker: 'must-not-change' }));
+
+    const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
+    const storedPath = join(projectPath, 'recording-plans', 'sessions', `${created.id}.json`);
+    const stored = JSON.parse(await readFile(storedPath, 'utf8'));
+    await writeFile(storedPath, JSON.stringify({ ...stored, id: '../../arbitrary' }));
+    await expect(updateAgentRecordingSessionInternal(
+      projectPath,
+      'project',
+      'scene',
+      created.id,
+      { phase: 'malicious-write' },
+    )).rejects.toThrow('identity does not match');
+    expect(await readFile(outsidePath, 'utf8')).toBe(JSON.stringify({ marker: 'must-not-change' }));
   });
 });

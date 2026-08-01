@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { AgentRecordingSessionSchema, type AgentRecordingSession, type AgentRecordingSessionState, type AgentRehearsalEvidence } from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
+import { AgentRecordingDomainError } from './errors.js';
 
 interface StoredSession extends AgentRecordingSession {
   codexThreadId?: string;
@@ -69,18 +70,47 @@ const transitions = {
   completed: [], failed: [], interrupted: [],
 } satisfies Record<AgentRecordingSessionState, AgentRecordingSessionState[]>;
 
-function directory(projectPath: string) { return join(projectPath, 'recording-plans', 'sessions'); }
-function file(projectPath: string, id: string) { return join(directory(projectPath), `${id}.json`); }
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function directory(projectPath: string) { return resolve(projectPath, 'recording-plans', 'sessions'); }
+
+function file(projectPath: string, id: string) {
+  if (!SESSION_ID_PATTERN.test(id)) {
+    throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session ID is invalid.');
+  }
+  const root = directory(projectPath);
+  const candidate = resolve(root, `${id}.json`);
+  if (!candidate.startsWith(`${root}${sep}`)) {
+    throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session path is invalid.');
+  }
+  return candidate;
+}
+
+function isSessionFilename(name: string): boolean {
+  return name.endsWith('.json') && SESSION_ID_PATTERN.test(name.slice(0, -5));
+}
+
 function publicSession(session: StoredSession): AgentRecordingSession { return AgentRecordingSessionSchema.parse(session); }
 
 export async function readStoredAgentRecordingSession(projectPath: string, id: string): Promise<StoredSession> {
-  return JSON.parse(await readFile(file(projectPath, id), 'utf8')) as StoredSession;
+  let value: StoredSession;
+  try {
+    value = JSON.parse(await readFile(file(projectPath, id), 'utf8')) as StoredSession;
+  } catch (error) {
+    if (error instanceof AgentRecordingDomainError) throw error;
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session was not found.');
+    }
+    throw error;
+  }
+  if (value.id !== id) throw new Error('Stored recording session identity does not match its filename.');
+  return value;
 }
 
 export async function listStoredAgentRecordingSessions(projectPath: string): Promise<StoredSession[]> {
   let names: string[];
   try { names = await readdir(directory(projectPath)); } catch { return []; }
-  return Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
+  return Promise.all(names.filter(isSessionFilename).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
 }
 
 async function writeStoredAgentRecordingSession(projectPath: string, session: StoredSession): Promise<void> {
@@ -134,14 +164,16 @@ function sanitizePrivateDiagnostic(detail: string, privateValues: string[]): str
 
 async function ownedSession(projectPath: string, projectId: string, sceneId: string, sessionId: string): Promise<StoredSession> {
   const current = await readStoredAgentRecordingSession(projectPath, sessionId);
-  if (current.projectId !== projectId || current.sceneId !== sceneId) throw new Error('Recording session does not belong to this scene.');
+  if (current.projectId !== projectId || current.sceneId !== sceneId) {
+    throw new AgentRecordingDomainError('NOT_FOUND', 'Recording session does not belong to this scene.');
+  }
   return current;
 }
 
 export async function getCurrentAgentRecordingSession(projectPath: string, projectId: string, sceneId: string): Promise<AgentRecordingSession | null> {
   let names: string[];
   try { names = await readdir(directory(projectPath)); } catch { return null; }
-  const sessions = await Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
+  const sessions = await Promise.all(names.filter(isSessionFilename).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
   const match = sessions.filter((session) => session.projectId === projectId && session.sceneId === sceneId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   return match ? publicSession(match) : null;
 }
@@ -149,7 +181,7 @@ export async function getCurrentAgentRecordingSession(projectPath: string, proje
 export async function findRecoverableAgentRecordingSession(projectPath: string, projectId: string, sceneId: string): Promise<AgentRecordingSession | null> {
   let names: string[];
   try { names = await readdir(directory(projectPath)); } catch { return null; }
-  const sessions = await Promise.all(names.filter((name) => name.endsWith('.json')).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
+  const sessions = await Promise.all(names.filter(isSessionFilename).map((name) => readStoredAgentRecordingSession(projectPath, name.slice(0, -5))));
   const match = sessions
     .filter((session) => session.projectId === projectId && session.sceneId === sceneId && (session.state === 'exporting' || session.state === 'attaching'))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -158,7 +190,9 @@ export async function findRecoverableAgentRecordingSession(projectPath: string, 
 
 export async function createAgentRecordingSession(projectPath: string, projectId: string, sceneId: string): Promise<AgentRecordingSession> {
   const current = await getCurrentAgentRecordingSession(projectPath, projectId, sceneId);
-  if (current && !terminal.has(current.state)) throw new Error('An agent recording session is already active for this scene.');
+  if (current && !terminal.has(current.state)) {
+    throw new AgentRecordingDomainError('CONFLICT', 'An agent recording session is already active for this scene.');
+  }
   const now = new Date().toISOString();
   const session: StoredSession = {
     id: randomUUID(), projectId, sceneId, state: 'rehearsing', createdAt: now, updatedAt: now,
@@ -177,7 +211,9 @@ export async function transitionAgentRecordingSession(
   details: SessionTransitionDetails = {},
 ): Promise<AgentRecordingSession> {
   const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
-  if (!(transitions[current.state] as readonly AgentRecordingSessionState[]).includes(state)) throw new Error(`Cannot move recording session from ${current.state} to ${state}.`);
+  if (!(transitions[current.state] as readonly AgentRecordingSessionState[]).includes(state)) {
+    throw new AgentRecordingDomainError('CONFLICT', `Cannot move recording session from ${current.state} to ${state}.`);
+  }
   if (state === 'awaiting_confirmation') {
     if (!details.planFingerprint?.trim() || details.rehearsal?.success !== true || !details.rehearsedTargetIdentity) throw new Error('Confirmation requires a successful rehearsal, exact target identity, and plan fingerprint.');
   }
@@ -216,7 +252,9 @@ export async function updateAgentRecordingSessionInternal(
   projectPath: string, projectId: string, sceneId: string, sessionId: string, details: SessionTransitionDetails,
 ): Promise<AgentRecordingSession> {
   const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
-  if (terminal.has(current.state)) throw new Error('A terminal recording session cannot be updated.');
+  if (terminal.has(current.state)) {
+    throw new AgentRecordingDomainError('CONFLICT', 'A terminal recording session cannot be updated.');
+  }
   const now = new Date().toISOString();
   const next: StoredSession = {
     ...current, ...details, updatedAt: now,
