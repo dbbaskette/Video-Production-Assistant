@@ -43,6 +43,12 @@ function malformedOutput(request: JsonlProcessRequest, line: string): Error {
   return new Error(`Malformed JSONL output from ${request.executable}: ${preview}`);
 }
 
+function abortedProcess(request: JsonlProcessRequest): Error {
+  const error = new Error(`${request.executable} process aborted`);
+  error.name = 'AbortError';
+  return error;
+}
+
 function defaultSignalProcessTree(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
@@ -73,7 +79,7 @@ export async function runJsonlProcess(
   deps: JsonlProcessDeps = {},
 ): Promise<JsonlProcessResult> {
   if (request.signal?.aborted) {
-    throw new Error(`${request.executable} process aborted`);
+    throw abortedProcess(request);
   }
 
   const spawnProcess = deps.spawn ?? spawn;
@@ -153,14 +159,8 @@ export async function runJsonlProcess(
     }, request.timeoutMs);
 
     const abort = () => {
-      terminate(new Error(`${request.executable} process aborted`));
+      terminate(abortedProcess(request));
     };
-    request.signal?.addEventListener('abort', abort, { once: true });
-    // Close the small race between the pre-spawn check and listener setup.
-    if (request.signal?.aborted) {
-      abort();
-      return;
-    }
 
     const consumeLine = (line: string) => {
       if (!line.trim() || terminationError) return;
@@ -271,6 +271,15 @@ export async function runJsonlProcess(
       // The close/error event supplies the useful process diagnostic. This
       // listener prevents an early EPIPE from becoming an unhandled event.
     });
+
+    // Install every child lifecycle listener before termination can begin.
+    // addEventListener does not replay an abort that occurred during spawn,
+    // so the immediate recheck closes that race after close/error are safe.
+    request.signal?.addEventListener('abort', abort, { once: true });
+    if (request.signal?.aborted) {
+      abort();
+      return;
+    }
     child.stdin.end(request.stdin);
   });
 }

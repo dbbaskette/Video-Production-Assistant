@@ -158,6 +158,34 @@ describe('runJsonlProcess', () => {
     await rejection;
   });
 
+  it('observes synchronous close when the signal aborts during spawn', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const child = fakeChild();
+    const spawnProcess = vi.fn(() => {
+      controller.abort();
+      return child;
+    }) as unknown as typeof spawn;
+    const signalProcessTree = vi.fn((_child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals) => {
+      if (signal === 'SIGTERM') child.emit('close', null);
+    });
+
+    const pending = runJsonlProcess(request({ signal: controller.signal }), {
+      spawn: spawnProcess,
+      signalProcessTree,
+      terminationGraceMs: 10,
+      forceKillWaitMs: 10,
+    });
+
+    await expect(pending).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'codex process aborted',
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(signalProcessTree).toHaveBeenCalledTimes(1);
+    expect(signalProcessTree).toHaveBeenCalledWith(child, 'SIGTERM');
+  });
+
   it('escalates a process tree to SIGKILL and bounds the final close wait', async () => {
     vi.useFakeTimers();
     const child = fakeChild();
