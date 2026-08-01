@@ -20,15 +20,15 @@ Use the reviewed plan embedded by VPA as the complete authority. Use only `scrip
 
 ## Desktop driver
 
-Run `node scripts/vpa-desktop-driver.mjs --help` for syntax. Available operations are `inspect`, `screenshot`, `click`, `set-value`, `type-text`, and `press-key`.
+Run `node scripts/vpa-desktop-driver.mjs --help`. Operations: `inspect`, `screenshot`, `click`, `set-value`, `type-text`, `press-key`.
 
-Inspect before each action. Element indexes expire after visible state changes. Use screenshots only to verify the approved window. A refused command is a hard stop, not permission to use another GUI tool.
+Inspect before each action; indexes expire after visible changes. Screenshots verify only the approved window. A refusal is a hard stop.
 
 ## Rehearsal turn
 
-1. Inspect the approved target and compare it with the embedded plan.
-2. Rehearse every ordered action and checkpoint without capture.
-3. Reset the target to its starting state and inspect again.
+1. Inspect the approved target against the embedded plan.
+2. Rehearse every action and checkpoint without capture.
+3. Reset the starting state and inspect again.
 4. Return only this JSON shape; `detail` and `diagnostic` are required and may be `null`:
 
 ```json
@@ -44,11 +44,13 @@ Inspect before each action. Element indexes expire after visible state changes. 
 }
 ```
 
-Set `success` false when any action, checkpoint, target check, or reset fails. Report only indexes actually completed and put a concise, non-secret reason in `diagnostic`.
+Set `success` false on any action, checkpoint, target, or reset failure. List only completed indexes; keep `diagnostic` concise and non-secret.
+
+Failed evidence must still match the schema. Never omit fields, null non-nullable fields, or invent observations. Recover missing evidence by rechecking the approved target through the driver. If any required value remains unavailable, do not claim a structured result; let the turn fail.
 
 ## Resumed recording turn
 
-When VPA resumes the same Codex thread after user confirmation, execute only the rehearsed actions, once, in their original order. Do not improvise or repeat rehearsal. Return only this execution evidence JSON; `detail` is required and may be `null`, while `diagnostic` is always a string:
+When VPA resumes the thread after confirmation, execute only the rehearsed actions once, in order. Do not improvise or rehearse again. Return only this execution evidence JSON; `detail` may be `null`, while `diagnostic` is a string:
 
 ```json
 {

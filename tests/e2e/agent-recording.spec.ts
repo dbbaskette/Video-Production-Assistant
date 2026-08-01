@@ -137,6 +137,7 @@ interface FakeState {
   currentSession: ReturnType<typeof session> | null;
   plan: typeof plan;
   requests: Array<{ method: string; path: string; body: unknown }>;
+  unhandledRequests: string[];
 }
 
 async function installFakeApi(
@@ -148,6 +149,7 @@ async function installFakeApi(
     currentSession: initial.currentSession ?? null,
     plan: initial.plan ?? plan,
     requests: [],
+    unhandledRequests: [],
   };
 
   await page.addInitScript(() => {
@@ -183,6 +185,16 @@ async function handleApiRoute(route: Route, state: FakeState): Promise<void> {
         { id: projectId, name: 'meeting-notes-demo', path: '/fake/project', lastOpened: now },
       ],
     });
+  if (path === `/api/projects/${projectId}`)
+    return fulfill({
+      id: projectId,
+      name: 'meeting-notes-demo',
+      path: '/fake/project',
+      created: now,
+      objective: 'Show the MeetingNotes settings workflow.',
+      brand: null,
+    });
+  if (path === '/api/brands') return fulfill({ default_brand_id: null, brands: [] });
   if (path === `/api/projects/${projectId}/storyboard`) return fulfill(storyboard);
   if (path === `/api/projects/${projectId}/workflow-status`) return fulfill(workflowStatus());
   if (path === '/api/jobs') return fulfill({ jobs: [] });
@@ -219,6 +231,8 @@ async function handleApiRoute(route: Route, state: FakeState): Promise<void> {
     });
   if (path === `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`)
     return fulfill({ sceneId, lowerThirds: [] });
+  if (path === `/api/projects/${projectId}/scenes/${sceneId}/shot-plan`)
+    return fulfill({ transcript: [], proposedSteps: [], savedPlan: reviewedSteps });
   if (path === '/api/setup/cap' && method === 'GET') return fulfill(state.cap);
   if (path === '/api/setup/cap/install' && method === 'POST')
     return fulfill({ installationId: '0f85960d-158b-4283-b2e4-a42181693887', state: 'installing' });
@@ -265,6 +279,7 @@ async function handleApiRoute(route: Route, state: FakeState): Promise<void> {
     return fulfill(state.currentSession);
   }
 
+  state.unhandledRequests.push(`${method} ${request.url()}`);
   return route.fulfill({
     status: 404,
     contentType: 'application/json',
@@ -326,6 +341,10 @@ function matchingRequests(state: FakeState, method: string, suffix: string) {
   );
 }
 
+function expectNoUnhandledRequests(state: FakeState) {
+  expect(state.unhandledRequests, 'Every local API request must have an explicit fake').toEqual([]);
+}
+
 test('installs Cap, dispatches rehearsal directly, confirms once, and follows the local take lifecycle', async ({
   page,
 }) => {
@@ -361,10 +380,36 @@ test('installs Cap, dispatches rehearsal directly, confirms once, and follows th
   await expect(
     page.getByRole('heading', { name: 'Ready for your recording confirmation' }),
   ).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('MeetingNotes — Settings')).toBeVisible();
-  await expect(page.getByText('1920 × 1080 · 30 fps')).toBeVisible();
-  await expect(page.getByText('Cursor on')).toBeVisible();
-  await expect(page.getByText('Microphone off')).toBeVisible();
+  await expect(
+    dialog
+      .getByText('Verified application')
+      .locator('..')
+      .getByText('MeetingNotes', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog
+      .getByText('Verified window')
+      .locator('..')
+      .getByText('MeetingNotes — Settings', { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByText('1512 × 982 at 80, 40', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('1920 × 1080 · 30 fps', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Cursor on', { exact: true })).toHaveClass(/is-on/);
+  await expect(dialog.getByText('Microphone off', { exact: true })).not.toHaveClass(/is-on/);
+  await expect(dialog.getByText('Camera off', { exact: true })).not.toHaveClass(/is-on/);
+  await expect(dialog.getByText('System Audio off', { exact: true })).not.toHaveClass(/is-on/);
+  for (const step of reviewedSteps) {
+    await expect(dialog.locator('li.is-passed', { hasText: step.action })).toBeVisible();
+  }
+  await expect(
+    dialog.locator('li.is-passed', {
+      hasText: 'General, Model, and Integration are each visible.',
+    }),
+  ).toContainText('All three settings sections matched the reviewed fixture.');
+  await expect(dialog.getByText('Target reset verified', { exact: true })).toHaveClass(/is-passed/);
+  await expect(
+    dialog.getByText('Rehearsal completed and the General tab was restored.', { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText(
       'Capture is still off. Recording begins only after you confirm this exact rehearsal.',
@@ -395,6 +440,7 @@ test('installs Cap, dispatches rehearsal directly, confirms once, and follows th
   await expect(page.getByRole('heading', { name: 'Capture this scene' })).toBeHidden({
     timeout: 5_000,
   });
+  expectNoUnhandledRequests(fake);
 });
 
 test('shows stale-plan and rehearsal-failure diagnostics with manual upload available', async ({
@@ -403,7 +449,10 @@ test('shows stale-plan and rehearsal-failure diagnostics with manual upload avai
   const failed = session('failed', {
     message: 'Rehearsal failed: the Integration tab did not match the reviewed checkpoint.',
   });
-  await installFakeApi(page, { plan: { ...plan, stale: true }, currentSession: failed });
+  const fake = await installFakeApi(page, {
+    plan: { ...plan, stale: true },
+    currentSession: failed,
+  });
   await openRecordingDialog(page);
   const dialog = page.getByRole('dialog', { name: 'Capture this scene' });
 
@@ -419,6 +468,7 @@ test('shows stale-plan and rehearsal-failure diagnostics with manual upload avai
     ),
   ).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Upload manually', exact: true })).toBeEnabled();
+  expectNoUnhandledRequests(fake);
 });
 
 test('cancels an awaiting take without confirming and restores the manual-upload fallback', async ({
@@ -436,4 +486,5 @@ test('cancels an awaiting take without confirming and restores the manual-upload
   expect(matchingRequests(fake, 'POST', '/cancel')).toHaveLength(1);
   expect(matchingRequests(fake, 'POST', '/confirm')).toHaveLength(0);
   await expect(dialog.getByRole('button', { name: 'Upload manually', exact: true })).toBeEnabled();
+  expectNoUnhandledRequests(fake);
 });
