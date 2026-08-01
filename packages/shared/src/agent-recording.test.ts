@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AgentRecordingPlanSchema, RecordingProvenanceSchema, RecordingSchema } from './index.js';
+import { AgentRehearsalEvidenceSchema, AgentRecordingPlanSchema, CapSetupStatusSchema, RecordingProvenanceSchema, RecordingSchema } from './index.js';
 
 describe('agent recording schemas', () => {
   it('provides privacy-safe capture defaults', () => {
@@ -15,5 +15,27 @@ describe('agent recording schemas', () => {
   it('requires a session for Cap provenance and accepts legacy recordings', () => {
     expect(() => RecordingProvenanceSchema.parse({ source_kind: 'cap-agent' })).toThrow();
     expect(() => RecordingSchema.parse({ source: 'recordings/scene.mp4' })).not.toThrow();
+  });
+
+  it('applies Cap setup defaults and rejects unknown permissions', () => {
+    const status = CapSetupStatusSchema.parse({
+      state: 'ready', installed: true, captureReady: true, missingPermissions: [], updatedAt: '2026-07-31T12:00:00.000Z',
+    });
+    expect(status.targetCount).toBe(0);
+    expect(() => CapSetupStatusSchema.parse({
+      state: 'needs-permission', installed: true, captureReady: false, missingPermissions: ['camera'], updatedAt: '2026-07-31T12:00:00.000Z',
+    })).toThrow();
+  });
+
+  it('parses successful rehearsal evidence', () => {
+    expect(AgentRehearsalEvidenceSchema.parse({
+      success: true,
+      targetApplication: 'Safari',
+      windowTitle: 'Demo',
+      windowBounds: { x: 0, y: 20, width: 1440, height: 900 },
+      completedStepIndexes: [0, 1],
+      checkpoints: [{ description: 'Welcome screen is visible', passed: true }],
+      resetConfirmed: true,
+    })).toMatchObject({ success: true, resetConfirmed: true });
   });
 });

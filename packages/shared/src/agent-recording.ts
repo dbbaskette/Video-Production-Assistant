@@ -57,8 +57,57 @@ export const AgentRecordingPlanUpdateSchema = z.object({
 });
 export type AgentRecordingPlanUpdate = z.infer<typeof AgentRecordingPlanUpdateSchema>;
 
+export const CapSetupStateSchema = z.enum([
+  'not-installed', 'installing', 'needs-permission', 'ready', 'error',
+]);
+export type CapSetupState = z.infer<typeof CapSetupStateSchema>;
+
+export const CapSetupStatusSchema = z.object({
+  state: CapSetupStateSchema,
+  installed: z.boolean(),
+  cliPath: z.string().optional(),
+  version: z.string().optional(),
+  captureReady: z.boolean(),
+  missingPermissions: z.array(z.enum(['screen-recording', 'accessibility'])),
+  targetCount: z.number().int().nonnegative().default(0),
+  installationId: z.string().uuid().optional(),
+  message: z.string().optional(),
+  updatedAt: z.string().datetime(),
+});
+export type CapSetupStatus = z.infer<typeof CapSetupStatusSchema>;
+
+export const AgentRehearsalEvidenceSchema = z.object({
+  success: z.boolean(),
+  targetApplication: z.string(),
+  windowTitle: z.string(),
+  windowBounds: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+  completedStepIndexes: z.array(z.number().int().nonnegative()),
+  checkpoints: z.array(z.object({
+    description: z.string(),
+    passed: z.boolean(),
+    detail: z.string().optional(),
+  })),
+  resetConfirmed: z.boolean(),
+  diagnostic: z.string().max(2000).optional(),
+});
+export type AgentRehearsalEvidence = z.infer<typeof AgentRehearsalEvidenceSchema>;
+
+export const AgentRecordingRehearseRequestSchema = AgentRecordingPlanUpdateSchema;
+export type AgentRecordingRehearseRequest = z.infer<typeof AgentRecordingRehearseRequestSchema>;
+
+export const AgentRecordingConfirmRequestSchema = z.object({
+  confirmed: z.literal(true),
+  planFingerprint: z.string().min(1),
+});
+export type AgentRecordingConfirmRequest = z.infer<typeof AgentRecordingConfirmRequestSchema>;
+
 export const AgentRecordingSessionStateSchema = z.enum([
-  'rehearsing', 'recording', 'exporting', 'attaching', 'completed', 'failed', 'interrupted',
+  'rehearsing', 'awaiting_confirmation', 'recording', 'exporting', 'attaching', 'completed', 'failed', 'interrupted',
 ]);
 export type AgentRecordingSessionState = z.infer<typeof AgentRecordingSessionStateSchema>;
 
@@ -70,18 +119,14 @@ export const AgentRecordingSessionSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   message: z.string().optional(),
-  recordingId: z.string().optional(),
+  phase: z.string().optional(),
+  planFingerprint: z.string().min(1).optional(),
+  rehearsal: AgentRehearsalEvidenceSchema.optional(),
+  confirmedCapture: z.boolean().optional(),
 });
 export type AgentRecordingSession = z.infer<typeof AgentRecordingSessionSchema>;
 
 export const AgentRecordingSessionCreateSchema = z.object({ state: z.literal('rehearsing') });
-export const AgentRecordingSessionUpdateSchema = z.object({
-  state: AgentRecordingSessionStateSchema.exclude(['rehearsing']),
-  message: z.string().max(2000).optional(),
-  recordingId: z.string().max(500).optional(),
-  capProjectPath: z.string().max(4000).optional(),
-  exportPath: z.string().max(4000).optional(),
-});
 
 export const RecordingProvenanceSchema = z.object({
   source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split']).default('manual'),
