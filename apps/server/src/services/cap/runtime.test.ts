@@ -34,8 +34,10 @@ function processDouble(
   const run = vi.fn(handler) as MockedFunction<CapProcess['run']>;
   const runJsonl = vi.fn(async (request: CapProcessRequest) => {
       const command = await handler(request);
+      const events = command.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      for (const event of events) request.onEvent?.(event);
       return {
-        events: command.stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)),
+        events,
         stderr: command.stderr,
         exitCode: command.exitCode,
       };
@@ -115,13 +117,18 @@ describe('CapLocator', () => {
 
 const guide = {
   commands: [
-    'doctor --json',
-    'targets --json',
-    'record start --screen <id> --detach --json',
-    'record start --window <id> --detach --json',
-    'record stop --id <recordingId> --json',
-    'project validate <path.cap> --json',
-    'export <path.cap> --output <file> --json',
+    { command: 'doctor', flags: ['--json'] },
+    { command: 'targets', flags: ['--json', '--fps'] },
+    {
+      command: 'record start',
+      flags: [
+        '--screen', '--window', '--fps', '--path', '--camera', '--mic',
+        '--system-audio', '--detach', '--json',
+      ],
+    },
+    { command: 'record stop', flags: ['--id', '--json'] },
+    { command: 'project validate', flags: ['--json'] },
+    { command: 'export', flags: ['--output', '--json'] },
   ],
 };
 
@@ -248,7 +255,7 @@ describe('CapRuntime', () => {
     const cliPath = join(home, 'bin', 'cap');
     await executable(cliPath);
     let startOutput = '{"type":"started","recordingId":"rec-1","path":"/tmp/take.cap"}';
-    let stopOutput = '{"type":"stopped","path":"/tmp/take.cap","recordingMetaExists":true}';
+    let stopOutput = '{"type":"stopped","recordingId":"rec-1","path":"/tmp/take.cap","recordingMetaExists":true}';
     let validateOutput = '{"valid":true}';
     const process = processDouble(async ({ args }) => {
       if (args[0] === 'version') return result('{"version":"1.0.0"}');
@@ -264,11 +271,23 @@ describe('CapRuntime', () => {
       process,
     });
 
-    await expect(runtime.startRecording({ targetKind: 'window', targetId: 'window-9', fps: 30 }))
+    await expect(runtime.startRecording({
+      targetKind: 'window',
+      targetId: 'window-9',
+      fps: 30,
+      projectPath: '/tmp/take.cap',
+      cameraId: 'camera-2',
+      microphoneId: 'Demo Mic',
+      systemAudio: true,
+    }))
       .resolves.toEqual({ recordingId: 'rec-1', projectPath: '/tmp/take.cap' });
     expect(process.runJsonl).toHaveBeenCalledWith(expect.objectContaining({
       executable: await realpath(cliPath),
-      args: ['record', 'start', '--window', 'window-9', '--fps', '30', '--detach', '--json'],
+      args: [
+        'record', 'start', '--window', 'window-9', '--fps', '30',
+        '--path', '/tmp/take.cap', '--camera', 'camera-2', '--mic', 'Demo Mic',
+        '--system-audio', '--detach', '--json',
+      ],
     }));
     await expect(runtime.stopRecording('rec-1')).resolves.toEqual({
       recordingMetaExists: true,
@@ -284,8 +303,145 @@ describe('CapRuntime', () => {
       .rejects.toThrow('recording ID');
     stopOutput = '{"type":"stopped","path":"/tmp/take.cap","recordingMetaExists":false}';
     await expect(runtime.stopRecording('rec-1')).rejects.toThrow('recording metadata');
+    stopOutput = '{"type":"stopped","recordingId":"rec-other","path":"/tmp/take.cap","recordingMetaExists":true}';
+    await expect(runtime.stopRecording('rec-1')).rejects.toThrow('recording ID did not match');
     validateOutput = '{"valid":false}';
     await expect(runtime.validateProject('/tmp/take.cap')).rejects.toThrow('invalid');
+  });
+
+  it('does not accept a selected flag advertised only by an unrelated guide command', async () => {
+    const home = await tempHome();
+    const cliPath = join(home, 'bin', 'cap');
+    await executable(cliPath);
+    const scopedGuide = {
+      commands: guide.commands.map((entry) => entry.command === 'record start'
+        ? { ...entry, flags: entry.flags.filter((flag) => flag !== '--fps') }
+        : entry),
+    };
+    const process = processDouble(async ({ args }) => {
+      if (args[0] === 'version') return result('{"version":"1.0.0"}');
+      if (args[0] === 'guide') return result(JSON.stringify(scopedGuide));
+      throw new Error(`unexpected args: ${args.join(' ')}`);
+    });
+    const runtime = new ManagedCapRuntime({
+      vpaHome: home,
+      locator: new CapLocator({ vpaHome: home, run: process.run, env: { PATH: '' } }),
+      process,
+    });
+
+    await expect(runtime.startRecording({ targetKind: 'window', targetId: 'window-9', fps: 30 }))
+      .rejects.toThrow('record start does not support --fps');
+    expect(process.runJsonl).not.toHaveBeenCalled();
+  });
+
+  it('uses only exact-command help when the official guide shape omits flag lists', async () => {
+    const home = await tempHome();
+    const cliPath = join(home, 'bin', 'cap');
+    await executable(cliPath);
+    const officialGuideShape = {
+      outputConvention: { jsonFlag: '--json (global) or a command\'s --format json' },
+      commands: [
+        { command: 'targets', summary: 'Unrelated --camera token' },
+        { command: 'record start', summary: 'Start a recording', notes: 'Use --detach for background work' },
+      ],
+    };
+    const process = processDouble(async ({ args }) => {
+      if (args[0] === 'version') return result('{"version":"1.0.0"}');
+      if (args[0] === 'guide') return result(JSON.stringify(officialGuideShape));
+      if (args.join(' ') === 'record start --help') {
+        return result('Usage: cap record start --window <id> --camera <id> --detach --json');
+      }
+      if (args[0] === 'record') {
+        return result('{"type":"started","recordingId":"rec-1","path":"/tmp/take.cap"}');
+      }
+      throw new Error(`unexpected args: ${args.join(' ')}`);
+    });
+    const runtime = new ManagedCapRuntime({
+      vpaHome: home,
+      locator: new CapLocator({ vpaHome: home, run: process.run, env: { PATH: '' } }),
+      process,
+    });
+
+    await expect(runtime.startRecording({
+      targetKind: 'window', targetId: 'window-9', cameraId: 'camera-2',
+    })).resolves.toEqual({ recordingId: 'rec-1', projectPath: '/tmp/take.cap' });
+    expect(process.run).toHaveBeenCalledWith(expect.objectContaining({
+      args: ['record', 'start', '--help'],
+    }));
+  });
+
+  it('rejects retained and streamed JSONL failures even when a later success event exists', async () => {
+    const home = await tempHome();
+    const cliPath = join(home, 'bin', 'cap');
+    const outputPath = join(home, 'take.mp4');
+    await executable(cliPath);
+    await writeFile(outputPath, 'mp4-bytes');
+    const base = processDouble(async ({ args }) => {
+      if (args[0] === 'version') return result('{"version":"1.0.0"}');
+      if (args[0] === 'guide') return result(JSON.stringify(guide));
+      throw new Error(`unexpected args: ${args.join(' ')}`);
+    });
+    base.runJsonl.mockImplementation(async (request) => {
+      request.onEvent?.({ type: 'error', message: 'early render failure' });
+      for (let index = 0; index < 501; index += 1) {
+        request.onEvent?.({ type: 'Progress', progress: index / 501 });
+      }
+      request.onEvent?.({ type: 'Completed', path: outputPath });
+      return { events: [{ type: 'Progress' }, { type: 'Completed', path: outputPath }], stderr: '', exitCode: 0 };
+    });
+    const runtime = new ManagedCapRuntime({
+      vpaHome: home,
+      locator: new CapLocator({ vpaHome: home, run: base.run, env: { PATH: '' } }),
+      process: base,
+    });
+
+    await expect(runtime.exportProject('/tmp/take.cap', outputPath))
+      .rejects.toThrow('early render failure');
+
+    base.runJsonl.mockImplementationOnce(async (request) => {
+      request.onEvent?.({ error: { code: 'renderer-crashed' } });
+      request.onEvent?.({ type: 'Completed', path: outputPath });
+      return { events: [{ type: 'Completed', path: outputPath }], stderr: '', exitCode: 0 };
+    });
+    await expect(runtime.exportProject('/tmp/take.cap', outputPath))
+      .rejects.toThrow('renderer-crashed');
+
+    base.runJsonl.mockImplementationOnce(async (request) => {
+      request.onEvent?.({ type: 'Completed', success: false, message: 'terminal failure' });
+      return { events: [{ type: 'Completed', success: false, message: 'terminal failure' }], stderr: '', exitCode: 0 };
+    });
+    await expect(runtime.exportProject('/tmp/take.cap', outputPath))
+      .rejects.toThrow('terminal failure');
+  });
+
+  it('rejects incomplete target collections and malformed target entries', async () => {
+    const invalidTargets: Array<[string, Record<string, unknown>]> = [
+      ['screens array', { screens: {}, windows: [] }],
+      ['windows array', { screens: [] }],
+      ['screen target ID', { screens: [{ id: true, name: 'Built-in', width: 100, height: 100 }], windows: [] }],
+      ['screen target width', { screens: [{ id: 1, name: 'Built-in', width: 0, height: 100 }], windows: [] }],
+      ['window target ID', { screens: [], windows: [{ id: {}, ownerName: 'MeetingNotes', title: 'Settings', width: 100, height: 100 }] }],
+      ['window target title', { screens: [], windows: [{ id: 2, ownerName: 'MeetingNotes', title: 9, width: 100, height: 100 }] }],
+    ];
+
+    for (const [message, payload] of invalidTargets) {
+      const home = await tempHome();
+      const cliPath = join(home, 'bin', 'cap');
+      await executable(cliPath);
+      const process = processDouble(async ({ args }) => {
+        if (args[0] === 'version') return result('{"version":"1.0.0"}');
+        if (args[0] === 'guide') return result(JSON.stringify(guide));
+        if (args[0] === 'targets') return result(JSON.stringify(payload));
+        throw new Error(`unexpected args: ${args.join(' ')}`);
+      });
+      const runtime = new ManagedCapRuntime({
+        vpaHome: home,
+        locator: new CapLocator({ vpaHome: home, run: process.run, env: { PATH: '' } }),
+        process,
+      });
+
+      await expect(runtime.targets()).rejects.toThrow(message);
+    }
   });
 
   it('accepts only a terminal successful export whose MP4 exists and is non-empty', async () => {
@@ -293,7 +449,7 @@ describe('CapRuntime', () => {
     const cliPath = join(home, 'bin', 'cap');
     const outputPath = join(home, 'take.mp4');
     await executable(cliPath);
-    let exportLines = '{"type":"progress","progress":0.5}\n{"type":"completed","path":"' + outputPath + '"}';
+    let exportLines = '{"type":"Progress","progress":0.5}\n{"type":"Completed","path":"' + outputPath + '"}';
     const process = processDouble(async ({ args }) => {
       if (args[0] === 'version') return result('{"version":"1.0.0"}');
       if (args[0] === 'guide') return result(JSON.stringify(guide));
@@ -314,11 +470,11 @@ describe('CapRuntime', () => {
       args: ['export', '/tmp/take.cap', '--output', outputPath, '--json'],
     }));
 
-    exportLines = '{"type":"progress","progress":1}';
+    exportLines = '{"type":"Progress","progress":1}';
     await expect(runtime.exportProject('/tmp/take.cap', outputPath)).rejects.toThrow('terminal success');
-    exportLines = '{"type":"completed","path":"' + outputPath + '"}';
+    exportLines = '{"type":"Completed","path":"' + outputPath + '"}';
     process.runJsonl.mockImplementationOnce(async () => ({
-      events: [{ type: 'completed', path: outputPath }], stderr: '', exitCode: 0,
+      events: [{ type: 'Completed', path: outputPath }], stderr: '', exitCode: 0,
     }));
     await writeFile(outputPath, '');
     await expect(runtime.exportProject('/tmp/take.cap', outputPath)).rejects.toThrow('empty');

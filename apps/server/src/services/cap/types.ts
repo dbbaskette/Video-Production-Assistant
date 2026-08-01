@@ -7,6 +7,7 @@ export interface CapProcessRequest {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onEvent?: (event: Record<string, unknown>) => void;
 }
 
 export interface CapProcessResult {
