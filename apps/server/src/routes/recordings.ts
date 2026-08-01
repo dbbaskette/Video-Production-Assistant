@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -12,10 +12,10 @@ import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '.
 import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
-import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type Scene, type SceneTransition } from '@vpa/shared';
+import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type RecordingProvenance, type Scene, type SceneTransition } from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
-import { getCurrentAgentRecordingSession } from '../services/agent-recording/session.js';
+import { isAgentRecordingDomainError } from '../services/agent-recording/errors.js';
 
 interface Deps {
   store: ProjectStore;
@@ -25,7 +25,10 @@ interface Deps {
   registry?: ModelRegistry;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
-  agentRecordingCoordinator?: Pick<AgentRecordingCoordinator, 'recoverAttachment'>;
+  agentRecordingCoordinator: Pick<
+    AgentRecordingCoordinator,
+    'recoverAttachment' | 'withManualUploadReservation'
+  >;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -40,6 +43,49 @@ async function resolveProjectEntry(store: ProjectStore, projectId: string) {
   const entry = tracker.projects.find((p) => p.id === projectId);
   if (!entry) throw { statusCode: 404, message: `Project not found: ${projectId}` };
   return entry;
+}
+
+async function verifyManualIngestion(
+  projectPath: string,
+  sceneId: string,
+  metadata: VideoMetadata,
+  result: IngestResult,
+  provenance: RecordingProvenance,
+): Promise<void> {
+  if (
+    result.sceneId !== sceneId ||
+    !result.relativePath ||
+    result.metadata.duration_sec !== metadata.duration_sec ||
+    result.metadata.width !== metadata.width ||
+    result.metadata.height !== metadata.height ||
+    result.metadata.codec !== metadata.codec ||
+    result.metadata.fps !== metadata.fps ||
+    result.metadata.size_bytes !== metadata.size_bytes
+  ) {
+    throw new Error('Recording ingestion returned inconsistent metadata.');
+  }
+  const storyboard = await loadStoryboard(projectPath);
+  const recording = storyboard?.scenes.find((scene) => scene.id === sceneId)?.recording;
+  if (
+    !recording ||
+    recording.source !== result.relativePath ||
+    recording.duration_sec !== metadata.duration_sec ||
+    recording.source_kind !== provenance.source_kind ||
+    recording.capture_session_id !== provenance.capture_session_id ||
+    recording.captured_at !== provenance.captured_at
+  ) {
+    throw new Error('Uploaded recording metadata could not be verified.');
+  }
+}
+
+function sendUploadConflict(reply: FastifyReply, error: unknown) {
+  if (isAgentRecordingDomainError(error) && error.code === 'CONFLICT') {
+    return reply.status(409).send({
+      error: 'Stop the active Cap recording workflow before uploading a recording manually.',
+      code: 'agent_recording_active',
+    });
+  }
+  throw error;
 }
 
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
@@ -74,31 +120,18 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       capture_session_id: multipartValue('capture_session_id'),
       captured_at: multipartValue('captured_at'),
     });
-    if (provenance.source_kind !== 'cap-agent') {
-      const activeSession = await getCurrentAgentRecordingSession(projectPath, id, sceneId);
-      if (activeSession && !['completed', 'failed', 'interrupted'].includes(activeSession.state)) {
-        return reply.status(409).send({
-          error: 'Stop the active Cap recording workflow before uploading a recording manually.',
-          code: 'agent_recording_active',
-        });
-      }
-    }
-    // Save to temp, probe, then ingest
+    // Save to temp, probe, ingest, and verify while holding the coordinator's
+    // exact scene reservation. Reading the request stream does not mutate disk.
+    const chunks: Buffer[] = [];
+    for await (const chunk of data.file) chunks.push(chunk);
+    const upload = Buffer.concat(chunks);
     const tmpDir = path.join(projectPath, '.tmp');
-    await mkdir(tmpDir, { recursive: true });
     const tmpFile = path.join(tmpDir, `upload-${randomUUID()}.mp4`);
 
     try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of data.file) {
-        chunks.push(chunk);
-      }
-      await writeFile(tmpFile, Buffer.concat(chunks));
-
       if (provenance.source_kind === 'cap-agent') {
-        if (!deps.agentRecordingCoordinator) {
-          return reply.status(409).send({ error: 'Coordinator recovery is unavailable.', code: 'invalid_capture_session' });
-        }
+        await mkdir(tmpDir, { recursive: true });
+        await writeFile(tmpFile, upload);
         try {
           return await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
             capturedAt: provenance.captured_at!, uploadedPath: tmpFile,
@@ -107,10 +140,22 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
           return reply.status(409).send({ error: 'Verified Cap attachment recovery was rejected.', code: 'invalid_capture_session' });
         }
       }
-
-      const metadata = await probe(tmpFile);
-      const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
-      return result;
+      try {
+        return await deps.agentRecordingCoordinator.withManualUploadReservation(
+          id,
+          [sceneId],
+          async () => {
+            await mkdir(tmpDir, { recursive: true });
+            await writeFile(tmpFile, upload);
+            const metadata = await probe(tmpFile);
+            const result = await ingestRecording(projectPath, sceneId, tmpFile, metadata, provenance);
+            await verifyManualIngestion(projectPath, sceneId, metadata, result, provenance);
+            return result;
+          },
+        );
+      } catch (error) {
+        return sendUploadConflict(reply, error);
+      }
     } finally {
       await unlink(tmpFile).catch(() => {});
     }
@@ -127,37 +172,45 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     }
 
     const parts = req.parts();
-    const results: IngestResult[] = [];
-    let sceneIndex = 0;
-
-    const tmpDir = path.join(projectPath, '.tmp');
-    await mkdir(tmpDir, { recursive: true });
+    const uploads: Buffer[] = [];
 
     for await (const part of parts) {
       if (part.type !== 'file') continue;
-      if (sceneIndex >= sb.scenes.length) break;
-
-      const scene = sb.scenes[sceneIndex]!;
-      const tmpFile = path.join(tmpDir, `upload-${randomUUID()}.mp4`);
-
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) {
-          chunks.push(chunk);
-        }
-        await writeFile(tmpFile, Buffer.concat(chunks));
-
-        const metadata = await probe(tmpFile);
-        const result = await ingestRecording(projectPath, scene.id, tmpFile, metadata);
-        results.push(result);
-      } finally {
-        await unlink(tmpFile).catch(() => {});
-      }
-
-      sceneIndex++;
+      const chunks: Buffer[] = [];
+      for await (const chunk of part.file) chunks.push(chunk);
+      if (uploads.length < sb.scenes.length) uploads.push(Buffer.concat(chunks));
     }
-
-    return { results, assignedCount: results.length, totalScenes: sb.scenes.length };
+    const scenes = sb.scenes.slice(0, uploads.length);
+    if (scenes.length === 0) {
+      return { results: [], assignedCount: 0, totalScenes: sb.scenes.length };
+    }
+    const tmpDir = path.join(projectPath, '.tmp');
+    const tmpFiles = uploads.map(() => path.join(tmpDir, `upload-${randomUUID()}.mp4`));
+    const provenance = RecordingProvenanceSchema.parse({ source_kind: 'bulk' });
+    try {
+      return await deps.agentRecordingCoordinator.withManualUploadReservation(
+        id,
+        scenes.map((scene) => scene.id),
+        async () => {
+          await mkdir(tmpDir, { recursive: true });
+          const results: IngestResult[] = [];
+          for (let index = 0; index < scenes.length; index += 1) {
+            const scene = scenes[index]!;
+            const tmpFile = tmpFiles[index]!;
+            await writeFile(tmpFile, uploads[index]!);
+            const metadata = await probe(tmpFile);
+            const result = await ingestRecording(projectPath, scene.id, tmpFile, metadata, provenance);
+            await verifyManualIngestion(projectPath, scene.id, metadata, result, provenance);
+            results.push(result);
+          }
+          return { results, assignedCount: results.length, totalScenes: sb.scenes.length };
+        },
+      );
+    } catch (error) {
+      return sendUploadConflict(reply, error);
+    } finally {
+      await Promise.all(tmpFiles.map((tmpFile) => unlink(tmpFile).catch(() => {})));
+    }
   });
 
   // GET /api/projects/:id/scenes/:sceneId/recording/video — stream the recording mp4.

@@ -15,6 +15,24 @@ export const AgentCaptureSettingsSchema = z.object({
 });
 export type AgentCaptureSettings = z.infer<typeof AgentCaptureSettingsSchema>;
 
+/**
+ * Public, server-authored capture snapshot bound to verified rehearsal evidence.
+ * Unlike editable plan settings, persisted evidence must never acquire defaults.
+ */
+export const AgentReviewedCaptureSchema = z.object({
+  targetApplication: z.string(),
+  startingUrl: z.string().url().or(z.literal('')),
+  targetKind: z.enum(['window', 'screen']),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().int().positive().max(60),
+  cursor: z.boolean(),
+  microphone: z.boolean(),
+  camera: z.boolean(),
+  systemAudio: z.boolean(),
+}).strict();
+export type AgentReviewedCapture = z.infer<typeof AgentReviewedCaptureSchema>;
+
 export const AgentRecordingStepSchema = z.object({
   index: z.number().int().nonnegative(),
   action: z.string().min(1),
@@ -95,7 +113,7 @@ export const AgentRehearsalEvidenceSchema = z.object({
   resetConfirmed: z.boolean(),
   diagnostic: z.string().max(2000).optional(),
   /** Server-authored snapshot of the reviewed settings bound to this rehearsal. */
-  reviewedCapture: AgentCaptureSettingsSchema.optional(),
+  reviewedCapture: AgentReviewedCaptureSchema.optional(),
   /** Server-authored snapshot of the reviewed actions bound to this rehearsal. */
   reviewedSteps: z.array(AgentRecordingStepSchema).optional(),
 });

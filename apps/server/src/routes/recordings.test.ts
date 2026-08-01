@@ -13,7 +13,8 @@ import { registerRecordingRoutes } from './recordings.js';
 import type { Storyboard } from '@vpa/shared';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { ingestRecording } from '../services/recording/ingest.js';
-import { createAgentRecordingSession } from '../services/agent-recording/session.js';
+import { AgentRecordingDomainError } from '../services/agent-recording/errors.js';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -31,13 +32,27 @@ async function buildTestServer() {
       source_kind: 'cap-agent', capture_session_id: sessionId, captured_at: input.capturedAt,
     });
   });
+  const withManualUploadReservation = vi.fn(async <T>(
+    _projectId: string,
+    _sceneIds: readonly string[],
+    operation: () => Promise<T>,
+  ) => operation());
 
   const app = Fastify();
   await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024, files: 10 } });
   await app.register(async (i) =>
-    registerRecordingRoutes(i, { store, llm, workspaceRoot: workspaceRoot(), probe, agentRecordingCoordinator: { recoverAttachment } }),
+    registerRecordingRoutes(i, {
+      store,
+      llm,
+      workspaceRoot: workspaceRoot(),
+      probe,
+      agentRecordingCoordinator: {
+        recoverAttachment,
+        withManualUploadReservation: withManualUploadReservation as unknown as AgentRecordingCoordinator['withManualUploadReservation'],
+      },
+    }),
   );
-  return { app, store, llm, home, projects, recoverAttachment };
+  return { app, store, llm, home, projects, recoverAttachment, withManualUploadReservation };
 }
 
 function makeSampleStoryboard(projectId: string, projectName: string): Storyboard {
@@ -102,7 +117,9 @@ describe('recording routes', () => {
     it('rejects a manual upload while the scene has a nonterminal Cap session', async () => {
       const sb = makeSampleStoryboard(projectId, 'test-proj');
       await saveStoryboard(projectPath, sb);
-      await createAgentRecordingSession(projectPath, projectId, 'scene-01');
+      ctx.withManualUploadReservation.mockRejectedValueOnce(
+        new AgentRecordingDomainError('CONFLICT', 'Agent recording is active.'),
+      );
 
       const form = new FormData();
       form.append('file', Buffer.from('fake-mp4-data'), {
@@ -210,6 +227,33 @@ describe('recording routes', () => {
       expect(body.results).toHaveLength(2);
       expect(body.results[0].sceneId).toBe('scene-01');
       expect(body.results[1].sceneId).toBe('scene-02');
+      expect(ctx.withManualUploadReservation).toHaveBeenCalledWith(
+        projectId,
+        ['scene-01', 'scene-02'],
+        expect.any(Function),
+      );
+    });
+
+    it('returns one conflict without overwriting any scene when a bulk reservation fails', async () => {
+      const sb = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, sb);
+      ctx.withManualUploadReservation.mockRejectedValueOnce(
+        new AgentRecordingDomainError('CONFLICT', 'Agent recording is active.'),
+      );
+      const form = new FormData();
+      form.append('file1', Buffer.from('mp4-data-1'), { filename: 'rec-01.mp4', contentType: 'video/mp4' });
+      form.append('file2', Buffer.from('mp4-data-2'), { filename: 'rec-02.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/bulk`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: 'agent_recording_active' });
+      expect((await loadStoryboard(projectPath))?.scenes.every((scene) => !scene.recording)).toBe(true);
     });
 
     it('returns 404 when no storyboard exists', async () => {

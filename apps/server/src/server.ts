@@ -191,7 +191,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerShotPlanRoutes(instance, { store, llm, shotPlanManager }),
   );
   await app.register(async (instance) =>
-    registerRecordingRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
+    registerRecordingRoutes(instance, {
+      store,
+      llm,
+      workspaceRoot: wsRoot,
+      registry: modelRegistry,
+      agentRecordingCoordinator,
+    }),
   );
   await app.register(async (instance) =>
     registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),

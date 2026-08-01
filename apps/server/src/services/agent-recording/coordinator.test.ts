@@ -361,6 +361,44 @@ describe('agent recording coordinator', () => {
     ]);
   });
 
+  it('holds a manual-upload reservation so a concurrent rehearsal cannot start', async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const ctx = await fixture();
+    const upload = ctx.coordinator.withManualUploadReservation(
+      ctx.project.id,
+      ['scene-01'],
+      async () => {
+        entered.resolve();
+        await release.promise;
+        return 'uploaded';
+      },
+    );
+    await entered.promise;
+
+    await expect(
+      ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    release.resolve();
+    await expect(upload).resolves.toBe('uploaded');
+  });
+
+  it('rejects a manual upload while a rehearsal holds the scene reservation', async () => {
+    const doctor = deferred<{ captureReady: boolean; missingPermissions: [] }>();
+    const ctx = await fixture({ cap: { doctor: vi.fn(() => doctor.promise) } });
+    const created = await ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update);
+
+    await expect(ctx.coordinator.withManualUploadReservation(
+      ctx.project.id,
+      ['scene-01'],
+      async () => 'uploaded',
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    doctor.resolve({ captureReady: true, missingPermissions: [] });
+    await waitForSession(ctx.project.path, created.id, ['awaiting_confirmation']);
+  });
+
   it('rejects confirmation unless the session is awaiting confirmation', async () => {
     const ctx = await fixture();
     const session = await createAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01');
@@ -370,6 +408,29 @@ describe('agent recording coordinator', () => {
         planFingerprint: 'x',
       }),
     ).rejects.toThrow('awaiting-confirmation');
+  });
+
+  it('rejects a partial reviewed-capture snapshot before scheduling recording', async () => {
+    const ctx = await fixture();
+    const ready = await rehearseReady(ctx);
+    const sessionPath = join(
+      ctx.project.path,
+      'recording-plans',
+      'sessions',
+      `${ready.id}.json`,
+    );
+    const stored = JSON.parse(await readFile(sessionPath, 'utf8'));
+    stored.rehearsal.reviewedCapture = { targetApplication: 'MeetingNotes' };
+    await writeFile(sessionPath, JSON.stringify(stored));
+
+    await expect(ctx.coordinator.confirmAndRecord(
+      ctx.project.id,
+      'scene-01',
+      ready.id,
+      { confirmed: true, planFingerprint: ready.planFingerprint! },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ctx.cap.startRecording).not.toHaveBeenCalled();
   });
 
   it('fails safely when the reviewed plan changes after rehearsal', async () => {

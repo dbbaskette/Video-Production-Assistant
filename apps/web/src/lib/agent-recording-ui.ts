@@ -1,4 +1,4 @@
-import type { AgentRecordingSession } from '@vpa/shared';
+import { AgentReviewedCaptureSchema, type AgentRecordingSession } from '@vpa/shared';
 
 const TERMINAL_STATES = new Set<AgentRecordingSession['state']>(['completed', 'failed', 'interrupted']);
 
@@ -10,7 +10,9 @@ export function hasSessionBoundConfirmationEvidence(session: AgentRecordingSessi
   if (session?.state !== 'awaiting_confirmation' || !session.planFingerprint || !session.rehearsal) return false;
   const evidence = session.rehearsal;
   if (!evidence.success || !evidence.resetConfirmed || !evidence.reviewedCapture || !evidence.reviewedSteps) return false;
-  if (evidence.targetApplication.trim().toLocaleLowerCase() !== evidence.reviewedCapture.targetApplication.trim().toLocaleLowerCase()) return false;
+  const reviewedCapture = AgentReviewedCaptureSchema.safeParse(evidence.reviewedCapture);
+  if (!reviewedCapture.success) return false;
+  if (evidence.targetApplication.trim().toLocaleLowerCase() !== reviewedCapture.data.targetApplication.trim().toLocaleLowerCase()) return false;
   const expected = evidence.reviewedSteps.map((step) => step.index).sort((left, right) => left - right);
   const completed = [...evidence.completedStepIndexes].sort((left, right) => left - right);
   return expected.length === completed.length

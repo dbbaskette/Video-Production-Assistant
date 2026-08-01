@@ -46,6 +46,13 @@ describe('agent recording UI session boundaries', () => {
       ...baseSession,
       rehearsal: { ...baseSession.rehearsal!, targetApplication: 'Another App' },
     })).toBe(false);
+    expect(hasSessionBoundConfirmationEvidence({
+      ...baseSession,
+      rehearsal: {
+        ...baseSession.rehearsal!,
+        reviewedCapture: { targetApplication: 'MeetingNotes' },
+      },
+    } as unknown as AgentRecordingSession)).toBe(false);
   });
 
   it('distinguishes active recording states from terminal history', () => {

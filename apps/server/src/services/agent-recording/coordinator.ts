@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   AgentRecordingConfirmRequestSchema,
   AgentRecordingPlanUpdateSchema,
+  AgentRehearsalEvidenceSchema,
   AgentRecordingSessionSchema,
   type AgentRecordingConfirmRequest,
   type AgentRecordingPlan,
@@ -85,6 +86,11 @@ export interface AgentRecordingCoordinatorDeps {
 }
 
 export interface AgentRecordingCoordinator {
+  withManualUploadReservation<T>(
+    projectId: string,
+    sceneIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T>;
   rehearse(
     projectId: string,
     sceneId: string,
@@ -518,6 +524,39 @@ export function createAgentRecordingCoordinator(
   }
 
   return {
+    async withManualUploadReservation(projectId, sceneIds, operation) {
+      const uniqueSceneIds = [...new Set(sceneIds)];
+      if (uniqueSceneIds.length === 0 || uniqueSceneIds.length !== sceneIds.length) {
+        throw new AgentRecordingDomainError('NOT_FOUND', 'Manual upload scenes are invalid.');
+      }
+      const keys = uniqueSceneIds.map((sceneId) => sceneKey(projectId, sceneId));
+      if (keys.some((key) => active.has(key) || reservations.has(key))) {
+        throw new AgentRecordingDomainError(
+          'CONFLICT',
+          'An agent recording operation is already active for an upload scene.',
+        );
+      }
+      for (const key of keys) reservations.add(key);
+      try {
+        let projectPath: string | undefined;
+        for (const sceneId of uniqueSceneIds) {
+          const { project } = await projectContext(projectId, sceneId);
+          projectPath ??= project.path;
+        }
+        const sessions = await Promise.all(uniqueSceneIds.map((sceneId) =>
+          getCurrentAgentRecordingSession(projectPath!, projectId, sceneId)));
+        if (sessions.some((session) => session && !['completed', 'failed', 'interrupted'].includes(session.state))) {
+          throw new AgentRecordingDomainError(
+            'CONFLICT',
+            'An agent recording session is already active for an upload scene.',
+          );
+        }
+        return await operation();
+      } finally {
+        for (const key of keys) reservations.delete(key);
+      }
+    },
+
     async rehearse(projectId, sceneId, update) {
       const key = sceneKey(projectId, sceneId);
       if (active.has(key) || reservations.has(key))
@@ -659,7 +698,14 @@ export function createAgentRecordingCoordinator(
           throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires an awaiting-confirmation session.');
         if (!stored.planFingerprint || confirmation.planFingerprint !== stored.planFingerprint)
           throw new AgentRecordingDomainError('INVALID_CONFIRMATION', 'Recording confirmation does not match the rehearsed plan.');
-        if (!stored.codexThreadId || !stored.rehearsal?.success)
+        const rehearsal = AgentRehearsalEvidenceSchema.safeParse(stored.rehearsal);
+        if (
+          !stored.codexThreadId ||
+          !rehearsal.success ||
+          !rehearsal.data.success ||
+          !rehearsal.data.reviewedCapture ||
+          !rehearsal.data.reviewedSteps
+        )
           throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires verified rehearsal evidence.');
         if (!stored.rehearsedTargetIdentity)
           throw new AgentRecordingDomainError('CONFLICT', 'Recording confirmation requires exact rehearsed target identity.');
