@@ -45,6 +45,9 @@ import { createXaiTtsProvider } from './services/tts/providers/xai.js';
 import { createQwenTtsProvider } from './services/tts/providers/qwen.js';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { CapLocator } from './services/cap/locator.js';
+import { ManagedCapRuntime, createCapProcess } from './services/cap/runtime.js';
+import { CapInstaller } from './services/cap/installer.js';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -114,6 +117,15 @@ export async function buildServer() {
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
 
+  const capProcess = createCapProcess();
+  const capLocator = new CapLocator({ vpaHome: config.vpaHome, run: capProcess.run });
+  const capRuntime = new ManagedCapRuntime({ vpaHome: config.vpaHome, locator: capLocator, process: capProcess });
+  const capInstaller = new CapInstaller({
+    vpaHome: config.vpaHome,
+    locator: capLocator,
+    onState: (status) => capRuntime.setInstallationStatus(status),
+  });
+
   // Qwen3-TTS — local voice cloning via mlx_audio. No API key needed.
   // Auto-downloads the model on first use; gated on the mlx_audio Python
   // module being importable.
@@ -161,7 +173,7 @@ export async function buildServer() {
     registerTtsScratchRoutes(instance, { vpaHome: config.vpaHome, tts }),
   );
   await app.register(async (instance) =>
-    registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome }),
+    registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome, capRuntime, capInstaller }),
   );
   await app.register(async (instance) =>
     registerRenderRoutes(instance, {
@@ -204,7 +216,7 @@ export async function buildServer() {
   await app.register(async (instance) => registerAgentRecordingRoutes(instance, { store }));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
-  return { app, config, store };
+  return { app, config, store, capRuntime, capInstaller };
 }
 
 async function main() {
