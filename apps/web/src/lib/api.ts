@@ -1255,7 +1255,7 @@ export const exportApi = {
 export interface ModelEntry {
   id: string;
   name: string;
-  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'openai-compat';
+  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'codex-cli' | 'openai-compat';
   model: string;
   endpoint?: string;
   hasApiKey: boolean;

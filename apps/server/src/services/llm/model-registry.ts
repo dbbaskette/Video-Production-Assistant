@@ -13,7 +13,7 @@ import { atomicWriteFile } from '../../lib/fs-atomic.js';
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'openai-compat';
+export type ModelProvider = 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'codex-cli' | 'openai-compat';
 
 export interface ModelEntry {
   id: string;
@@ -76,6 +76,14 @@ function seedFromEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
     active: false,
   });
 
+  entries.push({
+    id: 'codex-cli',
+    name: 'Codex CLI',
+    provider: 'codex-cli',
+    model: env.CODEX_MODEL || 'default',
+    active: false,
+  });
+
   // Mark the env-configured provider as active, or default to fake
   const envProvider = env.VPA_LLM_PROVIDER ?? 'fake';
   const activeEntry = entries.find((e) => e.provider === envProvider) ?? entries[0]!;
@@ -129,7 +137,8 @@ export class ModelRegistry {
     }
 
     // .env is the source of truth for the seeded built-in entries. If the
-    // user edits GEMINI_MODEL / ANTHROPIC_MODEL / CLAUDE_MODEL / API keys,
+    // user edits GEMINI_MODEL / ANTHROPIC_MODEL / CLAUDE_MODEL / CODEX_MODEL /
+    // API keys,
     // those changes should win over whatever was persisted at first seed —
     // otherwise models.json silently goes stale and the UI lies about which
     // model the request actually hits.

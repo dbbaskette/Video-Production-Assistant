@@ -10,6 +10,7 @@ const PROVIDERS: { value: Provider; label: string; needsEndpoint: boolean; needs
   { value: 'gemini', label: 'Google Gemini', needsEndpoint: false, needsApiKey: true, hint: '' },
   { value: 'anthropic', label: 'Anthropic', needsEndpoint: false, needsApiKey: true, hint: '' },
   { value: 'claude-code', label: 'Claude Code (claude -p)', needsEndpoint: false, needsApiKey: false, hint: 'Uses local Claude CLI' },
+  { value: 'codex-cli', label: 'Codex CLI (codex exec)', needsEndpoint: false, needsApiKey: false, hint: 'Uses your local Codex login' },
   { value: 'fake', label: 'Fake / Test', needsEndpoint: false, needsApiKey: false, hint: 'Returns placeholder responses' },
 ];
 
@@ -217,7 +218,11 @@ function AddModelForm({ onAdded }: { onAdded: () => void }) {
           <select
             style={fieldStyle}
             value={provider}
-            onChange={(e) => setProvider(e.target.value as Provider)}
+            onChange={(e) => {
+              const nextProvider = e.target.value as Provider;
+              setProvider(nextProvider);
+              if (nextProvider === 'codex-cli' && !model.trim()) setModel('default');
+            }}
           >
             {PROVIDERS.map((p) => (
               <option key={p.value} value={p.value}>
@@ -241,6 +246,8 @@ function AddModelForm({ onAdded }: { onAdded: () => void }) {
                   ? 'e.g. gemini-2.5-flash'
                   : provider === 'anthropic'
                     ? 'e.g. claude-sonnet-4-20250514'
+                    : provider === 'codex-cli'
+                      ? 'default'
                     : 'model identifier'
             }
             value={model}

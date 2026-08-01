@@ -7,7 +7,7 @@ function expandHome(p: string): string {
 }
 
 export interface LlmConfig {
-  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'openai-compat';
+  provider: 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'codex-cli' | 'openai-compat';
   apiKey?: string;
   model?: string;
   endpoint?: string;
@@ -32,7 +32,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid VPA_SERVER_PORT: ${env.VPA_SERVER_PORT}`);
   }
-  const validProviders = ['fake', 'claude-code', 'gemini', 'anthropic', 'openai-compat'] as const;
+  const validProviders = ['fake', 'claude-code', 'codex-cli', 'gemini', 'anthropic', 'openai-compat'] as const;
   const rawProvider = env.VPA_LLM_PROVIDER ?? 'fake';
   if (!validProviders.includes(rawProvider as typeof validProviders[number])) {
     throw new Error(`Invalid VPA_LLM_PROVIDER="${rawProvider}". Valid: ${validProviders.join(', ')}`);
@@ -53,6 +53,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     llmModel = env.GEMINI_MODEL || env.VPA_LLM_MODEL || undefined;
   } else if (llmProvider === 'claude-code') {
     llmModel = env.CLAUDE_MODEL || env.VPA_LLM_MODEL || undefined;
+  } else if (llmProvider === 'codex-cli') {
+    llmModel = env.CODEX_MODEL || env.VPA_LLM_MODEL || undefined;
   } else if (llmProvider === 'anthropic') {
     llmModel = env.ANTHROPIC_MODEL || env.VPA_LLM_MODEL || undefined;
   } else {

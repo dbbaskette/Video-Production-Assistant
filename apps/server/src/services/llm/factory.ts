@@ -5,6 +5,7 @@ import { createFakeLlm } from './fake.js';
 import { createGeminiLlm } from './providers/gemini.js';
 import { createAnthropicLlm } from './providers/anthropic.js';
 import { createClaudeCodeLlm } from './providers/claude-code.js';
+import { createCodexCliLlm } from './providers/codex-cli.js';
 import { createOpenAICompatLlm } from './providers/openai-compat.js';
 
 /** Create an LlmClient from legacy env-based config (backward compat) */
@@ -12,6 +13,8 @@ export function createLlm(config: LlmConfig): LlmClient {
   switch (config.provider) {
     case 'claude-code':
       return createClaudeCodeLlm(config.model);
+    case 'codex-cli':
+      return createCodexCliLlm(config.model);
     case 'gemini':
       if (!config.apiKey) throw new Error('GEMINI_API_KEY is required when VPA_LLM_PROVIDER=gemini');
       return createGeminiLlm(config.apiKey, config.model);
@@ -35,6 +38,8 @@ export function createLlmFromEntry(entry: ModelEntry): LlmClient {
   switch (entry.provider) {
     case 'claude-code':
       return createClaudeCodeLlm(entry.model);
+    case 'codex-cli':
+      return createCodexCliLlm(entry.model);
     case 'gemini':
       if (!entry.apiKey) throw new Error(`Gemini model "${entry.name}" has no API key configured`);
       return createGeminiLlm(entry.apiKey, entry.model);
