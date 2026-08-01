@@ -23,7 +23,17 @@ interface StoredSession extends AgentRecordingSession {
   projectValidated?: boolean;
   exportVerified?: { sizeBytes: number; sha256: string };
   ingestVerified?: boolean;
+  privateDiagnostics?: AgentRecordingPrivateDiagnostic[];
   events?: Array<{ at: string; phase: string; message: string }>;
+}
+
+export type AgentRecordingPrivateDiagnosticCategory = 'cap' | 'codex' | 'desktop' | 'export' | 'attachment' | 'local';
+
+interface AgentRecordingPrivateDiagnostic {
+  at: string;
+  phase: string;
+  category: AgentRecordingPrivateDiagnosticCategory;
+  detail: string;
 }
 
 interface SessionTransitionDetails {
@@ -79,6 +89,31 @@ async function writeStoredAgentRecordingSession(projectPath: string, session: St
 
 function appendEvent(session: StoredSession, phase: string, message: string, at: string): StoredSession['events'] {
   return [...(session.events ?? []), { at, phase, message }].slice(-100);
+}
+
+function sanitizePrivateDiagnostic(detail: string, privateValues: string[]): string {
+  let sanitized = [...detail.slice(0, 10_000).normalize('NFKC')]
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? ' ' : character;
+    })
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (const privateValue of [...new Set(privateValues.filter((value) => value.length >= 3))]
+    .sort((left, right) => right.length - left.length)) {
+    sanitized = sanitized.replaceAll(privateValue, '[redacted]');
+  }
+  sanitized = sanitized
+    .replace(/\bbearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(/\b(token|secret|password|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[id]')
+    .replace(/\b(?:thread|recording|session|driver)[-_][A-Za-z0-9._-]+\b/gi, '[id]')
+    .replace(/(^|[\s(])\/(?:[^\s),;]+)(?=$|[\s),;])/g, '$1[path]')
+    .replace(/\b[A-Za-z]:\\[^\s,;]+/g, '[path]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (sanitized || 'Failure detail unavailable.').slice(0, 1_000);
 }
 
 async function ownedSession(projectPath: string, projectId: string, sceneId: string, sessionId: string): Promise<StoredSession> {
@@ -173,6 +208,29 @@ export async function updateAgentRecordingSessionInternal(
   };
   await writeStoredAgentRecordingSession(projectPath, next);
   return publicSession(next);
+}
+
+export async function appendAgentRecordingPrivateDiagnostic(
+  projectPath: string,
+  projectId: string,
+  sceneId: string,
+  sessionId: string,
+  diagnostic: { category: AgentRecordingPrivateDiagnosticCategory; phase: string; detail: string },
+  privateValues: string[] = [],
+): Promise<void> {
+  const current = await ownedSession(projectPath, projectId, sceneId, sessionId);
+  const now = new Date().toISOString();
+  const entry: AgentRecordingPrivateDiagnostic = {
+    at: now,
+    phase: sanitizePrivateDiagnostic(diagnostic.phase, privateValues).slice(0, 100),
+    category: diagnostic.category,
+    detail: sanitizePrivateDiagnostic(diagnostic.detail, privateValues),
+  };
+  await writeStoredAgentRecordingSession(projectPath, {
+    ...current,
+    updatedAt: now,
+    privateDiagnostics: [...(current.privateDiagnostics ?? []), entry].slice(-20),
+  });
 }
 
 export async function persistAgentRecordingIdentity(

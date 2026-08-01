@@ -282,13 +282,28 @@ describe('agent recording coordinator', () => {
 
   it('publishes only allow-listed failure diagnostics without paths, tokens, or IDs', async () => {
     const ctx = await fixture();
-    const secret = `failed in ${ctx.project.path} token=secret recording-exact thread-1 /etc/passwd`;
-    vi.mocked(ctx.codex.rehearse).mockRejectedValue(new Error(secret));
+    let capabilityToken = '';
+    vi.mocked(ctx.codex.rehearse).mockImplementation(async (_prompt, _scratch, environment) => {
+      capabilityToken = environment.VPA_DESKTOP_DRIVER_TOKEN ?? '';
+      throw new Error(`Codex helper failed\n\tin ${ctx.project.path} token=secret ${capabilityToken} recording-exact thread-1 /etc/passwd ${'x'.repeat(2_000)}`);
+    });
     const created = await ctx.coordinator.rehearse(ctx.project.id, 'scene-01', update);
     const failed = await waitForSession(ctx.project.path, created.id, ['failed']);
     expect(failed.message).toBe('Codex rehearsal or final target verification failed.');
-    for (const sensitive of [ctx.project.path, 'secret', 'recording-exact', 'thread-1', '/etc/passwd']) {
-      expect(JSON.stringify(failed)).not.toContain(sensitive);
+    const publicSession = await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01');
+    for (const sensitive of [ctx.project.path, 'secret', capabilityToken, 'recording-exact', 'thread-1', '/etc/passwd']) {
+      expect(JSON.stringify(publicSession)).not.toContain(sensitive);
+    }
+    const privateSession = await readStoredAgentRecordingSession(ctx.project.path, created.id) as unknown as {
+      privateDiagnostics?: Array<{ category: string; detail: string }>;
+    };
+    expect(privateSession.privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'codex', detail: expect.stringContaining('Codex helper failed') }),
+    ]);
+    expect(privateSession.privateDiagnostics?.[0]?.detail.length).toBeLessThanOrEqual(1_000);
+    expect(privateSession.privateDiagnostics?.[0]?.detail).not.toMatch(/[\r\n\t]/);
+    for (const sensitive of [ctx.project.path, 'secret', capabilityToken, 'recording-exact', 'thread-1', '/etc/passwd']) {
+      expect(JSON.stringify(privateSession.privateDiagnostics)).not.toContain(sensitive);
     }
   });
 
@@ -306,9 +321,13 @@ describe('agent recording coordinator', () => {
       targets: [target, { ...target, id: '43', name: 'Other settings' }],
     });
     const duplicate = await other.coordinator.rehearse(other.project.id, 'scene-01', update);
-    expect((await waitForSession(other.project.path, duplicate.id, ['failed'])).message).toBe(
+    const failed = await waitForSession(other.project.path, duplicate.id, ['failed']);
+    expect(failed.message).toBe(
       'Cap or the reviewed target was not ready for rehearsal.',
     );
+    expect(failed.privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'cap', detail: expect.stringContaining('unique Cap window') }),
+    ]);
   });
 
   it('rejects confirmation unless the session is awaiting confirmation', async () => {
@@ -343,6 +362,9 @@ describe('agent recording coordinator', () => {
     });
     const failed = await waitForSession(ctx.project.path, ready.id, ['failed']);
     expect(failed.message).toBe('Confirmed recording could not start safely.');
+    expect(failed.privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'local', detail: expect.stringContaining('plan changed after rehearsal') }),
+    ]);
     expect(ctx.cap.startRecording).not.toHaveBeenCalled();
   });
 
@@ -369,6 +391,23 @@ describe('agent recording coordinator', () => {
     const ctx = await fixture();
     const ready = await rehearseReady(ctx);
     vi.mocked(ctx.cap.targets).mockResolvedValueOnce([{ ...target, width: 801 }]);
+    await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
+      confirmed: true,
+      planFingerprint: ready.planFingerprint!,
+    });
+    expect((await waitForSession(ctx.project.path, ready.id, ['failed'])).message).toBe(
+      'Confirmed recording could not start safely.',
+    );
+    expect(ctx.cap.startRecording).not.toHaveBeenCalled();
+  });
+
+  it('refuses confirmation when the second desktop resolution changes only window bounds', async () => {
+    const ctx = await fixture();
+    const ready = await rehearseReady(ctx);
+    vi.mocked(ctx.platform.resolveTarget).mockResolvedValueOnce({
+      ...ctx.resolved,
+      bounds: { ...ctx.resolved.bounds, width: 801 },
+    });
     await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
@@ -483,22 +522,33 @@ describe('agent recording coordinator', () => {
   });
 
   it('offers export retry only after the Cap project was durably validated', async () => {
-    const ctx = await fixture({ cap: { exportProject: vi.fn(async () => { throw new Error('export failed'); }) } });
+    const ctx = await fixture({ cap: { exportProject: vi.fn(async () => { throw new Error('export failed at /private/take.cap token=export-secret recording-exact thread-1'); }) } });
     const ready = await rehearseReady(ctx);
     await ctx.coordinator.confirmAndRecord(ctx.project.id, 'scene-01', ready.id, {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
     });
-    const recoverable = await waitForSession(ctx.project.path, ready.id, ['exporting']);
+    await waitForSession(ctx.project.path, ready.id, ['exporting']);
+    await vi.waitFor(async () => expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).retryAvailable).toBe('export'));
+    const recoverable = await readStoredAgentRecordingSession(ctx.project.path, ready.id);
     expect(recoverable.retryAvailable).toBe('export');
     expect(recoverable.projectValidated).toBe(true);
     expect(recoverable.capProjectPath).toContain('take.cap');
+    const privateDiagnostics = (recoverable as unknown as { privateDiagnostics?: Array<{ category: string; detail: string }> }).privateDiagnostics;
+    expect(privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'export', detail: expect.stringContaining('export failed') }),
+    ]);
+    expect(JSON.stringify(privateDiagnostics)).not.toMatch(/export-secret|recording-exact|thread-1|\/private\/take\.cap/);
+    expect(await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01')).toMatchObject({
+      state: 'exporting', message: 'Validated Cap project export failed. Explicit export retry is available.',
+    });
+    expect(await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01')).not.toHaveProperty('privateDiagnostics');
   });
 
   it('preserves the verified export when attachment fails', async () => {
     const ctx = await fixture({
       ingest: vi.fn(async () => {
-        throw new Error('attach failed');
+        throw new Error('attach failed at /private/take.mp4 token=attach-secret recording-exact thread-1');
       }),
     });
     const ready = await rehearseReady(ctx);
@@ -506,9 +556,20 @@ describe('agent recording coordinator', () => {
       confirmed: true,
       planFingerprint: ready.planFingerprint!,
     });
-    const recoverable = await waitForSession(ctx.project.path, ready.id, ['attaching']);
+    await waitForSession(ctx.project.path, ready.id, ['attaching']);
+    await vi.waitFor(async () => expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).retryAvailable).toBe('attachment'));
+    const recoverable = await readStoredAgentRecordingSession(ctx.project.path, ready.id);
     expect(recoverable.retryAvailable).toBe('attachment');
     expect(recoverable.exportPath).toContain('take.mp4');
+    const privateDiagnostics = (recoverable as unknown as { privateDiagnostics?: Array<{ category: string; detail: string }> }).privateDiagnostics;
+    expect(privateDiagnostics).toEqual([
+      expect.objectContaining({ category: 'attachment', detail: expect.stringContaining('attach failed') }),
+    ]);
+    expect(JSON.stringify(privateDiagnostics)).not.toMatch(/attach-secret|recording-exact|thread-1|\/private\/take\.mp4/);
+    expect(await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01')).toMatchObject({
+      state: 'attaching', message: 'Verified recording attachment failed. Explicit attachment retry is available.',
+    });
+    expect(await getCurrentAgentRecordingSession(ctx.project.path, ctx.project.id, 'scene-01')).not.toHaveProperty('privateDiagnostics');
   });
 
   it('cancels before capture without starting a recovery recording', async () => {

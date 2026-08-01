@@ -294,11 +294,16 @@ export class DesktopDriverSessionManager {
 
     const target = await this.options.platform.resolveTarget({ ...input.target });
     assertResolvedTarget(target);
+    const approvedBounds = (input.target as Partial<ResolvedDesktopDriverTarget>).bounds;
     if (input.target.bundleId !== target.bundleId
       || input.target.displayName !== target.displayName
       || input.target.windowId !== target.windowId
       || input.target.windowTitle !== target.windowTitle
-      || (input.target.processId !== undefined && input.target.processId !== target.processId)) {
+      || (input.target.processId !== undefined && input.target.processId !== target.processId)
+      || (approvedBounds !== undefined && (approvedBounds.x !== target.bounds.x
+        || approvedBounds.y !== target.bounds.y
+        || approvedBounds.width !== target.bounds.width
+        || approvedBounds.height !== target.bounds.height))) {
       throw new DesktopDriverError('TARGET_CHANGED', 'Resolved application does not match the approved target');
     }
 

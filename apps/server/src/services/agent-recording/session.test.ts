@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, persistAgentRecordingStopped, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession, updateAgentRecordingSessionInternal } from './session.js';
+import { appendAgentRecordingPrivateDiagnostic, createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, persistAgentRecordingStopped, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession, updateAgentRecordingSessionInternal } from './session.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -54,12 +54,22 @@ describe('agent recording sessions', () => {
       planFingerprint: 'plan-1', rehearsal, rehearsedTargetIdentity: targetIdentity, recordingId: 'cap-1', capProjectPath: '/private/cap', exportPath: '/private/take.mp4',
       codexThreadId: 'thread', driverTokenHash: 'token', targetApplicationId: 'safari',
     });
+    for (let index = 0; index < 25; index += 1) {
+      await appendAgentRecordingPrivateDiagnostic(projectPath, 'project', 'scene', created.id, {
+        category: 'local', phase: 'test', detail: `Useful failure ${index} token=raw-secret /private/file`,
+      }, ['raw-secret']);
+    }
     const publicSession = await getCurrentAgentRecordingSession(projectPath, 'project', 'scene');
     expect(publicSession).not.toHaveProperty('recordingId');
     expect(publicSession).not.toHaveProperty('capProjectPath');
     expect(publicSession).not.toHaveProperty('exportPath');
     expect(publicSession).not.toHaveProperty('rehearsedTargetIdentity');
-    expect(await readStoredAgentRecordingSession(projectPath, created.id)).toMatchObject({ recordingId: 'cap-1', capProjectPath: '/private/cap' });
+    expect(publicSession).not.toHaveProperty('privateDiagnostics');
+    const privateSession = await readStoredAgentRecordingSession(projectPath, created.id);
+    expect(privateSession).toMatchObject({ recordingId: 'cap-1', capProjectPath: '/private/cap' });
+    expect(privateSession.privateDiagnostics).toHaveLength(20);
+    expect(privateSession.privateDiagnostics?.[0]).toMatchObject({ category: 'local', detail: expect.stringContaining('Useful failure 5') });
+    expect(JSON.stringify(privateSession.privateDiagnostics)).not.toMatch(/raw-secret|\/private\/file/);
 
     const stored = await readStoredAgentRecordingSession(projectPath, created.id);
     await writeFile(join(projectPath, 'recording-plans', 'sessions', `${created.id}.json`), JSON.stringify({
