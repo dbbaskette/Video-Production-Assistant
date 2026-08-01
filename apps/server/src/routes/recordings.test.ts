@@ -144,6 +144,24 @@ describe('recording routes', () => {
       const saved = await loadStoryboard(projectPath);
       expect(saved?.scenes[0]?.recording).toMatchObject({ source_kind: 'cap-agent', capture_session_id: session.id, captured_at: '2026-07-31T12:00:00.000Z' });
     });
+
+    it('rejects troubleshooting Cap provenance while the session still awaits confirmation', async () => {
+      const sb = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, sb);
+      const session = await createAgentRecordingSession(projectPath, projectId, 'scene-01');
+      const rehearsal = { success: true, targetApplication: 'Safari', windowTitle: 'Demo', windowBounds: { x: 0, y: 0, width: 100, height: 100 }, completedStepIndexes: [0], checkpoints: [], resetConfirmed: true };
+      await transitionAgentRecordingSession(projectPath, projectId, 'scene-01', session.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+
+      const form = new FormData();
+      form.append('source_kind', 'cap-agent');
+      form.append('capture_session_id', session.id);
+      form.append('captured_at', '2026-07-31T12:00:00.000Z');
+      form.append('file', Buffer.from('fake-mp4-data'), { filename: 'take.mp4', contentType: 'video/mp4' });
+      const res = await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/scenes/scene-01/recording`, payload: form.getBuffer(), headers: form.getHeaders() });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe('invalid_capture_session');
+      expect((await loadStoryboard(projectPath))?.scenes[0]?.recording).toBeUndefined();
+    });
   });
 
   describe('POST /api/projects/:id/recordings/bulk', () => {

@@ -95,6 +95,7 @@ export interface DesktopDriverPlatformSnapshot {
 }
 
 export interface DesktopDriverPlatform {
+  resolveWindowOwnerTarget?(target: { displayName: string; windowId: number; windowTitle: string }): Promise<ResolvedDesktopDriverTarget>;
   resolveTarget(target: DesktopDriverTargetRequest): Promise<ResolvedDesktopDriverTarget>;
   inspect(target: ResolvedDesktopDriverTarget, signal?: AbortSignal): Promise<DesktopDriverPlatformSnapshot>;
   screenshot(target: ResolvedDesktopDriverTarget, outputPath: string, signal?: AbortSignal): Promise<void>;
@@ -116,6 +117,11 @@ export interface DesktopDriverSessionCreateInput {
   phase: 'rehearsal' | 'recording';
   expiresAt?: Date;
   ttlMs?: number;
+}
+
+/** Trusted coordinator input derived from one unique Cap window target. */
+export interface DesktopDriverWindowOwnerSessionCreateInput extends Omit<DesktopDriverSessionCreateInput, 'target'> {
+  target: { displayName: string; windowId: number; windowTitle: string };
 }
 
 export interface DesktopDriverCapability {

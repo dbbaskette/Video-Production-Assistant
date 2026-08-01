@@ -17,6 +17,16 @@ function result(events: object[] = []): JsonlProcessResult {
 }
 
 describe('macOS desktop platform process boundary', () => {
+  it('derives bundle identity from the trusted Cap owner and window only through fixed-source stdin', async () => {
+    const runProcess = vi.fn(async (_request: JsonlProcessRequest) => result([target]));
+    const platform = createMacOSDesktopPlatform({ runProcess });
+    await expect(platform.resolveWindowOwnerTarget!({ displayName: 'MeetingNotes', windowId: 77, windowTitle: 'Settings' })).resolves.toEqual(target);
+    const request = runProcess.mock.calls[0]![0];
+    expect(request.args[3]).not.toContain('MeetingNotes');
+    expect(request.args[3]).toContain('Cap window owner is not uniquely available');
+    expect(JSON.parse(request.stdin)).toEqual({ displayName: 'MeetingNotes', windowId: 77, windowTitle: 'Settings' });
+  });
+
   it('passes dynamic target data only through stdin to the shared bounded process runner', async () => {
     const dynamicTitle = 'Settings `$(unsafe)`';
     const resolved = { ...target, windowTitle: dynamicTitle };

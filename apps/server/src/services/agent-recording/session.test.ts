@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession } from './session.js';
+import { createAgentRecordingSession, findRecoverableAgentRecordingSession, getCurrentAgentRecordingSession, persistAgentRecordingIdentity, readStoredAgentRecordingSession, requireAttachableSession, transitionAgentRecordingSession } from './session.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -52,13 +52,23 @@ describe('agent recording sessions', () => {
     expect((await readStoredAgentRecordingSession(projectPath, created.id)).events).toHaveLength(100);
   });
 
-  it('expires stale sessions and finds recoverable exporting sessions', async () => {
+  it('persists exact Cap identity atomically before the recording transition', async () => {
+    const projectPath = await root();
+    const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
+    await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });
+    await persistAgentRecordingIdentity(projectPath, 'project', 'scene', created.id, { recordingId: 'cap-exact', projectPath: '/private/take.cap' }, '2026-07-31T12:00:00.000Z');
+    expect(await readStoredAgentRecordingSession(projectPath, created.id)).toMatchObject({
+      state: 'awaiting_confirmation', recordingId: 'cap-exact', capProjectPath: '/private/take.cap', capturedAt: '2026-07-31T12:00:00.000Z',
+    });
+  });
+
+  it('leaves stale lifecycle decisions to the coordinator and finds recoverable exporting sessions', async () => {
     const projectPath = await root();
     const stale = await createAgentRecordingSession(projectPath, 'project', 'stale-scene');
     const staleFile = join(projectPath, 'recording-plans', 'sessions', `${stale.id}.json`);
     const stored = await readStoredAgentRecordingSession(projectPath, stale.id);
     await writeFile(staleFile, JSON.stringify({ ...stored, updatedAt: new Date(Date.now() - 31 * 60_000).toISOString() }));
-    expect(await getCurrentAgentRecordingSession(projectPath, 'project', 'stale-scene')).toMatchObject({ state: 'interrupted' });
+    expect(await getCurrentAgentRecordingSession(projectPath, 'project', 'stale-scene')).toMatchObject({ state: 'rehearsing' });
 
     const created = await createAgentRecordingSession(projectPath, 'project', 'scene');
     await transitionAgentRecordingSession(projectPath, 'project', 'scene', created.id, 'awaiting_confirmation', { planFingerprint: 'plan-1', rehearsal });

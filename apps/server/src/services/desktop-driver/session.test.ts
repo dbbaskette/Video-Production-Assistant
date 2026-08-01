@@ -38,6 +38,7 @@ function fixture() {
   let currentElements = [element()];
   let currentTarget = structuredClone(target);
   const platform: DesktopDriverPlatform = {
+    resolveWindowOwnerTarget: vi.fn(async () => structuredClone(currentTarget)),
     resolveTarget: vi.fn(async () => structuredClone(currentTarget)),
     inspect: vi.fn(async () => ({
       target: structuredClone(currentTarget), windowFocused: true, elements: structuredClone(currentElements),
@@ -78,6 +79,14 @@ async function capability(value = fixture()) {
 }
 
 describe('DesktopDriverSessionManager', () => {
+  it('creates a capability from a trusted Cap owner/window after deriving its bundle identity', async () => {
+    const value = fixture();
+    const created = await value.manager.createFromWindowOwner({ ...value.input, target: { displayName: target.displayName, windowId: target.windowId, windowTitle: target.windowTitle } });
+    expect(value.platform.resolveWindowOwnerTarget).toHaveBeenCalledWith({ displayName: 'MeetingNotes', windowId: 77, windowTitle: 'Settings' });
+    expect(created.target.bundleId).toBe('com.example.MeetingNotes');
+    expect(value.platform.resolveTarget).toHaveBeenCalledWith(target);
+  });
+
   it('creates a 256-bit opaque capability bound to the uniquely resolved target', async () => {
     const value = fixture();
     const created = await value.manager.create(value.input);

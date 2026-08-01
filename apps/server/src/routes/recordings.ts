@@ -73,7 +73,11 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       captured_at: multipartValue('captured_at'),
     });
     if (provenance.source_kind === 'cap-agent') {
-      await requireAttachableSession(projectPath, id, sceneId, provenance.capture_session_id!);
+      try {
+        await requireAttachableSession(projectPath, id, sceneId, provenance.capture_session_id!);
+      } catch (error) {
+        return reply.status(409).send({ error: error instanceof Error ? error.message : 'Cap attachment session is invalid.', code: 'invalid_capture_session' });
+      }
     }
 
     // Save to temp, probe, then ingest

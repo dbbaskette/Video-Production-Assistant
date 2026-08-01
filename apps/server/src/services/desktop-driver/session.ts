@@ -15,6 +15,7 @@ import {
   type DesktopDriverPlatformElement,
   type DesktopDriverPlatformSnapshot,
   type DesktopDriverSessionCreateInput,
+  type DesktopDriverWindowOwnerSessionCreateInput,
   type DesktopDriverSnapshot,
   type ResolvedDesktopDriverTarget,
 } from './types.js';
@@ -245,6 +246,21 @@ export class DesktopDriverSessionManager {
     this.randomId = options.randomId ?? randomUUID;
     this.makeTempDirectory = options.makeTempDirectory ?? ((prefix) => mkdtemp(prefix));
     this.remove = options.remove ?? (async (path) => { await rm(path, { recursive: true, force: true }); });
+  }
+
+  async createFromWindowOwner(input: DesktopDriverWindowOwnerSessionCreateInput): Promise<DesktopDriverCapability> {
+    assertTargetInput({ ...input, target: { ...input.target, bundleId: 'local.vpa.pending-target' } });
+    assertNonEmpty(input.target.displayName, 'Target display name');
+    assertNonEmpty(input.target.windowTitle, 'Target window title');
+    if (!Number.isSafeInteger(input.target.windowId) || input.target.windowId <= 0) throw new DesktopDriverError('INVALID_REQUEST', 'Target window ID is invalid');
+    if (isExcludedTarget('', input.target.displayName)) throw new DesktopDriverError('FORBIDDEN_TARGET', 'That application cannot be controlled');
+    if (!this.options.platform.resolveWindowOwnerTarget) throw new DesktopDriverError('TARGET_CHANGED', 'Target application identity could not be resolved');
+    const resolved = await this.options.platform.resolveWindowOwnerTarget({ ...input.target });
+    assertResolvedTarget(resolved);
+    if (resolved.displayName !== input.target.displayName || resolved.windowId !== input.target.windowId || resolved.windowTitle !== input.target.windowTitle) {
+      throw new DesktopDriverError('TARGET_CHANGED', 'Resolved application does not match the Cap target');
+    }
+    return this.create({ ...input, target: resolved });
   }
 
   async create(input: DesktopDriverSessionCreateInput): Promise<DesktopDriverCapability> {

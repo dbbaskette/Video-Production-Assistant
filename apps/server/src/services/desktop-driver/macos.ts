@@ -116,6 +116,29 @@ const windowMatches = windows.filter(function (window) {
 if (windowMatches.length !== 1) throw new Error('Target window is not uniquely available');
 output(targetResult(target, processId, expectedBounds));`;
 
+const RESOLVE_WINDOW_OWNER_JXA = `${JXA_PREAMBLE}
+const requested = input();
+const se = Application('System Events');
+const processes = se.applicationProcesses();
+const raw = $.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID);
+const windows = ObjC.deepUnwrap(raw).filter(function (window) {
+  return Number(window.kCGWindowNumber) === requested.windowId &&
+    String(window.kCGWindowOwnerName || '') === requested.displayName &&
+    (!window.kCGWindowName || String(window.kCGWindowName) === requested.windowTitle);
+});
+if (windows.length !== 1) throw new Error('Cap window owner is not uniquely available');
+const ownerPid = Number(windows[0].kCGWindowOwnerPID);
+const matches = processes.filter(function (process) {
+  return valueOr(process.name, '') === requested.displayName && Number(valueOr(process.unixId, -1)) === ownerPid;
+});
+if (matches.length !== 1) throw new Error('Cap target application is not uniquely available');
+const bundleId = String(valueOr(matches[0].bundleIdentifier, ''));
+if (!bundleId) throw new Error('Cap target application bundle identity is unavailable');
+const target = { bundleId: bundleId, displayName: requested.displayName, processId: ownerPid,
+  windowId: requested.windowId, windowTitle: requested.windowTitle };
+const resolvedWindow = windowFor(matches[0], target);
+output(targetResult(target, ownerPid, resolvedWindow.bounds));`;
+
 const INSPECT_TARGET_JXA = `${JXA_PREAMBLE}
 const target = input();
 const se = Application('System Events');
@@ -256,6 +279,9 @@ export function createMacOSDesktopPlatform(options: MacOSDesktopPlatformOptions 
   const runProcess = options.runProcess ?? runJsonlProcess;
   const checkAccess = options.access ?? access;
   return {
+    async resolveWindowOwnerTarget(target) {
+      return runJxa<ResolvedDesktopDriverTarget>(runProcess, RESOLVE_WINDOW_OWNER_JXA, target, 'macOS Cap target resolution');
+    },
     async resolveTarget(target: DesktopDriverTargetRequest) {
       return runJxa<ResolvedDesktopDriverTarget>(runProcess, RESOLVE_TARGET_JXA, target, 'macOS target resolution');
     },
