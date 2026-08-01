@@ -167,30 +167,56 @@ function elementAt(path) {
   }
   return element;
 }
+function elementIdentity(element) {
+  return {
+    role: String(valueOr(element.role, '')),
+    title: String(valueOr(element.name, valueOr(element.description, ''))),
+    enabled: Boolean(valueOr(element.enabled, true)),
+    actions: valueOr(function () { return element.actions.name(); }, []).map(String).sort(),
+    secure: String(valueOr(element.role, '')) === 'AXSecureTextField'
+  };
+}
+function verifyElement(element, expected) {
+  const current = elementIdentity(element);
+  const expectedActions = expected.actions.map(String).sort();
+  if (current.role !== expected.role || current.title !== expected.title ||
+      current.enabled !== expected.enabled || current.secure !== expected.secure ||
+      JSON.stringify(current.actions) !== JSON.stringify(expectedActions)) {
+    throw new Error('Accessibility element identity changed');
+  }
+}
 const action = request.action;
-let focusedElement = null;
-if (request.reference) {
-  focusedElement = elementAt(request.reference.path);
-  if ((action.kind === 'type-text' || action.kind === 'press-key') && !Boolean(attribute(focusedElement, 'AXFocused', false))) {
+let approvedElement = null;
+if (request.expectedElement) {
+  approvedElement = elementAt(request.expectedElement.reference.path);
+  verifyElement(approvedElement, request.expectedElement);
+  if ((action.kind === 'type-text' || action.kind === 'press-key') && !Boolean(attribute(approvedElement, 'AXFocused', false))) {
     throw new Error('Approved focused element changed');
   }
 }
 if (action.kind === 'click') {
-  const element = focusedElement;
+  const element = approvedElement;
   if (!valueOr(element.enabled, true)) throw new Error('Accessibility element is disabled');
   element.actions.byName('AXPress').perform();
 } else if (action.kind === 'set-value') {
-  const element = focusedElement;
+  const element = approvedElement;
   if (String(valueOr(element.role, '')) === 'AXSecureTextField') throw new Error('Secure fields cannot be changed');
   element.value = action.value;
 } else if (action.kind === 'type-text') {
-  if (!focusedElement) throw new Error('Typing requires an approved focused element');
-  if (String(valueOr(focusedElement.role, '')) === 'AXSecureTextField') throw new Error('Secure fields cannot receive text');
+  if (!approvedElement) throw new Error('Typing requires an approved focused element');
+  if (String(valueOr(approvedElement.role, '')) === 'AXSecureTextField') throw new Error('Secure fields cannot receive text');
   se.keystroke(action.value);
 } else if (action.kind === 'press-key') {
-  const keyCodes = { Tab: 48, Return: 36, Escape: 53, Left: 123, Right: 124, Up: 126, Down: 125, space: 49 };
-  if (!Object.prototype.hasOwnProperty.call(keyCodes, action.key)) throw new Error('Key is not allowed');
-  se.keyCode(keyCodes[action.key]);
+  if (action.key === 'Return' || action.key === 'space') {
+    if (!approvedElement || !elementIdentity(approvedElement).actions.some(function (name) { return name === 'AXPress'; })) {
+      throw new Error('Activating keys require the approved pressable element');
+    }
+    approvedElement.actions.byName('AXPress').perform();
+  } else {
+    const keyCodes = { Tab: 48, Escape: 53, Left: 123, Right: 124, Up: 126, Down: 125 };
+    if (!Object.prototype.hasOwnProperty.call(keyCodes, action.key)) throw new Error('Key is not allowed');
+    se.keyCode(keyCodes[action.key]);
+  }
 } else { throw new Error('Action is not allowed'); }
 output({ ok: true });`;
 
@@ -259,7 +285,15 @@ export function createMacOSDesktopPlatform(options: MacOSDesktopPlatformOptions 
         || action.kind === 'type-text'
         || (action.kind === 'press-key' && (action.key === 'Return' || action.key === 'space'));
       if (needsElement && !element) throw new Error('Action requires a fresh accessibility element');
-      await runJxa(runProcess, ACT_TARGET_JXA, { target, action, reference: element?.reference }, 'macOS accessibility action', signal);
+      const expectedElement = element ? {
+        reference: element.reference,
+        role: element.role,
+        title: element.title,
+        enabled: element.enabled,
+        actions: element.actions,
+        secure: element.secure === true,
+      } : undefined;
+      await runJxa(runProcess, ACT_TARGET_JXA, { target, action, expectedElement }, 'macOS accessibility action', signal);
     },
   };
 }

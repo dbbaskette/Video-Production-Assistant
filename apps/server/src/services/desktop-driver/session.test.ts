@@ -289,6 +289,56 @@ describe('DesktopDriverSessionManager', () => {
     expect(dialogFocus.value.platform.act).not.toHaveBeenCalled();
   });
 
+  it('maps Return and space only to the exact focused AXPress-capable control', async () => {
+    const textWithDangerousDefault = await capability();
+    textWithDangerousDefault.value.setElements([
+      element({
+        reference: { path: [0] }, role: 'AXTextField', title: 'Name',
+        actions: ['AXSetValue'], focused: true,
+      }),
+      element({
+        reference: { path: [1] }, role: 'AXButton', title: 'Delete project',
+        actions: ['AXPress'], focused: false,
+      }),
+    ]);
+    await textWithDangerousDefault.value.manager.inspect(
+      textWithDangerousDefault.capability.sessionId,
+      textWithDangerousDefault.capability.token,
+    );
+    await expect(textWithDangerousDefault.value.manager.act(
+      textWithDangerousDefault.capability.sessionId,
+      textWithDangerousDefault.capability.token,
+      { kind: 'press-key', key: 'Return' },
+    )).rejects.toMatchObject({ code: 'OPERATION_NOT_ALLOWED' });
+    expect(textWithDangerousDefault.value.platform.act).not.toHaveBeenCalled();
+
+    const nonPressable = await capability();
+    nonPressable.value.setElements([element({
+      role: 'AXCheckBox', title: 'Keep notes', actions: ['AXShowMenu'], focused: true,
+    })]);
+    await nonPressable.value.manager.inspect(nonPressable.capability.sessionId, nonPressable.capability.token);
+    await expect(nonPressable.value.manager.act(nonPressable.capability.sessionId, nonPressable.capability.token, {
+      kind: 'press-key', key: 'space',
+    })).rejects.toMatchObject({ code: 'OPERATION_NOT_ALLOWED' });
+    expect(nonPressable.value.platform.act).not.toHaveBeenCalled();
+
+    const safeButton = await capability();
+    const approvedButton = element({
+      role: 'AXButton', title: 'Next section', actions: ['AXPress'], focused: true,
+    });
+    safeButton.value.setElements([approvedButton]);
+    await safeButton.value.manager.inspect(safeButton.capability.sessionId, safeButton.capability.token);
+    await expect(safeButton.value.manager.act(safeButton.capability.sessionId, safeButton.capability.token, {
+      kind: 'press-key', key: 'Return',
+    })).resolves.toEqual({ ok: true, snapshotInvalidated: true });
+    expect(safeButton.value.platform.act).toHaveBeenCalledWith(
+      target,
+      { kind: 'press-key', key: 'Return' },
+      approvedButton,
+      expect.any(AbortSignal),
+    );
+  });
+
   it('serializes concurrent actions so one inspection generation is consumed once', async () => {
     const { value, capability: created } = await capability();
     value.setElements([element({ focused: true })]);

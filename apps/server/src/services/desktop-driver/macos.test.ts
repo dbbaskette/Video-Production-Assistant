@@ -43,9 +43,9 @@ describe('macOS desktop platform process boundary', () => {
     const platform = createMacOSDesktopPlatform({ runProcess, access: checkAccess as never });
 
     await platform.screenshot(target, '/tmp/session/window.png', controller.signal);
-    await platform.act(target, { kind: 'type-text', value: 'fixture' }, {
-      reference: { path: [1, 2] }, role: 'AXTextField', title: 'Notes', enabled: true,
-      actions: ['AXSetValue'], focused: true,
+    await platform.act(target, { kind: 'press-key', key: 'Return' }, {
+      reference: { path: [1, 2] }, role: 'AXButton', title: 'Next section', enabled: true,
+      actions: ['AXPress'], focused: true,
     }, controller.signal);
 
     expect(runProcess).toHaveBeenCalledTimes(3);
@@ -57,12 +57,40 @@ describe('macOS desktop platform process boundary', () => {
     });
     const actionRequest = runProcess.mock.calls[2]![0];
     expect(actionRequest.args[3]).not.toContain('process.frontmost = true');
+    expect(actionRequest.args[3]).toContain('verifyElement(approvedElement, request.expectedElement)');
+    expect(actionRequest.args[3]).toContain("approvedElement.actions.byName('AXPress').perform()");
+    expect(actionRequest.args[3]).toContain('current.role !== expected.role');
+    expect(actionRequest.args[3]).toContain('current.title !== expected.title');
+    expect(actionRequest.args[3]).toContain('JSON.stringify(current.actions) !== JSON.stringify(expectedActions)');
     expect(JSON.parse(actionRequest.stdin)).toMatchObject({
       target: { windowId: 77, processId: 42 },
-      action: { kind: 'type-text', value: 'fixture' },
-      reference: { path: [1, 2] },
+      action: { kind: 'press-key', key: 'Return' },
+      expectedElement: {
+        reference: { path: [1, 2] }, role: 'AXButton', title: 'Next section',
+        enabled: true, actions: ['AXPress'], secure: false,
+      },
     });
     expect(checkAccess).toHaveBeenCalledWith('/tmp/session/window.png');
+  });
+
+  it('carries same-path role, title, and actions for native last-moment identity checks', async () => {
+    const runProcess = vi.fn(async (_request: JsonlProcessRequest) => result([{ ok: true }]));
+    const platform = createMacOSDesktopPlatform({ runProcess });
+    await platform.act(target, { kind: 'press-key', key: 'space' }, {
+      reference: { path: [4, 1] }, role: 'AXButton', title: 'Open model settings',
+      enabled: true, actions: ['AXPress'], secure: false, focused: true,
+    });
+    const request = runProcess.mock.calls[0]![0];
+    const payload = JSON.parse(request.stdin);
+    expect(payload.expectedElement).toEqual({
+      reference: { path: [4, 1] }, role: 'AXButton', title: 'Open model settings',
+      enabled: true, actions: ['AXPress'], secure: false,
+    });
+    // The fixed native source checks these expected fields after resolving the
+    // path, closing the gap where the same path now names a different control.
+    expect(request.args[3]).toContain('Accessibility element identity changed');
+    expect(request.args[3]).toContain('current.enabled !== expected.enabled');
+    expect(request.args[3]).toContain('current.secure !== expected.secure');
   });
 
   it('fails closed when native JSON output is missing or duplicated', async () => {

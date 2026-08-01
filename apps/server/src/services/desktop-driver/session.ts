@@ -401,6 +401,12 @@ export class DesktopDriverSessionManager {
         if (action.kind === 'press-key' && (action.key === 'Return' || action.key === 'space')) {
           if (!element) throw new DesktopDriverError('STALE_SNAPSHOT', 'Inspect a focused control before activating it');
           this.assertSafeElement(element);
+          if (!element.actions.some((name) => /^AXPress$/i.test(name))) {
+            throw new DesktopDriverError(
+              'OPERATION_NOT_ALLOWED',
+              'Return and space can activate only the focused pressable control',
+            );
+          }
         }
       }
 
