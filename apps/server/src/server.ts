@@ -48,6 +48,9 @@ import { existsSync } from 'node:fs';
 import { CapLocator } from './services/cap/locator.js';
 import { ManagedCapRuntime, createCapProcess } from './services/cap/runtime.js';
 import { CapInstaller } from './services/cap/installer.js';
+import { createMacOSDesktopPlatform } from './services/desktop-driver/macos.js';
+import { DesktopDriverSessionManager } from './services/desktop-driver/session.js';
+import { registerAgentDesktopRoutes } from './routes/agent-desktop.js';
 
 export async function buildServer() {
   const config = loadConfig();
@@ -124,6 +127,9 @@ export async function buildServer() {
     vpaHome: config.vpaHome,
     locator: capLocator,
     onState: (status) => capRuntime.setInstallationStatus(status),
+  });
+  const desktopDriver = new DesktopDriverSessionManager({
+    platform: createMacOSDesktopPlatform(),
   });
 
   // Qwen3-TTS — local voice cloning via mlx_audio. No API key needed.
@@ -214,9 +220,10 @@ export async function buildServer() {
   await app.register(async (instance) => registerSnapshotRoutes(instance, { store }));
   await app.register(async (instance) => registerWorkflowStatusRoutes(instance, { store }));
   await app.register(async (instance) => registerAgentRecordingRoutes(instance, { store }));
+  await app.register(async (instance) => registerAgentDesktopRoutes(instance, { desktop: desktopDriver }));
   await registerSettingsRoutes(app, { registry: modelRegistry, llm });
 
-  return { app, config, store, capRuntime, capInstaller };
+  return { app, config, store, capRuntime, capInstaller, desktopDriver };
 }
 
 async function main() {
