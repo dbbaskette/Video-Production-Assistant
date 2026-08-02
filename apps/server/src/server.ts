@@ -37,6 +37,7 @@ import { createLlm, createLlmFromEntry } from './services/llm/factory.js';
 import { SwappableLlm } from './services/llm/swappable.js';
 import { RetryingLlm } from './services/llm/retrying.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
+import { ModelRouter, type CliReadinessProbe } from './services/llm/model-router.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
@@ -59,6 +60,23 @@ import {
 import { probeVideo } from './services/recording/metadata.js';
 import { ingestRecording } from './services/recording/ingest.js';
 import type { ServerConfig } from './config.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+const checkCliReady: CliReadinessProbe = async (provider) => {
+  const executable = provider === 'claude-code' ? 'claude' : 'codex';
+  try {
+    await execFileAsync(executable, ['--version'], { timeout: 3_000 });
+    return { ready: true };
+  } catch (error) {
+    return {
+      ready: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
 
 export interface BuildServerOptions {
   /** Test seam for hermetic server lifecycle and route wiring checks. */
@@ -96,6 +114,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
   // ── Model registry (persisted in ~/.vpa/models.json) ──────────────
   const modelRegistry = new ModelRegistry(join(config.vpaHome, 'models.json'));
   await modelRegistry.load();
+  const modelRouter = new ModelRouter({
+    registry: modelRegistry,
+    createClient: createLlmFromEntry,
+    checkCliReady,
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
 
   const activeModel = modelRegistry.getActive();
   let innerLlm;
@@ -174,7 +198,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
   }
 
   await app.register(healthRoutes);
-  await app.register(async (instance) => projectsRoutes(instance, { store, config }));
+  await app.register(async (instance) => projectsRoutes(instance, {
+    store,
+    config,
+    registry: modelRegistry,
+    router: modelRouter,
+  }));
   await registerJobRoutes(app);
   await registerBrandRoutes(app, {
     paths: bPaths,
@@ -256,7 +285,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerAgentRecordingRoutes(instance, { store, coordinator: agentRecordingCoordinator }),
   );
   await app.register(async (instance) => registerAgentDesktopRoutes(instance, { desktop: desktopDriver }));
-  await registerSettingsRoutes(app, { registry: modelRegistry, llm });
+  await registerSettingsRoutes(app, {
+    registry: modelRegistry,
+    router: modelRouter,
+    store,
+    llm,
+  });
 
   try {
     await agentRecordingCoordinator.reconcile();

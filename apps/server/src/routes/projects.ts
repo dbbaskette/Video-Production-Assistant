@@ -2,19 +2,33 @@ import type { FastifyInstance } from 'fastify';
 import {
   CreateProjectRequestSchema,
   ImportProjectRequestSchema,
+  ModelRoutingUpdateSchema,
+  ModelTaskRoleSchema,
   type ListProjectsResponse,
   type ProjectResponse,
 } from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
 import type { ServerConfig } from '../config.js';
+import type { ModelRegistry } from '../services/llm/model-registry.js';
+import { projectFieldByRole, type ModelRouter } from '../services/llm/model-router.js';
 
 interface Deps {
   store: ProjectStore;
   config: ServerConfig;
+  registry: ModelRegistry;
+  router: ModelRouter;
 }
 
 export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, config } = deps;
+  const { store, config, registry, router } = deps;
+
+  const projectAssignments = (project: Awaited<ReturnType<ProjectStore['readProject']>>) =>
+    Object.fromEntries(
+      ModelTaskRoleSchema.options.flatMap((role) => {
+        const id = project.model_routing[projectFieldByRole[role]];
+        return id ? [[role, id]] : [];
+      }),
+    );
 
   app.get('/api/projects', async (): Promise<ListProjectsResponse> => {
     const tracker = await store.readTracker();
@@ -98,6 +112,55 @@ export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return reply.status(404).send({ error: msg, code: 'not_found' });
+    }
+  });
+
+  app.get('/api/projects/:id/model-routing', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try {
+      const project = await store.readProject(id);
+      return reply.send({
+        assignments: projectAssignments(project),
+        resolved: await router.describeAll(project),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.status(404).send({ error: message, code: 'not_found' });
+    }
+  });
+
+  app.put('/api/projects/:id/model-routing', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ModelRoutingUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: parsed.error.message,
+        code: 'invalid_request',
+      });
+    }
+
+    for (const modelId of Object.values(parsed.data.assignments)) {
+      if (modelId !== null && modelId !== undefined && !registry.getById(modelId)) {
+        return reply.status(400).send({
+          error: `Model "${modelId}" not found`,
+          code: 'invalid_model_assignment',
+        });
+      }
+    }
+
+    try {
+      const project = await store.setProjectModelRouting(id, parsed.data.assignments);
+      return reply.send({
+        assignments: projectAssignments(project),
+        resolved: await router.describeAll(project),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /not found/i.test(message) ? 404 : 500;
+      return reply.status(status).send({
+        error: message,
+        code: status === 404 ? 'not_found' : 'update_failed',
+      });
     }
   });
 

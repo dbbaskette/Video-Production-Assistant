@@ -4,6 +4,7 @@ import {
   ProjectSchema,
   ProjectTrackerSchema,
   type Project,
+  type ModelTaskRole,
   type ProjectTracker,
   type ProjectTrackerEntry,
 } from '@vpa/shared';
@@ -216,6 +217,37 @@ export class ProjectStore {
     const text = await readFile(files.metadata, 'utf8');
     const current = loadYaml(text, ProjectSchema);
     const updated: Project = ProjectSchema.parse({ ...current, brand });
+    await atomicWriteFile(files.metadata, dumpYaml(updated));
+    return updated;
+  }
+
+  /** Patch per-project model assignments. Null clears an override; omission preserves it. */
+  async setProjectModelRouting(
+    id: string,
+    patch: Partial<Record<ModelTaskRole, string | null>>,
+  ): Promise<Project> {
+    const tracker = await this.readTracker();
+    const entry = tracker.projects.find((project) => project.id === id);
+    if (!entry) throw new Error(`Project not found: ${id}`);
+
+    const files = projectFiles(entry.path);
+    const current = loadYaml(await readFile(files.metadata, 'utf8'), ProjectSchema);
+    const modelRouting = { ...current.model_routing };
+    const fieldByRole = {
+      'video-understanding': 'video_understanding',
+      writing: 'writing',
+      general: 'general',
+    } as const;
+
+    for (const [role, modelId] of Object.entries(patch) as Array<
+      [ModelTaskRole, string | null | undefined]
+    >) {
+      const field = fieldByRole[role];
+      if (modelId === null) delete modelRouting[field];
+      else if (modelId !== undefined) modelRouting[field] = modelId;
+    }
+
+    const updated = ProjectSchema.parse({ ...current, model_routing: modelRouting });
     await atomicWriteFile(files.metadata, dumpYaml(updated));
     return updated;
   }
