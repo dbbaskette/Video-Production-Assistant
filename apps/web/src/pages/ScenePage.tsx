@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useOutletContext, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { agentRecordingApi, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, settingsApi, framesApi } from '../lib/api.js';
+import { agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
@@ -25,6 +25,16 @@ import { confirmDestructiveSave } from '../lib/destructive-save.js';
 import { AgentRecordingDialog } from '../components/AgentRecordingDialog.js';
 import { AgentRecordingStatus } from '../components/AgentRecordingStatus.js';
 import { isActiveAgentRecordingSession } from '../lib/agent-recording-ui.js';
+import {
+  briefFreshnessMessage,
+  groundedFailureMessage,
+  groundedGenerationPhase,
+  groundingRequestValue,
+  modelAttribution,
+  resolutionForRole,
+  sceneGroundingPresentation,
+  type SceneGroundingPresentation,
+} from '../lib/model-routing.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -129,10 +139,9 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [draftScript, setDraftScript] = useState('');
   /** When true, the PolishScriptModal is mounted for this scene. */
   const [polishOpen, setPolishOpen] = useState(false);
-  // Whether to ground the next script generation in the actual video (Gemini
-  // Files API). Defaults to true when the active provider is Gemini and the
-  // scene has a recording — see effect below. User can untick to fall back
-  // to the (faster, cheaper) text-only path.
+  // Whether to ground the next script generation in the recording. Defaults
+  // to true whenever this scene has one; readiness comes from project role
+  // routing, and a blocked grounded request is never coerced to text-only.
   const [groundInVideo, setGroundInVideo] = useState(true);
   const [showReplaceUpload, setShowReplaceUpload] = useState(false);
   const [agentRecordingOpen, setAgentRecordingOpen] = useState(false);
@@ -162,16 +171,26 @@ export function ScenePage(props: ScenePageProps = {}) {
     if (agentRecordingActive) setShowReplaceUpload(false);
   }, [agentRecordingActive]);
 
-  // Active model — used to gate the "ground in video" toggle. Only Gemini
-  // accepts video natively; everything else falls back to text-only.
-  const { data: activeModel } = useQuery({
-    queryKey: ['active-model'],
-    queryFn: () => settingsApi.getActiveModel(),
+  const { data: modelRouting } = useQuery({
+    queryKey: ['project', projectId, 'model-routing'],
+    queryFn: () => api.getProjectModelRouting(projectId!),
+    enabled: !!projectId,
     staleTime: 60_000,
   });
 
   const scene = storyboard?.scenes.find((s) => s.id === sceneId);
-  const canGroundInVideo = activeModel?.provider === 'gemini' && !!scene?.recording;
+  const videoRoute = modelRouting
+    ? resolutionForRole(modelRouting.resolved, 'video-understanding')
+    : undefined;
+  const writingRoute = modelRouting
+    ? resolutionForRole(modelRouting.resolved, 'writing')
+    : undefined;
+  const grounding = sceneGroundingPresentation(!!scene?.recording, videoRoute, projectId ?? '');
+  const canGroundInVideo = grounding.ready;
+
+  useEffect(() => {
+    setGroundInVideo(!!scene?.recording);
+  }, [sceneId, !!scene?.recording]);
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -216,6 +235,9 @@ export function ScenePage(props: ScenePageProps = {}) {
   // This replaces the previous immediate-overwrite behaviour (which
   // silently destroyed any manual edits the user had typed).
   const [reanalyzeGroundInVideo, setReanalyzeGroundInVideo] = useState(true);
+  useEffect(() => {
+    setReanalyzeGroundInVideo(!!scene?.recording);
+  }, [sceneId, !!scene?.recording]);
   const [analyzePreview, setAnalyzePreview] = useState<
     | null
     | {
@@ -227,7 +249,7 @@ export function ScenePage(props: ScenePageProps = {}) {
   const reanalyzeMutation = useMutation({
     mutationFn: () =>
       recordingsApi.reanalyze(projectId!, sceneId!, {
-        groundInVideo: reanalyzeGroundInVideo && canGroundInVideo,
+        groundInVideo: groundingRequestValue(reanalyzeGroundInVideo, grounding),
         dryRun: true,
       }),
     onSuccess: (data) => {
@@ -286,7 +308,7 @@ export function ScenePage(props: ScenePageProps = {}) {
       const controller = new AbortController();
       generateAbortRef.current = controller;
       return scriptApi.generate(projectId!, sceneId!, {
-        groundInVideo: groundInVideo && canGroundInVideo,
+        groundInVideo: groundingRequestValue(groundInVideo, grounding),
         signal: controller.signal,
       });
     },
@@ -789,14 +811,17 @@ export function ScenePage(props: ScenePageProps = {}) {
     }
   }, [ltData, editingLTs]);
 
-  // Whether to ground the next LT recommendation in the actual video.
-  // Defaults to true; falls back to text-only on the server when the
-  // active provider isn't Gemini or the scene lacks a recording.
+  // Whether to ground the next LT recommendation in the recording. This is
+  // selected by default for recorded scenes and remains explicit: routing or
+  // provider failures cannot silently switch it to text-only.
   const [ltGroundInVideo, setLtGroundInVideo] = useState(true);
+  useEffect(() => {
+    setLtGroundInVideo(!!scene?.recording);
+  }, [sceneId, !!scene?.recording]);
   const recommendLTsMutation = useMutation({
     mutationFn: () =>
       lowerThirdsApi.recommend(projectId!, sceneId!, {
-        groundInVideo: ltGroundInVideo && canGroundInVideo,
+        groundInVideo: groundingRequestValue(ltGroundInVideo, grounding),
       }),
     onSuccess: (data) => {
       setEditingLTs(data.lowerThirds);
@@ -925,15 +950,14 @@ export function ScenePage(props: ScenePageProps = {}) {
             <button type="button" className="btn--accent" disabled={scene.type === 'terminal' || uploadMutation.isPending} title={scene.type === 'terminal' ? 'Terminal scenes cannot use guided recording.' : uploadMutation.isPending ? 'Wait for the manual upload to finish.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Set up recording</button>
           </div>
           {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { if (!agentRecordingActive) { setAgentRecordingOpen(false); setShowReplaceUpload(true); } }} />}
-          {/* Re-analyze blocking modal — running this also calls Gemini Files
-              API in the video-grounded path, which adds an upload + poll
-              before the actual generateContent. */}
+          {/* Grounded re-analysis reuses or refreshes the shared timing brief;
+              the route does not let a provider failure fall back to text. */}
           <GenerationModal
             open={reanalyzeMutation.isPending}
             title="Re-analyzing scene"
             phase={
               reanalyzeGroundInVideo && canGroundInVideo
-                ? 'Uploading video to Gemini → analysing → writing scene description…'
+                ? `${videoRoute && 'name' in videoRoute ? videoRoute.name : 'The video model'} analyzes the recording → VPA prepares the preview…`
                 : 'Reading scene metadata + source-docs → writing description…'
             }
             hint={
@@ -1234,45 +1258,41 @@ export function ScenePage(props: ScenePageProps = {}) {
                   project objective. You'll get a diff to review before anything is saved.
                 </p>
 
-                {canGroundInVideo && (
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: 10,
-                      fontSize: 12,
-                      color: 'var(--fg-muted)',
-                      userSelect: 'none',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={reanalyzeGroundInVideo}
-                      onChange={(e) => setReanalyzeGroundInVideo(e.target.checked)}
-                      disabled={reanalyzeMutation.isPending}
-                    />
-                    <span>
-                      Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'})
-                    </span>
-                  </label>
+                {grounding.visible && (
+                  <GroundingOption
+                    checked={reanalyzeGroundInVideo}
+                    onChange={setReanalyzeGroundInVideo}
+                    presentation={grounding}
+                    pending={reanalyzeMutation.isPending}
+                    detail="Uses the recording for visual and timing evidence."
+                    attribution={modelAttribution(videoRoute, undefined, 'scene description')}
+                    preservedContent="scene description"
+                  />
                 )}
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <button
                     onClick={() => reanalyzeMutation.mutate()}
-                    disabled={reanalyzeMutation.isPending || !!analyzePreview}
+                    disabled={
+                      reanalyzeMutation.isPending ||
+                      !!analyzePreview ||
+                      (reanalyzeGroundInVideo && grounding.visible && !grounding.ready)
+                    }
                     style={{
                       padding: '7px 14px',
                       background: 'var(--surface)',
                       color: 'var(--fg)',
                       border: '1px solid var(--border)',
                       borderRadius: 6,
-                      cursor: reanalyzeMutation.isPending ? 'wait' : 'pointer',
+                      cursor: reanalyzeMutation.isPending
+                        ? 'wait'
+                        : reanalyzeGroundInVideo && grounding.visible && !grounding.ready
+                          ? 'not-allowed'
+                          : 'pointer',
                       fontSize: 12,
                       fontWeight: 600,
-                      opacity: analyzePreview ? 0.5 : 1,
+                      opacity: analyzePreview ||
+                        (reanalyzeGroundInVideo && grounding.visible && !grounding.ready) ? 0.5 : 1,
                     }}
                   >
                     {reanalyzeMutation.isPending ? (
@@ -1423,22 +1443,19 @@ export function ScenePage(props: ScenePageProps = {}) {
 
       {activeTab === 'Script' && (
         <div>
-          {/* Generation modal — blocks the page so the user can't navigate
-              away mid-generation (which previously left the page showing
-              the pre-generation state until both halves landed). Phase
-              copy adapts to the chosen mode: video-grounded does an extra
-              upload + Gemini-side analysis pass before the actual write. */}
+          {/* The shared timing brief is produced first; the routed writer then
+              receives bounded text context and drafts both script variants. */}
           <GenerationModal
             open={generateScriptMutation.isPending}
             title="Generating script"
             phase={
               groundInVideo && canGroundInVideo
-                ? 'Uploading video to Gemini → analysing → writing script → converting to dialog…'
+                ? groundedGenerationPhase(videoRoute, writingRoute, 'script')
                 : 'Writing monologue, then dialog…'
             }
             hint={
               groundInVideo && canGroundInVideo
-                ? 'Video upload + Gemini analysis usually takes 30–60s on top of the LLM calls.'
+                ? 'Video analysis and writing can take 30–60 seconds. Existing scripts stay unchanged unless every generated variant validates.'
                 : 'Two LLM calls run in sequence.'
             }
             onCancel={() => {
@@ -1590,34 +1607,20 @@ export function ScenePage(props: ScenePageProps = {}) {
             </div>
           </div>
 
-          {/* Video-grounded toggle. Only shown when the active provider can
-              actually use it — otherwise the toggle would be a no-op trap
-              ("turn this on but nothing changes"). Hidden in 'byo' mode: it
-              only applies to writing from scratch, not polishing a draft. */}
-          {scriptInputMode === 'describe' && canGroundInVideo && (
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 12,
-                fontSize: 13,
-                color: 'var(--fg-muted)',
-                userSelect: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={groundInVideo}
-                onChange={(e) => setGroundInVideo(e.target.checked)}
-                disabled={generateScriptMutation.isPending}
-              />
-              <span>
-                Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'} —
-                more accurate, slower, costs more tokens)
-              </span>
-            </label>
+          {/* Hidden in BYO mode because grounding applies to generation, not
+              polishing. With a recording, this remains visible even when the
+              project's video route needs attention. */}
+          {scriptInputMode === 'describe' && grounding.visible && (
+            <GroundingOption
+              checked={groundInVideo}
+              onChange={setGroundInVideo}
+              presentation={grounding}
+              pending={generateScriptMutation.isPending}
+              detail="Uses the recording for visual and pacing evidence."
+              attribution={modelAttribution(videoRoute, writingRoute, 'script')}
+              freshness={briefFreshnessMessage(generateScriptMutation.data?.briefFreshness, videoRoute)}
+              preservedContent="script"
+            />
           )}
 
           {/* ── Describe mode: Generate/Regenerate top bar ──
@@ -1652,14 +1655,22 @@ export function ScenePage(props: ScenePageProps = {}) {
                 }
                 generateScriptMutation.mutate();
               }}
-              disabled={generateScriptMutation.isPending}
+              disabled={
+                generateScriptMutation.isPending ||
+                (groundInVideo && grounding.visible && !grounding.ready)
+              }
               className="primary"
               style={{
                 padding: '8px 16px',
                 fontSize: 13,
                 fontWeight: 600,
-                cursor: generateScriptMutation.isPending ? 'wait' : 'pointer',
-                opacity: generateScriptMutation.isPending ? 0.7 : 1,
+                cursor: generateScriptMutation.isPending
+                  ? 'wait'
+                  : groundInVideo && grounding.visible && !grounding.ready
+                    ? 'not-allowed'
+                    : 'pointer',
+                opacity: generateScriptMutation.isPending ||
+                  (groundInVideo && grounding.visible && !grounding.ready) ? 0.7 : 1,
               }}
             >
               {generateScriptMutation.isPending ? (
@@ -2896,60 +2907,52 @@ export function ScenePage(props: ScenePageProps = {}) {
             title="Recommending lower thirds"
             phase={
               ltGroundInVideo && canGroundInVideo
-                ? 'Uploading video to Gemini → analysing → picking moments to label…'
+                ? groundedGenerationPhase(videoRoute, writingRoute, 'lower-third copy')
                 : 'Asking the model for title cards…'
             }
             hint={
               ltGroundInVideo && canGroundInVideo
-                ? 'Video upload + Gemini analysis usually takes 30–60s. The model anchors each LT to a real on-screen moment.'
+                ? 'The video model owns timing; the writer returns copy attached to validated segment IDs.'
                 : 'One LLM call, usually 5–15 seconds.'
             }
           />
 
-          {/* Video-grounded toggle. Same pattern as the Script tab —
-              only shown when toggling would actually change behaviour
-              (Gemini active + recording present). */}
-          {canGroundInVideo && (
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 12,
-                fontSize: 13,
-                color: 'var(--fg-muted)',
-                userSelect: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={ltGroundInVideo}
-                onChange={(e) => setLtGroundInVideo(e.target.checked)}
-                disabled={recommendLTsMutation.isPending}
-              />
-              <span>
-                Ground in actual video (sends recording to {activeModel?.label ?? 'Gemini'} — anchors
-                each LT to a real on-screen moment)
-              </span>
-            </label>
+          {grounding.visible && (
+            <GroundingOption
+              checked={ltGroundInVideo}
+              onChange={setLtGroundInVideo}
+              presentation={grounding}
+              pending={recommendLTsMutation.isPending}
+              detail="Anchors each lower third to a validated on-screen segment."
+              attribution={modelAttribution(videoRoute, writingRoute, 'lower-third copy')}
+              freshness={briefFreshnessMessage(recommendLTsMutation.data?.briefFreshness, videoRoute)}
+              preservedContent="lower-third copy"
+            />
           )}
 
           {/* Action buttons */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <button
               onClick={() => recommendLTsMutation.mutate()}
-              disabled={recommendLTsMutation.isPending}
+              disabled={
+                recommendLTsMutation.isPending ||
+                (ltGroundInVideo && grounding.visible && !grounding.ready)
+              }
               style={{
                 padding: '8px 16px',
                 background: editingLTs && editingLTs.length > 0 ? 'var(--surface)' : 'var(--accent)',
                 color: editingLTs && editingLTs.length > 0 ? 'var(--fg)' : '#fff',
                 border: editingLTs && editingLTs.length > 0 ? '1px solid var(--border)' : 'none',
                 borderRadius: 6,
-                cursor: recommendLTsMutation.isPending ? 'wait' : 'pointer',
+                cursor: recommendLTsMutation.isPending
+                  ? 'wait'
+                  : ltGroundInVideo && grounding.visible && !grounding.ready
+                    ? 'not-allowed'
+                    : 'pointer',
                 fontSize: 13,
                 fontWeight: 600,
-                opacity: recommendLTsMutation.isPending ? 0.7 : 1,
+                opacity: recommendLTsMutation.isPending ||
+                  (ltGroundInVideo && grounding.visible && !grounding.ready) ? 0.7 : 1,
               }}
             >
               {recommendLTsMutation.isPending
@@ -3436,6 +3439,57 @@ export function ScenePage(props: ScenePageProps = {}) {
             ui.showToast({ message: 'Polished script saved. Existing TTS chunks were cleared.', tone: 'success' });
           }}
         />
+      )}
+    </div>
+  );
+}
+
+function GroundingOption({
+  checked,
+  onChange,
+  presentation,
+  pending,
+  detail,
+  attribution,
+  freshness,
+  preservedContent,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  presentation: SceneGroundingPresentation;
+  pending: boolean;
+  detail: string;
+  attribution: string;
+  freshness?: string;
+  preservedContent: Parameters<typeof groundedFailureMessage>[0];
+}) {
+  const disabled = pending || !presentation.ready;
+  return (
+    <div className="scene-grounding">
+      <label className={`scene-grounding__control${disabled ? ' is-disabled' : ''}`}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          disabled={disabled}
+        />
+        <span>
+          <strong>Ground in the recording</strong>
+          <span>{detail}</span>
+        </span>
+      </label>
+      <p className="scene-grounding__attribution">{attribution}</p>
+      {freshness && (
+        <p className="scene-grounding__freshness" role="status">{freshness}</p>
+      )}
+      {!presentation.ready && (
+        <div className="scene-grounding__blocked" role="note">
+          <p>{presentation.disabledReason}</p>
+          <p>{groundedFailureMessage(preservedContent)}</p>
+          {presentation.remediationHref && (
+            <Link to={presentation.remediationHref}>Open this project's AI models</Link>
+          )}
+        </div>
       )}
     </div>
   );

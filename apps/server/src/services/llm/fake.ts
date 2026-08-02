@@ -174,6 +174,14 @@ export function createFakeLlm(): LlmClient {
       if (isLowerThirdPrompt(opts)) {
         const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/) ?? opts.userPrompt.match(/Scene:\s*(.+)/);
         const sceneName = nameMatch?.[1]?.trim() ?? 'Demo Scene';
+        if (opts.userPrompt.includes('Return only segment IDs')) {
+          const segmentId = opts.userPrompt.match(/segment-[\w-]+/)?.[0] ?? 'segment-001';
+          return {
+            text: JSON.stringify([
+              { segment_id: segmentId, title: sceneName, subtitle: 'Getting Started', style: 'frosted' },
+            ]),
+          };
+        }
         return {
           text: JSON.stringify([
             { title: sceneName, subtitle: 'Getting Started', style: 'frosted', in_sec: 1.5, out_sec: 5.5 },

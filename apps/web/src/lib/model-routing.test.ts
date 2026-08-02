@@ -3,6 +3,10 @@ import type { ModelRoutingResolution, ModelRoutingResponse, ResolvedModelSummary
 import type { ModelEntry } from './api.js';
 import {
   assignmentPresentation,
+  briefFreshnessMessage,
+  groundedFailureMessage,
+  groundedGenerationPhase,
+  groundingRequestValue,
   mergePendingRouting,
   modelEditDraft,
   modelAttribution,
@@ -10,6 +14,7 @@ import {
   remediationDestination,
   roleIsPending,
   routingWithAssignment,
+  sceneGroundingPresentation,
 } from './model-routing.js';
 
 const models: ModelEntry[] = [
@@ -71,6 +76,79 @@ describe('model routing view models', () => {
   it('attributes the video and writing stages to their specialists', () => {
     expect(modelAttribution(resolved('video-understanding', models[0]!), resolved('writing', models[2]!)))
       .toBe('Gemini Pro watches the recording; Codex writes the script.');
+    expect(modelAttribution(
+      resolved('video-understanding', models[0]!),
+      resolved('writing', models[2]!),
+      'lower-third copy',
+    )).toBe('Gemini Pro watches the recording; Codex writes the lower-third copy.');
+  });
+
+  it('keeps video grounding visible but disabled with exact project remediation', () => {
+    const unavailable: ModelRoutingResolution = {
+      role: 'video-understanding',
+      scope: 'project',
+      ready: false,
+      code: 'model_unavailable',
+      message: 'The assigned model for video-understanding is unavailable. Check its configuration in project model settings.',
+    };
+
+    expect(sceneGroundingPresentation(true, unavailable, 'project-7')).toEqual({
+      visible: true,
+      ready: false,
+      disabledReason: unavailable.message,
+      remediationHref: '/project/project-7#project-ai-models-title',
+    });
+    expect(sceneGroundingPresentation(false, unavailable, 'project-7')).toEqual({
+      visible: false,
+      ready: false,
+    });
+  });
+
+  it('bounds untrusted grounding errors without changing a normal role error', () => {
+    const longError: ModelRoutingResolution = {
+      role: 'video-understanding',
+      scope: 'global',
+      ready: false,
+      code: 'model_unavailable',
+      message: 'x'.repeat(600),
+    };
+    const presentation = sceneGroundingPresentation(true, longError, 'project-7');
+    expect(presentation.disabledReason).toHaveLength(240);
+    expect(presentation.disabledReason).toMatch(/…$/);
+  });
+
+  it('never coerces a requested grounded action to text-only', () => {
+    const blocked = sceneGroundingPresentation(true, {
+      role: 'video-understanding',
+      scope: 'global',
+      ready: false,
+      code: 'model_assignment_missing',
+      message: 'No model is assigned to the video-understanding role.',
+    }, 'project-7');
+    expect(() => groundingRequestValue(true, blocked)).toThrow(blocked.disabledReason);
+    expect(groundingRequestValue(false, blocked)).toBe(false);
+
+    const ready = sceneGroundingPresentation(
+      true,
+      resolved('video-understanding', models[0]!),
+      'project-7',
+    );
+    expect(groundingRequestValue(true, ready)).toBe(true);
+  });
+
+  it('describes routed phases, brief reuse, and preservation in plain language', () => {
+    const video = resolved('video-understanding', models[0]!);
+    const writer = resolved('writing', models[2]!);
+    expect(groundedGenerationPhase(video, writer, 'script'))
+      .toBe('Gemini Pro analyzes the recording → Codex drafts the script…');
+    expect(groundedGenerationPhase(video, writer, 'lower-third copy'))
+      .toBe('Gemini Pro analyzes the recording → Codex drafts the lower-third copy…');
+    expect(briefFreshnessMessage('reused', video))
+      .toBe('Reusing the current Gemini timing brief.');
+    expect(briefFreshnessMessage('generated', video))
+      .toBe('Gemini analyzed the recording and created a new timing brief.');
+    expect(groundedFailureMessage('script'))
+      .toBe('The video model is not ready. Your existing script will not be changed.');
   });
 
   it('describes inherited project assignments explicitly', () => {

@@ -1553,6 +1553,106 @@ pre code {
 .agent-recording-session-panel.is-done { color: var(--success); background: var(--success-bg); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); }
 .agent-recording-session-panel.is-failed { color: var(--danger); background: var(--danger-bg); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); }
 
+/* Routing is production metadata, kept visually subordinate to the scene
+   action it qualifies. No card chrome: one quiet rule, compact copy, and a
+   direct remediation link when the video role is unavailable. */
+.scene-grounding {
+  max-width: 720px;
+  margin: 0 0 14px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-soft, var(--border));
+}
+
+.scene-grounding__control {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.scene-grounding__control > input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.scene-grounding__control > input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.scene-grounding__control > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.scene-grounding__control strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scene-grounding__control span span,
+.scene-grounding__attribution,
+.scene-grounding__freshness,
+.scene-grounding__blocked {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.scene-grounding__control span span,
+.scene-grounding__attribution {
+  color: var(--fg-muted);
+}
+
+.scene-grounding__control.is-disabled {
+  cursor: not-allowed;
+  opacity: .72;
+}
+
+.scene-grounding__attribution,
+.scene-grounding__freshness {
+  margin: 6px 0 0 25px;
+}
+
+.scene-grounding__freshness {
+  color: var(--success);
+}
+
+.scene-grounding__blocked {
+  margin: 7px 0 0 25px;
+  color: var(--warn);
+}
+
+.scene-grounding__blocked p {
+  margin: 0 0 3px;
+}
+
+.scene-grounding__blocked a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+.scene-grounding__blocked a:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 680px) {
+  .scene-grounding {
+    max-width: 100%;
+  }
+
+  .scene-grounding__attribution,
+  .scene-grounding__freshness,
+  .scene-grounding__blocked {
+    margin-left: 0;
+  }
+}
+
 .agent-recording-troubleshooting { margin-top: 15px; border-top: 1px solid var(--border-soft); padding-top: 11px; }
 .agent-recording-troubleshooting summary { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); cursor: pointer; font-size: 11px; font-weight: 600; }
 .agent-recording-troubleshooting p { margin: 8px 0; color: var(--fg-muted); font-size: 10px; line-height: 1.45; }

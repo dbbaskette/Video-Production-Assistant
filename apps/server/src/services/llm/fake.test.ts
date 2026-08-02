@@ -39,4 +39,24 @@ describe('createFakeLlm', () => {
     });
     expect(JSON.parse(out.text).name).toBe('Acme');
   });
+
+  it('uses segment ids instead of raw times for staged lower-third copy', async () => {
+    const llm = createFakeLlm();
+    const out = await llm.complete({
+      systemPrompt: 'You are a lower-third recommender.',
+      userPrompt: [
+        'Scene name: Model routing',
+        'segment-001@0.000-8.000',
+        'Return only segment IDs plus title, optional subtitle, and style.',
+      ].join('\n'),
+      responseFormat: 'json',
+    });
+
+    expect(JSON.parse(out.text)).toEqual([{
+      segment_id: 'segment-001',
+      title: 'Model routing',
+      subtitle: 'Getting Started',
+      style: 'frosted',
+    }]);
+  });
 });

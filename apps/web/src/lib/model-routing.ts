@@ -29,6 +29,15 @@ export interface ModelEditDraft {
   apiKey: string;
 }
 
+export type SceneWritingOutput = 'scene description' | 'script' | 'lower-third copy';
+
+export interface SceneGroundingPresentation {
+  visible: boolean;
+  ready: boolean;
+  disabledReason?: string;
+  remediationHref?: string;
+}
+
 export function modelEditDraft(
   entry: Pick<ModelEntry, 'name' | 'model' | 'endpoint'>,
 ): ModelEditDraft {
@@ -169,11 +178,12 @@ function isReady(
 export function modelAttribution(
   video: ModelRoutingResolution | undefined,
   writer: ModelRoutingResolution | undefined,
+  output: SceneWritingOutput = 'script',
 ): string {
   if (isReady(video) && isReady(writer)) {
-    return `${video.name} watches the recording; ${writer.name} writes the script.`;
+    return `${video.name} watches the recording; ${writer.name} writes the ${output}.`;
   }
-  if (isReady(writer)) return `${writer.name} writes the script.`;
+  if (isReady(writer)) return `${writer.name} writes the ${output}.`;
   if (isReady(video)) return `${video.name} watches the recording.`;
   return 'Assign models before generating content.';
 }
@@ -181,4 +191,76 @@ export function modelAttribution(
 export function boundedMessage(message: string, limit = 240): string {
   if (message.length <= limit) return message;
   return `${message.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+export function sceneGroundingPresentation(
+  hasRecording: boolean,
+  video: ModelRoutingResolution | undefined,
+  projectId: string,
+): SceneGroundingPresentation {
+  if (!hasRecording) return { visible: false, ready: false };
+  if (isReady(video)) return { visible: true, ready: true };
+
+  const reason = video && 'message' in video
+    ? video.message
+    : 'The video model is not ready.';
+  return {
+    visible: true,
+    ready: false,
+    disabledReason: boundedMessage(reason),
+    remediationHref: `/project/${projectId}#project-ai-models-title`,
+  };
+}
+
+/** Preserve the user's explicit request: a selected-but-blocked action throws
+ * instead of quietly submitting `groundInVideo: false`. */
+export function groundingRequestValue(
+  selected: boolean,
+  presentation: SceneGroundingPresentation,
+): boolean {
+  if (!presentation.visible || !selected) return false;
+  if (!presentation.ready) {
+    throw new Error(presentation.disabledReason ?? 'The video model is not ready.');
+  }
+  return true;
+}
+
+export function groundedGenerationPhase(
+  video: ModelRoutingResolution | undefined,
+  writer: ModelRoutingResolution | undefined,
+  output: SceneWritingOutput,
+): string {
+  if (isReady(video) && isReady(writer)) {
+    return `${video.name} analyzes the recording → ${writer.name} drafts the ${output}…`;
+  }
+  return `Analyzing the recording → drafting the ${output}…`;
+}
+
+function providerLabel(summary: ModelRoutingResolution | undefined): string {
+  if (!isReady(summary)) return 'video model';
+  const labels: Partial<Record<ResolvedModelSummary['provider'], string>> = {
+    gemini: 'Gemini',
+    'claude-code': 'Claude',
+    'codex-cli': 'Codex',
+    anthropic: 'Anthropic',
+    'openai-compat': 'OpenAI-compatible model',
+    fake: 'test model',
+  };
+  return labels[summary.provider] ?? summary.name;
+}
+
+export function briefFreshnessMessage(
+  freshness: 'generated' | 'reused' | undefined,
+  video: ModelRoutingResolution | undefined,
+): string | undefined {
+  if (!freshness) return undefined;
+  const provider = providerLabel(video);
+  return freshness === 'reused'
+    ? `Reusing the current ${provider} timing brief.`
+    : `${provider} analyzed the recording and created a new timing brief.`;
+}
+
+export function groundedFailureMessage(output: SceneWritingOutput): string {
+  const existing = output === 'lower-third copy' ? 'lower thirds' : output;
+  return `The video model is not ready. Your existing ${existing} will not be changed.`;
 }

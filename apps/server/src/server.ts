@@ -290,7 +290,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerSourceDocsRoutes(instance, { store }),
   );
   await app.register(async (instance) =>
-    registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
+    registerLowerThirdsRoutes(instance, {
+      store,
+      workspaceRoot: wsRoot,
+      router: modelRouter,
+      videoUnderstanding,
+    }),
   );
   await app.register(async (instance) =>
     registerQualityReviewRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
