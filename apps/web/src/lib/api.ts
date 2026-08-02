@@ -18,10 +18,14 @@ import {
   CapSetupStatusSchema,
   AgentRecordingPlanSchema,
   AgentRecordingSessionSchema,
+  ModelRoutingResponseSchema,
   type CapSetupStatus,
   type AgentRecordingPlan,
   type AgentRecordingPlanUpdate,
   type AgentRecordingSession,
+  type ModelCapabilities,
+  type ModelRoutingResponse,
+  type ModelRoutingUpdate,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -91,6 +95,19 @@ export const api = {
   async getProject(id: string): Promise<Project> {
     const data = await request<unknown>('GET', `/api/projects/${id}`);
     return ProjectSchema.parse(data);
+  },
+  async getProjectModelRouting(id: string): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('GET', `/api/projects/${id}/model-routing`),
+    );
+  },
+  async updateProjectModelRouting(
+    id: string,
+    update: ModelRoutingUpdate,
+  ): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('PUT', `/api/projects/${id}/model-routing`, update),
+    );
   },
   async setProjectBrand(
     id: string,
@@ -1276,7 +1293,9 @@ export interface ModelEntry {
   model: string;
   endpoint?: string;
   hasApiKey: boolean;
-  active: boolean;
+  capabilities: ModelCapabilities;
+  ready: boolean;
+  readinessMessage?: string;
 }
 
 export interface ActiveModelInfo {
@@ -1309,6 +1328,16 @@ export const settingsApi = {
     apiKey?: string;
   }): Promise<ModelEntry> {
     return request<ModelEntry>('PUT', `/api/settings/models/${id}`, patch);
+  },
+  async getModelRouting(): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('GET', '/api/settings/model-routing'),
+    );
+  },
+  async updateModelRouting(update: ModelRoutingUpdate): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('PUT', '/api/settings/model-routing', update),
+    );
   },
   async activateModel(id: string): Promise<ModelEntry> {
     return request<ModelEntry>('POST', `/api/settings/models/${id}/activate`);
