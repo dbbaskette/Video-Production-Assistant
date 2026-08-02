@@ -37,6 +37,7 @@ async function seedProjectWithScene(
       path: entry.path,
       created: entry.lastOpened ?? new Date().toISOString(),
       brand: null,
+      model_routing: {},
     },
     [
       {

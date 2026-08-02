@@ -438,6 +438,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       path: entry.path,
       created: entry.lastOpened ?? new Date().toISOString(),
       brand: null,
+      model_routing: {},
     };
     const storyboard = createStoryboard(project, scenes);
     await saveStoryboard(projectPath, storyboard);
@@ -527,6 +528,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       path: entry.path,
       created: entry.lastOpened ?? new Date().toISOString(),
       brand: null,
+      model_routing: {},
     };
     const storyboard = createStoryboard(project, scenes);
     await saveStoryboard(entry.path, storyboard);

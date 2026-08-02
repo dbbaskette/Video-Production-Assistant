@@ -69,6 +69,7 @@ export async function registerIdeationRoutes(app: FastifyInstance, deps: Deps): 
       path: entry.path,
       created: entry.lastOpened ?? new Date().toISOString(),
       brand: null,
+      model_routing: {},
     };
 
     const storyboard = createStoryboard(project, proposedScenes);

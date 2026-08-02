@@ -21,6 +21,7 @@ const testProject: Project = {
   created: '2026-04-30T00:00:00.000Z',
   objective: 'Test objective',
   brand: null,
+  model_routing: {},
 };
 
 const scene1: Scene = {
