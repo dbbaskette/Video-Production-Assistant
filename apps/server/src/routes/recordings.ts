@@ -5,14 +5,24 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
-import type { ModelRegistry } from '../services/llm/model-registry.js';
+import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { probeVideo, type VideoMetadata } from '../services/recording/metadata.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
 import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '../services/storyboard/index.js';
-import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
+import { analyzeRecording, proposeSceneMetadataFromBrief } from '../services/video-analysis/index.js';
+import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
-import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type RecordingProvenance, type Scene, type SceneTransition } from '@vpa/shared';
+import {
+  RecordingProvenanceSchema,
+  SceneSchema,
+  SceneTransitionSchema,
+  type ModelRoutingErrorCode,
+  type RecordingProvenance,
+  type ResolvedModelSummary,
+  type Scene,
+  type SceneTransition,
+} from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { isAgentRecordingDomainError } from '../services/agent-recording/errors.js';
@@ -30,8 +40,8 @@ interface Deps {
   store: ProjectStore;
   llm: LlmClient;
   workspaceRoot: string;
-  /** Used by the re-analyze route to detect Gemini for video-grounded mode. */
-  registry?: ModelRegistry;
+  router: ModelRouter;
+  videoUnderstanding: VideoUnderstandingService;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
   /** Test seam for recording persistence failures. */
@@ -41,6 +51,48 @@ interface Deps {
     'recoverAttachment' | 'withManualUploadReservation'
   >;
   bulkUploadLimits?: { fileSizeBytes: number; fileCount: number };
+}
+
+type RecordingAnalysisResult =
+  | {
+      status: 'ready';
+      model: ResolvedModelSummary;
+      briefFreshness: 'generated' | 'reused';
+    }
+  | {
+      status: 'failed';
+      code: ModelRoutingErrorCode | 'video_analysis_failed';
+      message: string;
+    };
+
+const VIDEO_ANALYSIS_FAILED_MESSAGE =
+  'Video analysis failed. The recording is saved; try re-analyzing later.';
+
+function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<string, unknown> {
+  if (error instanceof ModelRoutingError) {
+    return {
+      sceneId,
+      errorName: error.name,
+      code: error.code,
+      role: error.role,
+      scope: error.scope,
+    };
+  }
+  return {
+    sceneId,
+    errorName: error instanceof Error && error.name ? error.name : 'UnknownError',
+  };
+}
+
+function publicAnalysisFailure(error: unknown): RecordingAnalysisResult {
+  if (error instanceof ModelRoutingError) {
+    return { status: 'failed', code: error.code, message: error.message };
+  }
+  return {
+    status: 'failed',
+    code: 'video_analysis_failed',
+    message: VIDEO_ANALYSIS_FAILED_MESSAGE,
+  };
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -120,12 +172,50 @@ function mapBulkScenes(scenes: Scene[], uploadCount: number): Scene[] {
 }
 
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, registry } = deps;
+  const { store, llm, workspaceRoot, router, videoUnderstanding } = deps;
   const probe = deps.probe ?? probeVideo;
   const ingest = deps.ingest ?? ingestRecording;
   const bulkUploadLimits = deps.bulkUploadLimits ?? {
     fileSizeBytes: BULK_UPLOAD_MAX_FILE_BYTES,
     fileCount: BULK_UPLOAD_MAX_FILES,
+  };
+  const warnAnalysisFailure = (error: unknown, sceneId: string, message: string): void => {
+    try {
+      app.log.warn(privateAnalysisDiagnostic(error, sceneId), message);
+    } catch {
+      // Private diagnostics must never change attachment or analysis outcomes.
+    }
+  };
+
+  const ensureRecordingBrief = async (
+    projectId: string,
+    projectPath: string,
+    scene: Scene,
+    result: IngestResult,
+  ): Promise<RecordingAnalysisResult> => {
+    try {
+      const project = await store.readProject(projectId);
+      const videoModel = await router.resolveVideo(project);
+      const input = {
+        projectPath,
+        sceneId: scene.id,
+        sceneName: scene.name,
+        videoPath: path.join(projectPath, result.relativePath),
+        videoMimeType: 'video/mp4',
+      };
+      const status = await videoUnderstanding.readBriefStatus(input, videoModel);
+      await videoUnderstanding.ensureBrief(input, videoModel, (phase) => {
+        app.log.info({ sceneId: scene.id, phase }, 'video understanding phase');
+      });
+      return {
+        status: 'ready',
+        model: videoModel.summary,
+        briefFreshness: status.status === 'fresh' ? 'reused' : 'generated',
+      };
+    } catch (error) {
+      warnAnalysisFailure(error, scene.id, 'Post-attachment video analysis failed');
+      return publicAnalysisFailure(error);
+    }
   };
 
   // POST /api/projects/:id/scenes/:sceneId/recording — upload recording for a specific scene
@@ -138,7 +228,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     if (!sb) {
       return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
     }
-    if (!sb.scenes.some((s) => s.id === sceneId)) {
+    const scene = sb.scenes.find((candidate) => candidate.id === sceneId);
+    if (!scene) {
       return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
     }
 
@@ -165,33 +256,43 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     const tmpFile = path.join(tmpDir, `upload-${randomUUID()}.mp4`);
 
     try {
+      let result: IngestResult;
       if (provenance.source_kind === 'cap-agent') {
         await mkdir(tmpDir, { recursive: true });
         await writeFile(tmpFile, upload);
         try {
-          return await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
+          result = await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
             capturedAt: provenance.captured_at!, uploadedPath: tmpFile,
           });
         } catch {
           return reply.status(409).send({ error: 'Verified Cap attachment recovery was rejected.', code: 'invalid_capture_session' });
         }
+      } else {
+        try {
+          result = await deps.agentRecordingCoordinator.withManualUploadReservation(
+            id,
+            [sceneId],
+            async () => {
+              await mkdir(tmpDir, { recursive: true });
+              await writeFile(tmpFile, upload);
+              const metadata = await probe(tmpFile);
+              const ingested = await ingest(projectPath, sceneId, tmpFile, metadata, provenance);
+              await verifyManualIngestion(projectPath, sceneId, metadata, ingested, provenance);
+              return ingested;
+            },
+          );
+        } catch (error) {
+          return sendUploadConflict(reply, error);
+        }
       }
-      try {
-        return await deps.agentRecordingCoordinator.withManualUploadReservation(
-          id,
-          [sceneId],
-          async () => {
-            await mkdir(tmpDir, { recursive: true });
-            await writeFile(tmpFile, upload);
-            const metadata = await probe(tmpFile);
-            const result = await ingest(projectPath, sceneId, tmpFile, metadata, provenance);
-            await verifyManualIngestion(projectPath, sceneId, metadata, result, provenance);
-            return result;
-          },
-        );
-      } catch (error) {
-        return sendUploadConflict(reply, error);
-      }
+
+      const attachment = {
+        sceneId: result.sceneId,
+        relativePath: result.relativePath,
+        metadata: result.metadata,
+      };
+      const analysis = await ensureRecordingBrief(id, projectPath, scene, attachment);
+      return reply.status(201).send({ ...attachment, analysis });
     } finally {
       await unlink(tmpFile).catch(() => {});
     }
@@ -560,10 +661,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // overwriting whatever the user might have manually edited. Default
   // false preserves the prior behaviour.
   //
-  // Video-grounded mode (Gemini-only) uploads the recording to the Files
-  // API so the model describes what's actually on screen. Falls back to
-  // text-only when the active provider isn't Gemini, the registry is
-  // unavailable, or the flag is false.
+  // Grounded and text-only analysis are explicit, separate paths. Grounded
+  // failures never fall back to metadata-only analysis.
   app.post('/api/projects/:id/scenes/:sceneId/analyze', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     const body = (req.body ?? {}) as { groundInVideo?: boolean; dryRun?: boolean };
@@ -584,17 +683,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
-    // Reuse the same metadata-loading path the upload uses so re-analyze
-    // matches first-analyze behaviour exactly.
-    let projectObjective: string | undefined;
-    let projectAudience: string | undefined;
-    try {
-      const project = await store.readProject(entry.id);
-      projectObjective = project.objective;
-      projectAudience = project.audience;
-    } catch {
-      // Missing project.yaml shouldn't block re-analyze.
-    }
+    const project = await store.readProject(entry.id);
 
     const analysisInput = {
       filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
@@ -605,8 +694,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       height: 0,
       sceneIndex: sb.scenes.findIndex((s) => s.id === sceneId),
       totalScenes: sb.scenes.length,
-      projectObjective,
-      projectAudience,
+      projectObjective: project.objective,
+      projectAudience: project.audience,
       projectPath: entry.path,
     };
     try {
@@ -618,37 +707,41 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       // prompt will mention but the model can ignore.
     }
 
-    const active = registry?.getActive();
-    const canUseVideo =
-      body.groundInVideo === true && active?.provider === 'gemini' && !!active.apiKey;
-
-    let analysis;
+    let proposal: Pick<Scene, 'name' | 'description' | 'type'>;
     let mode: 'text' | 'video' = 'text';
     try {
-      if (canUseVideo && active) {
+      let analysis;
+      if (body.groundInVideo === true) {
         mode = 'video';
-        analysis = await analyzeRecordingWithVideo(
-          {
-            ...analysisInput,
-            videoPath: path.join(entry.path, scene.recording.source),
-            videoMimeType: 'video/mp4',
-          },
-          { apiKey: active.apiKey!, model: active.model },
-          workspaceRoot,
-          llm,
-          (phase, detail) => {
-            app.log.info({ sceneId, phase, detail }, 'video-grounded analysis phase');
-          },
-        );
+        const videoModel = await router.resolveVideo(project);
+        const brief = await videoUnderstanding.ensureBrief({
+          projectPath: entry.path,
+          sceneId,
+          sceneName: scene.name,
+          videoPath: path.join(entry.path, scene.recording.source),
+          videoMimeType: 'video/mp4',
+        }, videoModel, (phase) => {
+          app.log.info({ sceneId, phase }, 'video-grounded analysis phase');
+        });
+        analysis = proposeSceneMetadataFromBrief(scene, brief);
       } else {
-        analysis = await analyzeRecording(analysisInput, llm, workspaceRoot);
+        const generalModel = await router.resolveText('general', project);
+        analysis = await analyzeRecording(analysisInput, generalModel.client, workspaceRoot);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      app.log.error({ err: msg }, 'scene re-analysis failed');
+      const validatedScene = SceneSchema.parse({ ...scene, ...analysis });
+      proposal = {
+        name: validatedScene.name,
+        description: validatedScene.description,
+        type: validatedScene.type,
+      };
+    } catch (error) {
+      warnAnalysisFailure(error, sceneId, 'Scene re-analysis failed');
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({ error: error.message, code: error.code });
+      }
       return reply.status(500).send({
-        error: `Scene analysis failed: ${msg}`,
-        code: 'analyze_failed',
+        error: VIDEO_ANALYSIS_FAILED_MESSAGE,
+        code: 'video_analysis_failed',
       });
     }
 
@@ -658,11 +751,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return {
         sceneId,
         dryRun: true,
-        proposed: {
-          name: analysis.name,
-          description: analysis.description,
-          type: analysis.type,
-        },
+        proposed: proposal,
         current: {
           name: scene.name,
           description: scene.description,
@@ -675,17 +764,13 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     // Persist the new name/description/type. Don't touch other scene
     // fields (recording, narration, lower_thirds, overlay_render, etc.).
     const updated = updateScene(sb, sceneId, {
-      name: analysis.name,
-      description: analysis.description,
-      type: analysis.type,
+      ...proposal,
     });
     await saveStoryboard(entry.path, updated);
 
     return {
       sceneId,
-      name: analysis.name,
-      description: analysis.description,
-      type: analysis.type,
+      ...proposal,
       mode,
     };
   });

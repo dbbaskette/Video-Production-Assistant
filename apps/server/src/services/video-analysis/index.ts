@@ -1,28 +1,7 @@
-/**
- * Scene analysis — turns a freshly uploaded (or already-ingested) recording
- * into a `{name, description, type}` triple that seeds the storyboard.
- *
- * Two modes:
- *   • text-only (default) — uses metadata + project objective/audience +
- *     project source-docs. Cheap, works with any LLM provider.
- *   • video-grounded (Gemini-only) — additionally uploads the recording to
- *     Gemini's Files API so the model can describe what's actually on
- *     screen rather than guessing from the filename. Mirrors the
- *     video-grounded narration flow in services/video-narration/.
- *
- * The route picks the mode based on a `groundInVideo` flag + whether the
- * active provider can accept video.
- */
-
+import { VideoUnderstandingBriefSchema, type Scene, type VideoUnderstandingBrief } from '@vpa/shared';
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/index.js';
 import { withReferenceContext } from '../project-source-docs/inject.js';
-import {
-  uploadVideo,
-  waitForFileActive,
-  generateWithVideo,
-  deleteFile,
-} from '../video-narration/gemini-files.js';
 
 export interface SceneAnalysis {
   name: string;
@@ -44,22 +23,6 @@ export interface AnalysisInput {
   projectPath?: string;
 }
 
-export interface GeminiVideoConfig {
-  apiKey: string;
-  model: string;
-}
-
-export type VideoAnalysisPhase =
-  | 'uploading'
-  | 'processing'
-  | 'generating'
-  | 'done';
-
-/**
- * Build the user-prompt text shared by both modes. Pulled out of
- * analyzeRecording so the video-grounded path can reuse the exact same
- * scene metadata + source-docs assembly without duplicating the lines.
- */
 async function buildUserPrompt(input: AnalysisInput, llm: LlmClient): Promise<string> {
   const lines = [
     `Scene ${input.sceneIndex + 1} of ${input.totalScenes}`,
@@ -108,63 +71,54 @@ export async function analyzeRecording(
   return parseAnalysis(result.text, input.sceneIndex);
 }
 
-export interface VideoAnalysisInput extends AnalysisInput {
-  /** Absolute path to the scene's recording on disk. */
-  videoPath: string;
-  /** Default 'video/mp4'. */
-  videoMimeType?: string;
+const SCENE_NAME_MAX_LENGTH = 120;
+const SCENE_DESCRIPTION_MAX_LENGTH = 2_000;
+
+function normalizeText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength - 1).trimEnd() + '…';
+}
+
+function nameFromBrief(scene: Scene, brief: VideoUnderstandingBrief): string {
+  const summary = normalizeText(brief.visual_summary);
+  const firstThought = summary.split(/(?<=[.!?])\s/u, 1)[0]?.replace(/[.!?]+$/u, '') ?? '';
+  const words = firstThought.split(' ').filter(Boolean).slice(0, 6).join(' ');
+  return truncate(words || normalizeText(scene.name), SCENE_NAME_MAX_LENGTH);
+}
+
+function typeFromBrief(brief: VideoUnderstandingBrief): SceneAnalysis['type'] {
+  const evidence = normalizeText([
+    brief.visual_summary,
+    ...brief.segments.flatMap((segment) => [
+      segment.screen_change,
+      ...segment.visible_labels,
+      ...segment.on_screen_terms,
+    ]),
+  ].join(' ')).toLowerCase();
+
+  if (/\b(terminal|command[ -]line|shell|console|cli|repl)\b/u.test(evidence)) return 'terminal';
+  if (/\b(slide|slides|presentation|keynote|powerpoint|deck)\b/u.test(evidence)) return 'slide';
+  if (/\b(browser|web ?page|website|url|web app)\b/u.test(evidence)) return 'browser';
+  return 'desktop';
 }
 
 /**
- * Video-grounded scene analysis. Uploads the recording to Gemini's Files
- * API, polls until ACTIVE, then runs `generateContent` with the file URI
- * as a part. Same metadata + source-docs flow on top.
- *
- * Falls back to text-only is the route's responsibility — this function
- * always uses the video.
+ * Produce bounded scene metadata from a validated, reusable video brief.
+ * This is deliberately pure: grounded reanalysis never makes a second model
+ * request and therefore cannot silently fall back to metadata-only analysis.
  */
-export async function analyzeRecordingWithVideo(
-  input: VideoAnalysisInput,
-  gemini: GeminiVideoConfig,
-  workspaceRoot: string,
-  llm: LlmClient,
-  onPhase?: (phase: VideoAnalysisPhase, detail?: string) => void,
-): Promise<SceneAnalysis> {
-  const systemPrompt = await loadPrompt(workspaceRoot, 'scene-description-video');
-  const userPrompt = await buildUserPrompt(input, llm);
-  const mime = input.videoMimeType ?? 'video/mp4';
-
-  onPhase?.('uploading');
-  const uploaded = await uploadVideo(
-    gemini.apiKey,
-    input.videoPath,
-    mime,
-    `${input.filename} (scene analysis)`,
-  );
-
-  try {
-    onPhase?.('processing');
-    const ready = await waitForFileActive(gemini.apiKey, uploaded.name, {
-      onPoll: (state) => {
-        if (state !== 'ACTIVE') onPhase?.('processing', state);
-      },
-    });
-
-    onPhase?.('generating');
-    const text = await generateWithVideo({
-      apiKey: gemini.apiKey,
-      model: gemini.model,
-      systemPrompt,
-      userPrompt,
-      videoFileUri: ready.uri,
-      videoMimeType: mime,
-      temperature: 0.7,
-      responseMimeType: 'application/json',
-    });
-
-    onPhase?.('done');
-    return parseAnalysis(text, input.sceneIndex);
-  } finally {
-    void deleteFile(gemini.apiKey, uploaded.name);
-  }
+export function proposeSceneMetadataFromBrief(
+  scene: Scene,
+  input: VideoUnderstandingBrief,
+): SceneAnalysis {
+  const brief = VideoUnderstandingBriefSchema.parse(input);
+  return {
+    name: nameFromBrief(scene, brief),
+    description: truncate(normalizeText(brief.visual_summary), SCENE_DESCRIPTION_MAX_LENGTH),
+    type: typeFromBrief(brief),
+  };
 }

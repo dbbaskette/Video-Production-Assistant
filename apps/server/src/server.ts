@@ -59,6 +59,10 @@ import {
 } from './services/agent-recording/coordinator.js';
 import { probeVideo } from './services/recording/metadata.js';
 import { ingestRecording } from './services/recording/ingest.js';
+import {
+  VideoUnderstandingService,
+  type VideoUnderstandingWarning,
+} from './services/video-understanding/index.js';
 import type { ServerConfig } from './config.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -158,6 +162,19 @@ export async function buildServer(options: BuildServerOptions = {}) {
   }
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
+  const videoUnderstandingWarning: VideoUnderstandingWarning = (fields, message) => {
+    const safeFields: Record<string, string> = {};
+    if (typeof fields.sceneId === 'string') safeFields.sceneId = fields.sceneId;
+    if (typeof fields.errorName === 'string') safeFields.errorName = fields.errorName;
+    const safeMessage = message === 'Gemini video cleanup failed'
+      ? 'Gemini video cleanup failed'
+      : 'Video understanding failed';
+    app.log.warn(safeFields, safeMessage);
+  };
+  const videoUnderstanding = new VideoUnderstandingService({
+    workspaceRoot: wsRoot,
+    warn: videoUnderstandingWarning,
+  });
 
   const capProcess = createCapProcess();
   const capLocator = new CapLocator({ vpaHome: config.vpaHome, run: capProcess.run });
@@ -224,7 +241,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
       store,
       llm,
       workspaceRoot: wsRoot,
-      registry: modelRegistry,
+      router: modelRouter,
+      videoUnderstanding,
       agentRecordingCoordinator,
     }),
   );
