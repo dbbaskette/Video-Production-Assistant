@@ -68,14 +68,12 @@ function ModelCard({
   entry,
   onDelete,
   onUpdate,
-  onCheck,
   deleteError,
   deleteMessage,
 }: {
   entry: ModelEntry;
   onDelete: () => void;
   onUpdate: (patch: { name?: string; model?: string; endpoint?: string; apiKey?: string }) => Promise<void>;
-  onCheck: () => Promise<void>;
   deleteError?: ModelReferences;
   deleteMessage?: string;
 }) {
@@ -87,7 +85,6 @@ function ModelCard({
   const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     if (editing) return;
@@ -186,23 +183,6 @@ function ModelCard({
           </div>
           <div className="model-library-card__actions">
             <button type="button" onClick={() => setEditing(true)}>Edit</button>
-            <button
-              type="button"
-              onClick={async () => {
-                setChecking(true);
-                setError('');
-                try {
-                  await onCheck();
-                } catch (checkError) {
-                  setError(boundedMessage(checkError instanceof Error ? checkError.message : 'Could not check this model. Try again.'));
-                } finally {
-                  setChecking(false);
-                }
-              }}
-              disabled={checking}
-            >
-              {checking ? 'Checking…' : 'Check status'}
-            </button>
             <button type="button" className="model-library-card__remove" onClick={onDelete}>
               Remove
             </button>
@@ -877,12 +857,6 @@ export function Settings() {
                   await Promise.all([
                     qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
                     qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
-                  ]);
-                }}
-                onCheck={async () => {
-                  await Promise.all([
-                    qc.refetchQueries({ queryKey: ['settings', 'models'] }),
-                    qc.refetchQueries({ queryKey: ['settings', 'model-routing'] }),
                   ]);
                 }}
                 onDelete={async () => {

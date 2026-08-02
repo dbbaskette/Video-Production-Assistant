@@ -45,7 +45,7 @@ export function remediationDestination(
   resolution: ModelRoutingResolution,
   mode: AssignmentMode,
 ): string | undefined {
-  return mode === 'project' && (!resolution.ready || resolution.scope === 'global')
+  return mode === 'project' && resolution.scope === 'global' && !resolution.ready
     ? '/settings#model-assignments'
     : undefined;
 }

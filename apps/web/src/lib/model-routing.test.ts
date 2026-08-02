@@ -106,6 +106,7 @@ describe('model routing view models', () => {
       scopeLabel: 'Project override',
       tone: 'attention',
     });
+    expect(remediationDestination(incompatible, 'project')).toBeUndefined();
   });
 
   it('renders unavailable CLI readiness and routes inherited fixes to global settings', () => {
