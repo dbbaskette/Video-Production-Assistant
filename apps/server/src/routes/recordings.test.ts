@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -19,6 +19,7 @@ import { BULK_UPLOAD_STAGING_PREFIX } from '../services/recording/staged-upload.
 import { ModelRouter, ModelRoutingError, type ResolvedVideoModel } from '../services/llm/model-router.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import type { VideoUnderstandingBrief } from '@vpa/shared';
+import { projectFiles } from '../services/project/paths.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -430,7 +431,11 @@ describe('recording routes', () => {
     });
 
     it('does not call metadata-only analysis or mutate metadata after grounded failure', async () => {
-      ctx.ensureBrief.mockRejectedValueOnce(new Error('provider failure with private body'));
+      const privateName = `Provider /private/secret https://provider.invalid/${'x'.repeat(1_000)}`;
+      const providerError = new Error('provider failure with private body');
+      providerError.name = privateName;
+      ctx.ensureBrief.mockRejectedValueOnce(providerError);
+      const warn = vi.spyOn(ctx.app.log, 'warn');
 
       const res = await ctx.app.inject({
         method: 'POST',
@@ -445,6 +450,12 @@ describe('recording routes', () => {
       });
       expect(ctx.resolveText).not.toHaveBeenCalled();
       expect(ctx.llmComplete).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        { sceneId: 'scene-01', errorName: 'Error' },
+        'Scene re-analysis failed',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/secret');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('provider.invalid');
       expect((await loadStoryboard(projectPath))?.scenes[0]).toMatchObject({
         name: 'Intro',
         description: 'Intro scene',
@@ -477,6 +488,41 @@ describe('recording routes', () => {
       expect(ctx.ensureBrief).not.toHaveBeenCalled();
       expect(ctx.llmComplete).not.toHaveBeenCalled();
     });
+
+    it.each(['missing', 'corrupt'] as const)(
+      'returns a stable bounded error without mutation when project metadata is %s',
+      async (metadataState) => {
+        const metadataPath = projectFiles(projectPath).metadata;
+        if (metadataState === 'missing') {
+          await rm(metadataPath);
+        } else {
+          await writeFile(metadataPath, 'invalid: [yaml');
+        }
+
+        const res = await ctx.app.inject({
+          method: 'POST',
+          url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+          payload: { groundInVideo: true, dryRun: false },
+        });
+
+        expect(res.statusCode).toBe(500);
+        expect(res.json()).toEqual({
+          error: 'Video analysis failed. The recording is saved; try re-analyzing later.',
+          code: 'video_analysis_failed',
+        });
+        expect(res.body).not.toContain(projectPath);
+        expect(ctx.resolveVideo).not.toHaveBeenCalled();
+        expect(ctx.resolveText).not.toHaveBeenCalled();
+        expect(ctx.ensureBrief).not.toHaveBeenCalled();
+        expect(ctx.llmComplete).not.toHaveBeenCalled();
+        expect((await loadStoryboard(projectPath))?.scenes[0]).toMatchObject({
+          name: 'Intro',
+          description: 'Intro scene',
+          type: 'desktop',
+          recording: { source: 'recordings/scene-01.mp4' },
+        });
+      },
+    );
 
     it('resolves general independently for explicit text-only reanalysis', async () => {
       const res = await ctx.app.inject({

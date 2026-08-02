@@ -142,8 +142,36 @@ function stripSingleJsonFence(text: string): string {
   return fenced?.[1]?.trim() ?? trimmed;
 }
 
-function errorName(error: unknown): string {
-  return error instanceof Error && error.name ? error.name : 'UnknownError';
+const VIDEO_UNDERSTANDING_ERROR_CLASSES = new Set([
+  'CleanupRejected',
+  'Error',
+  'ModelRoutingError',
+  'UnknownError',
+  'VideoUnderstandingError',
+]);
+
+export function videoUnderstandingErrorClass(error: unknown): string {
+  if (error instanceof VideoUnderstandingError) return 'VideoUnderstandingError';
+  return error instanceof Error ? 'Error' : 'UnknownError';
+}
+
+export function sanitizeVideoUnderstandingWarningFields(
+  fields: Record<string, unknown>,
+): Record<string, string> {
+  const safe: Record<string, string> = {
+    errorName: typeof fields.errorName === 'string'
+      && VIDEO_UNDERSTANDING_ERROR_CLASSES.has(fields.errorName)
+      ? fields.errorName
+      : 'UnknownError',
+  };
+  if (
+    typeof fields.sceneId === 'string'
+    && fields.sceneId.length <= 120
+    && SAFE_SCENE_ID.test(fields.sceneId)
+  ) {
+    safe.sceneId = fields.sceneId;
+  }
+  return safe;
 }
 
 export class VideoUnderstandingService {
@@ -341,7 +369,7 @@ export class VideoUnderstandingService {
     } catch (error) {
       if (error instanceof VideoUnderstandingError) throw error;
       this.warnSafely(
-        { sceneId: input.sceneId, errorName: errorName(error) },
+        { sceneId: input.sceneId, errorName: videoUnderstandingErrorClass(error) },
         'Video understanding failed',
       );
       throw new VideoUnderstandingError();
@@ -357,7 +385,7 @@ export class VideoUnderstandingService {
           }
         } catch (error) {
           this.warnSafely(
-            { sceneId: input.sceneId, errorName: errorName(error) },
+            { sceneId: input.sceneId, errorName: videoUnderstandingErrorClass(error) },
             'Gemini video cleanup failed',
           );
         }

@@ -10,7 +10,10 @@ import { probeVideo, type VideoMetadata } from '../services/recording/metadata.j
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
 import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '../services/storyboard/index.js';
 import { analyzeRecording, proposeSceneMetadataFromBrief } from '../services/video-analysis/index.js';
-import { VideoUnderstandingService } from '../services/video-understanding/index.js';
+import {
+  VideoUnderstandingService,
+  videoUnderstandingErrorClass,
+} from '../services/video-understanding/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
 import {
@@ -72,7 +75,7 @@ function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<stri
   if (error instanceof ModelRoutingError) {
     return {
       sceneId,
-      errorName: error.name,
+      errorName: 'ModelRoutingError',
       code: error.code,
       role: error.role,
       scope: error.scope,
@@ -80,7 +83,7 @@ function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<stri
   }
   return {
     sceneId,
-    errorName: error instanceof Error && error.name ? error.name : 'UnknownError',
+    errorName: videoUnderstandingErrorClass(error),
   };
 }
 
@@ -683,33 +686,30 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
-    const project = await store.readProject(entry.id);
-
-    const analysisInput = {
-      filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
-      duration_sec: scene.recording.duration_sec ?? 0,
-      // Re-derive width/height. Cheap (one ffprobe), but we already have
-      // duration in storyboard so we don't need to ffprobe just for that.
-      width: 0,
-      height: 0,
-      sceneIndex: sb.scenes.findIndex((s) => s.id === sceneId),
-      totalScenes: sb.scenes.length,
-      projectObjective: project.objective,
-      projectAudience: project.audience,
-      projectPath: entry.path,
-    };
-    try {
-      const meta = await probe(path.join(entry.path, scene.recording.source));
-      analysisInput.width = meta.width;
-      analysisInput.height = meta.height;
-    } catch {
-      // ffprobe failure isn't fatal; the analyzer just gets 0x0 which the
-      // prompt will mention but the model can ignore.
-    }
-
     let proposal: Pick<Scene, 'name' | 'description' | 'type'>;
     let mode: 'text' | 'video' = 'text';
     try {
+      const project = await store.readProject(entry.id);
+      const analysisInput = {
+        filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
+        duration_sec: scene.recording.duration_sec ?? 0,
+        width: 0,
+        height: 0,
+        sceneIndex: sb.scenes.findIndex((candidate) => candidate.id === sceneId),
+        totalScenes: sb.scenes.length,
+        projectObjective: project.objective,
+        projectAudience: project.audience,
+        projectPath: entry.path,
+      };
+      try {
+        const meta = await probe(path.join(entry.path, scene.recording.source));
+        analysisInput.width = meta.width;
+        analysisInput.height = meta.height;
+      } catch {
+        // Probe failure is non-fatal; text analysis can proceed with 0x0 and
+        // grounded analysis obtains authoritative dimensions from its brief.
+      }
+
       let analysis;
       if (body.groundInVideo === true) {
         mode = 'video';

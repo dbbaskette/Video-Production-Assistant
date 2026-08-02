@@ -61,6 +61,7 @@ import { probeVideo } from './services/recording/metadata.js';
 import { ingestRecording } from './services/recording/ingest.js';
 import {
   VideoUnderstandingService,
+  sanitizeVideoUnderstandingWarningFields,
   type VideoUnderstandingWarning,
 } from './services/video-understanding/index.js';
 import type { ServerConfig } from './config.js';
@@ -163,9 +164,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
   const videoUnderstandingWarning: VideoUnderstandingWarning = (fields, message) => {
-    const safeFields: Record<string, string> = {};
-    if (typeof fields.sceneId === 'string') safeFields.sceneId = fields.sceneId;
-    if (typeof fields.errorName === 'string') safeFields.errorName = fields.errorName;
+    const safeFields = sanitizeVideoUnderstandingWarningFields(fields);
     const safeMessage = message === 'Gemini video cleanup failed'
       ? 'Gemini video cleanup failed'
       : 'Video understanding failed';

@@ -5,6 +5,7 @@ import type { GeminiFile, GenerateWithVideoInput } from '../video-narration/gemi
 import {
   VideoUnderstandingError,
   VideoUnderstandingService,
+  sanitizeVideoUnderstandingWarningFields,
   type EnsureBriefInput,
   type VideoUnderstandingServiceOptions,
 } from './index.js';
@@ -267,6 +268,38 @@ describe('VideoUnderstandingService', () => {
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain(active.uri);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(input.videoPath);
+  });
+
+  it('maps a malicious custom error name to a fixed warning classification', async () => {
+    const warn = vi.fn();
+    const maliciousName = `Provider /private/secret https://provider.invalid/${'x'.repeat(1_000)}`;
+    const providerError = new Error('cleanup failed');
+    providerError.name = maliciousName;
+    const ctx = fixture({
+      warn,
+      transport: {
+        uploadVideo: vi.fn(async () => uploaded),
+        waitForFileActive: vi.fn(async () => active),
+        generateWithVideo: vi.fn(async () => modelOutput),
+        deleteFile: vi.fn(async () => { throw providerError; }),
+      },
+    });
+
+    await expect(ctx.service.ensureBrief(input, model()))
+      .resolves.toMatchObject({ scene_id: 'scene-1' });
+    expect(warn).toHaveBeenCalledWith(
+      { sceneId: 'scene-1', errorName: 'Error' },
+      'Gemini video cleanup failed',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/secret');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('provider.invalid');
+    expect(sanitizeVideoUnderstandingWarningFields({
+      sceneId: 'scene-1',
+      errorName: maliciousName,
+    })).toEqual({
+      sceneId: 'scene-1',
+      errorName: 'UnknownError',
+    });
   });
 
   it('warns privately when the cleanup transport rejects deletion', async () => {
