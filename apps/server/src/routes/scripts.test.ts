@@ -198,13 +198,86 @@ describe('script routes', () => {
     expect(body.script).toBeNull();
   });
 
-  it('POST generate creates a script and saves it', async () => {
+  it('rejects explicit video grounding without a recording and preserves existing scripts', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: 'Existing script.',
+      monologueScript: 'Existing script.',
+      dialogScript: '[Speaker A] Existing dialog.',
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: true },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({
+      error: 'Scene has no recording. Upload a recording first.',
+      code: 'no_recording',
+    });
+    expect(ctx.resolveVideo).not.toHaveBeenCalled();
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+    expect(ctx.readBriefStatus).not.toHaveBeenCalled();
+    expect(ctx.ensureBrief).not.toHaveBeenCalled();
+    expect(ctx.writer.complete).not.toHaveBeenCalled();
+    expect(ctx.general.complete).not.toHaveBeenCalled();
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration).toEqual(
+      sb.scenes[0]!.narration,
+    );
+  });
+
+  it('fails bounded without writing when a referenced recording is missing on disk', async () => {
+    const realVideoUnderstanding = new VideoUnderstandingService({
+      workspaceRoot: workspaceRoot(),
+      warn: vi.fn(),
+    });
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    ctx = await buildTestServer({ videoUnderstanding: realVideoUnderstanding });
+    const project = await ctx.store.create({ name: 'missing-recording-project', objective: 'Preserve scripts' });
+    projectId = project.id;
+    projectPath = project.path;
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.recording = {
+      source: 'recordings/missing-scene-01.mp4',
+      duration_sec: 30,
+    };
+    sb.scenes[0]!.narration = {
+      script: 'Existing script.',
+      monologueScript: 'Existing script.',
+      dialogScript: '[Speaker A] Existing dialog.',
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: true },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({
+      error: 'Video-grounded script generation failed. Your existing script was not changed.',
+      code: 'video_script_failed',
+    });
+    expect(ctx.writer.complete).not.toHaveBeenCalled();
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration).toEqual(
+      sb.scenes[0]!.narration,
+    );
+  });
+
+  it('text-only generation without a recording uses writing and saves both variants', async () => {
     const sb = makeSampleStoryboard(projectId);
     await saveStoryboard(projectPath, sb);
 
     const res = await ctx.app.inject({
       method: 'POST',
       url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: false },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();

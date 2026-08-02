@@ -127,8 +127,14 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const mode: 'text' | 'video' =
-      body.groundInVideo === true && !!scene.recording?.source ? 'video' : 'text';
+    const videoRequested = body.groundInVideo === true;
+    if (videoRequested && !scene.recording?.source) {
+      return reply.status(400).send({
+        error: 'Scene has no recording. Upload a recording first.',
+        code: 'no_recording',
+      });
+    }
+    const mode: 'text' | 'video' = videoRequested ? 'video' : 'text';
     let stage: GenerationStage = 'preparing';
     try {
       const project = await store.readProject(id);
