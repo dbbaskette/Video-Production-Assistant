@@ -269,6 +269,26 @@ describe('VideoUnderstandingService', () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(input.videoPath);
   });
 
+  it('warns privately when the cleanup transport rejects deletion', async () => {
+    const warn = vi.fn();
+    const ctx = fixture({
+      warn,
+      transport: {
+        uploadVideo: vi.fn(async () => uploaded),
+        waitForFileActive: vi.fn(async () => active),
+        generateWithVideo: vi.fn(async () => modelOutput),
+        deleteFile: vi.fn(async () => false),
+      },
+    });
+
+    await expect(ctx.service.ensureBrief(input, model()))
+      .resolves.toMatchObject({ scene_id: 'scene-1' });
+    expect(warn).toHaveBeenCalledWith(
+      { sceneId: 'scene-1', errorName: 'CleanupRejected' },
+      'Gemini video cleanup failed',
+    );
+  });
+
   it('does not discard a valid brief when the private warning sink also fails', async () => {
     const ctx = fixture({
       warn: () => { throw new Error('logger unavailable'); },

@@ -91,7 +91,7 @@ export interface VideoUnderstandingServiceOptions {
   readPrompt?: () => Promise<string>;
   transport?: VideoUnderstandingTransport;
   now?: () => Date;
-  warn?: VideoUnderstandingWarning;
+  warn: VideoUnderstandingWarning;
 }
 
 export class VideoUnderstandingError extends Error {
@@ -155,7 +155,7 @@ export class VideoUnderstandingService {
   private readonly readPrompt: () => Promise<string>;
   private readonly transport: VideoUnderstandingTransport;
   private readonly now: () => Date;
-  private readonly warn?: VideoUnderstandingWarning;
+  private readonly warn: VideoUnderstandingWarning;
   private readonly inFlight = new Map<string, Promise<VideoUnderstandingBrief>>();
 
   constructor(options: VideoUnderstandingServiceOptions) {
@@ -178,7 +178,7 @@ export class VideoUnderstandingService {
 
   private warnSafely(fields: Record<string, unknown>, message: string): void {
     try {
-      this.warn?.(fields, message);
+      this.warn(fields, message);
     } catch {
       // Diagnostics must never change the analysis or cleanup outcome.
     }
