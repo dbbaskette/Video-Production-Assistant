@@ -71,6 +71,10 @@ const DiskModelsFileSchema = z.union([Version2ModelsFileSchema, LegacyModelsFile
 
 type LegacyModelsFile = z.infer<typeof LegacyModelsFileSchema>;
 
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
 function seedFromEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
   const entries: ModelEntry[] = [
     { id: 'fake', name: 'Fake (deterministic)', provider: 'fake', model: 'fake' },
@@ -143,23 +147,30 @@ function migrateLegacy(legacy: LegacyModelsFile): ModelsFile {
 export class ModelRegistry {
   private data: ModelsFile = { version: 2, models: [], assignments: {} };
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly persist: typeof atomicWriteFile = atomicWriteFile,
+  ) {}
 
   async load(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, 'utf8');
-      const parsed = DiskModelsFileSchema.parse(JSON.parse(raw));
-      if (parsed.version === 2) {
-        this.data = parsed;
-      } else {
-        this.data = migrateLegacy(parsed);
-        await this.save();
-      }
-      await this.mergeEnvEntries(env);
-    } catch {
+      raw = await readFile(this.filePath, 'utf8');
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
       this.data = initialDataFromEnv(env);
       await this.save();
+      return;
     }
+
+    const parsed = DiskModelsFileSchema.parse(JSON.parse(raw));
+    if (parsed.version === 2) {
+      this.data = parsed;
+    } else {
+      this.data = migrateLegacy(parsed);
+      await this.save();
+    }
+    await this.mergeEnvEntries(env);
   }
 
   private async mergeEnvEntries(env: NodeJS.ProcessEnv): Promise<void> {
@@ -273,6 +284,6 @@ export class ModelRegistry {
 
   private async save(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await atomicWriteFile(this.filePath, JSON.stringify(this.data, null, 2) + '\n');
+    await this.persist(this.filePath, JSON.stringify(this.data, null, 2) + '\n');
   }
 }

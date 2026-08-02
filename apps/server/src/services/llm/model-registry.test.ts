@@ -14,6 +14,14 @@ async function createRegistryFile(contents: unknown): Promise<{ registry: ModelR
   return { registry: new ModelRegistry(filePath), filePath };
 }
 
+async function createRawRegistryFile(contents: string): Promise<{ registry: ModelRegistry; filePath: string }> {
+  const directory = await mkdtemp(path.join(tmpdir(), 'vpa-model-registry-'));
+  tempDirs.push(directory);
+  const filePath = path.join(directory, 'models.json');
+  await writeFile(filePath, contents);
+  return { registry: new ModelRegistry(filePath), filePath };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -118,6 +126,35 @@ describe('ModelRegistry', () => {
       provider: 'gemini',
       model: 'gemini-2.5-pro',
       apiKey: 'env-secret',
+    });
+  });
+
+  it('surfaces malformed persisted JSON without replacing the catalog from environment', async () => {
+    const { registry, filePath } = await createRawRegistryFile('{not valid JSON');
+
+    await expect(registry.load({ VPA_LLM_PROVIDER: 'codex-cli' })).rejects.toThrow();
+
+    expect(await readFile(filePath, 'utf8')).toBe('{not valid JSON');
+    expect(registry.getAssignments()).toEqual({});
+  });
+
+  it('surfaces a merge save failure without replacing loaded assignments', async () => {
+    const { filePath } = await createRegistryFile({
+      version: 2,
+      models: [{ id: 'writer', name: 'Writer', provider: 'claude-code', model: 'sonnet' }],
+      assignments: { writing: 'writer', general: 'writer' },
+    });
+    const rejectWrite = async (): Promise<void> => {
+      throw new Error('disk unavailable');
+    };
+    const registry = new ModelRegistry(filePath, rejectWrite);
+
+    await expect(registry.load({ GEMINI_API_KEY: 'env-secret' })).rejects.toThrow('disk unavailable');
+
+    expect(registry.getAssignments()).toEqual({ writing: 'writer', general: 'writer' });
+    expect(JSON.parse(await readFile(filePath, 'utf8')).assignments).toEqual({
+      writing: 'writer',
+      general: 'writer',
     });
   });
 });
