@@ -61,8 +61,9 @@ export async function registerSettingsRoutes(
   }>('/api/settings/models/:id', async (req, reply) => {
     try {
       const entry = await registry.update(req.params.id, req.body);
-      // If this is the active model, re-swap the LLM client
-      if (entry.active) {
+      // During the assignment transition, the writing assignment is the
+      // legacy active-model equivalent.
+      if (registry.getActive()?.id === entry.id) {
         llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
       }
       return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
@@ -91,7 +92,7 @@ export async function registerSettingsRoutes(
     '/api/settings/models/:id',
     async (req, reply) => {
       try {
-        const wasActive = registry.getById(req.params.id)?.active ?? false;
+        const wasActive = registry.getActive()?.id === req.params.id;
         await registry.remove(req.params.id);
         // If we removed the active one, swap to the new active
         if (wasActive) {

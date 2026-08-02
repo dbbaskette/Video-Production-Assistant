@@ -1,12 +1,29 @@
 import type { LlmConfig } from '../../config.js';
 import type { LlmClient } from './index.js';
-import type { ModelEntry } from './model-registry.js';
+import type { ModelEntry, ModelProvider } from './model-registry.js';
+import type { ModelCapabilities } from '@vpa/shared';
 import { createFakeLlm } from './fake.js';
 import { createGeminiLlm } from './providers/gemini.js';
 import { createAnthropicLlm } from './providers/anthropic.js';
 import { createClaudeCodeLlm } from './providers/claude-code.js';
 import { createCodexCliLlm } from './providers/codex-cli.js';
 import { createOpenAICompatLlm } from './providers/openai-compat.js';
+
+export function capabilitiesForProvider(provider: ModelProvider): ModelCapabilities {
+  return { text: true, video: provider === 'gemini' };
+}
+
+export function configuredReadiness(entry: ModelEntry): { ready: boolean; message?: string } {
+  if (entry.provider === 'gemini' || entry.provider === 'anthropic') {
+    return entry.apiKey
+      ? { ready: true }
+      : { ready: false, message: 'API key is missing' };
+  }
+  if (entry.provider === 'openai-compat' && !entry.endpoint) {
+    return { ready: false, message: 'Endpoint is missing' };
+  }
+  return { ready: true };
+}
 
 /** Create an LlmClient from legacy env-based config (backward compat) */
 export function createLlm(config: LlmConfig): LlmClient {
