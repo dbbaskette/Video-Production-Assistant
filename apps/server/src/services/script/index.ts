@@ -18,6 +18,8 @@ export interface ScriptInput {
   projectAudience?: string;
   /** When provided, the project's source-docs are prepended to the prompt. */
   projectPath?: string;
+  /** Preloaded source-doc context from an independently routed general model. */
+  sourceContext?: string;
 }
 
 export async function generateScript(
@@ -50,11 +52,16 @@ export async function generateScript(
     lines.push(`Target word count: ~${targetWords} words`);
   }
 
-  const userPrompt = await withReferenceContext(lines.join('\n'), {
-    projectPath: input.projectPath,
-    summarize: true,
-    llm,
-  });
+  const basePrompt = lines.join('\n');
+  const userPrompt = input.sourceContext !== undefined
+    ? input.sourceContext
+      ? `${input.sourceContext}\n\n---\n\n${basePrompt}`
+      : basePrompt
+    : await withReferenceContext(basePrompt, {
+        projectPath: input.projectPath,
+        summarize: true,
+        llm,
+      });
 
   const result = await llm.complete({
     systemPrompt,

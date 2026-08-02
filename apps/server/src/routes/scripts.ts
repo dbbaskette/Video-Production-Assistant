@@ -2,21 +2,84 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
 import type { LlmClient } from '../services/llm/index.js';
-import type { ModelRegistry } from '../services/llm/model-registry.js';
+import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateScript } from '../services/script/index.js';
 import { convertToDialog } from '../services/script/convert-to-dialog.js';
-import { generateVideoGroundedScript } from '../services/video-narration/index.js';
+import { generateScriptFromVideoBrief } from '../services/script/video-grounded.js';
 import { tightenScript } from '../services/script/tighten.js';
 import { polishScript } from '../services/script/polish.js';
 import { computeProjectWpm } from '../services/script/wpm.js';
+import { VideoUnderstandingService } from '../services/video-understanding/index.js';
+import {
+  loadProjectSourceContext,
+  sourceDocsNeedSummarization,
+} from '../services/project-source-docs/context.js';
+import type { ResolvedModelSummary } from '@vpa/shared';
 
 interface Deps {
   store: ProjectStore;
   llm: LlmClient;
   workspaceRoot: string;
-  /** Used to detect the active provider + grab its API key for video-grounded mode. */
-  registry: ModelRegistry;
+  router: ModelRouter;
+  videoUnderstanding: VideoUnderstandingService;
+}
+
+type GenerationStage =
+  | 'preparing'
+  | 'routing'
+  | 'video-understanding'
+  | 'source-summarization'
+  | 'writing'
+  | 'dialog'
+  | 'persistence';
+
+const VIDEO_SCRIPT_FAILED_MESSAGE =
+  'Video-grounded script generation failed. Your existing script was not changed.';
+const SCRIPT_FAILED_MESSAGE =
+  'Script generation failed. Your existing script was not changed.';
+
+function privateGenerationDiagnostic(
+  error: unknown,
+  sceneId: string,
+  stage: GenerationStage,
+): Record<string, unknown> {
+  if (error instanceof ModelRoutingError) {
+    return {
+      sceneId,
+      stage,
+      errorName: 'ModelRoutingError',
+      code: error.code,
+      role: error.role,
+      scope: error.scope,
+    };
+  }
+  return { sceneId, stage, errorName: 'GenerationError' };
+}
+
+function assertGeneratedScript(value: string, kind: 'script' | 'dialog'): void {
+  if (!value.trim()) throw new Error(`The writing model returned an empty ${kind}.`);
+  if (kind === 'dialog' && !/^\[Speaker\s+[AB]\]/im.test(value)) {
+    throw new Error('The writing model returned an invalid dialog.');
+  }
+}
+
+function modelOperationFields(
+  sceneId: string,
+  summary: ResolvedModelSummary,
+  phase: string,
+  briefFreshness?: 'generated' | 'reused',
+): Record<string, unknown> {
+  return {
+    sceneId,
+    operation: 'script-generation',
+    phase,
+    role: summary.role,
+    entryId: summary.entry_id,
+    provider: summary.provider,
+    model: summary.model,
+    ...(briefFreshness ? { briefFreshness } : {}),
+  };
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -27,7 +90,7 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 }
 
 export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, registry } = deps;
+  const { store, llm, workspaceRoot, router, videoUnderstanding } = deps;
 
   // GET /api/projects/:id/scenes/:sceneId/script — get current script
   app.get('/api/projects/:id/scenes/:sceneId/script', async (req, reply) => {
@@ -64,134 +127,167 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    // Decide which path to take. Video-grounded only kicks in when the user
-    // explicitly asked for it AND the active provider is Gemini AND the scene
-    // has a recording. Otherwise fall back to text-only — non-Gemini callers
-    // should never crash here.
-    const active = registry.getActive();
-    const canUseVideo =
-      body.groundInVideo === true &&
-      active?.provider === 'gemini' &&
-      !!active.apiKey &&
-      !!scene.recording?.source;
+    const mode: 'text' | 'video' =
+      body.groundInVideo === true && !!scene.recording?.source ? 'video' : 'text';
+    let stage: GenerationStage = 'preparing';
+    try {
+      const project = await store.readProject(id);
+      const needsGeneral = await sourceDocsNeedSummarization(project.path);
 
-    let script: string;
-    let mode: 'text' | 'video' = 'text';
-    if (canUseVideo && active && scene.recording) {
-      mode = 'video';
-      const videoPath = join(projectPath, scene.recording.source);
-      try {
-        script = await generateVideoGroundedScript(
-          {
-            videoPath,
-            videoMimeType: 'video/mp4',
-            sceneName: scene.name,
-            sceneDescription: scene.description,
-            sceneIntent: scene.intent,
-            durationSec: scene.recording.duration_sec ?? 30,
-            projectObjective: sb.project.objective,
-            projectAudience: sb.project.audience,
-            projectPath,
-          },
-          { apiKey: active.apiKey!, model: active.model },
-          workspaceRoot,
-          llm,
-          (phase, detail) => {
-            app.log.info({ sceneId, phase, detail }, 'video-grounded script phase');
-          },
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        app.log.error({ err: msg }, 'video-grounded script generation failed');
-        return reply.status(500).send({
-          error: `Video-grounded generation failed: ${msg}`,
-          code: 'video_script_failed',
-        });
+      stage = 'routing';
+      const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
+      const writer = await router.resolveText('writing', project);
+      const general = needsGeneral
+        ? await router.resolveText('general', project)
+        : undefined;
+      for (const resolved of [videoModel, writer, general]) {
+        if (resolved) {
+          app.log.info(
+            modelOperationFields(sceneId, resolved.summary, 'model-resolved'),
+            'Script model resolved',
+          );
+        }
       }
-    } else {
-      script = await generateScript(
-        {
+
+      let briefFreshness: 'generated' | 'reused' | undefined;
+      let script: string;
+      if (mode === 'video' && videoModel && scene.recording) {
+        const briefInput = {
+          projectPath: project.path,
+          sceneId,
+          sceneName: scene.name,
+          videoPath: join(project.path, scene.recording.source),
+          videoMimeType: 'video/mp4',
+        };
+        stage = 'video-understanding';
+        const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
+        briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
+        const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
+          app.log.info(
+            modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
+            'Video-grounded script phase',
+          );
+        });
+
+        stage = needsGeneral ? 'source-summarization' : 'writing';
+        if (general) {
+          app.log.info(
+            modelOperationFields(sceneId, general.summary, 'source-summarization'),
+            'Script source summarization phase',
+          );
+        }
+        const sourceContext = await loadProjectSourceContext(project.path, general?.client);
+        stage = 'writing';
+        app.log.info(
+          modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
+          'Script writing phase',
+        );
+        script = await generateScriptFromVideoBrief({
+          sceneName: scene.name,
+          sceneDescription: scene.description,
+          sceneIntent: scene.intent,
+          durationSec: scene.recording.duration_sec ?? brief.source.duration_sec,
+          projectObjective: project.objective,
+          projectAudience: project.audience,
+          sourceContext,
+          brief,
+        }, writer.client, workspaceRoot);
+      } else {
+        stage = needsGeneral ? 'source-summarization' : 'writing';
+        if (general) {
+          app.log.info(
+            modelOperationFields(sceneId, general.summary, 'source-summarization'),
+            'Script source summarization phase',
+          );
+        }
+        const sourceContext = await loadProjectSourceContext(project.path, general?.client);
+        stage = 'writing';
+        app.log.info(
+          modelOperationFields(sceneId, writer.summary, 'writing'),
+          'Script writing phase',
+        );
+        script = await generateScript({
           sceneName: scene.name,
           sceneDescription: scene.description,
           sceneIntent: scene.intent,
           sceneType: scene.type,
           durationSec: scene.recording?.duration_sec,
-          projectObjective: sb.project.objective,
-          projectAudience: sb.project.audience,
-          projectPath,
-        },
-        llm,
-        workspaceRoot,
-      );
-    }
+          projectObjective: project.objective,
+          projectAudience: project.audience,
+          sourceContext,
+        }, writer.client, workspaceRoot);
+      }
+      assertGeneratedScript(script, 'script');
 
-    // Phase 1: persist the monologue right now. If the user navigates away
-    // while the dialog half is still running, refreshing storyboard.yaml
-    // will at least show the monologue rather than the previous (or empty)
-    // state. Mode stays at whatever the scene already had.
-    //
-    // Wipe the old narration audio chunks: they pointed at mp3s rendered
-    // from the PREVIOUS script's paragraphs. Keeping them around makes
-    // "Generate All" silently no-op (its 'missing' selector skips chunks
-    // that already have an audio path) and the audio plays the wrong
-    // narration over the new script. Same reason, also clear any
-    // legacy-mode single audio file + subtitles + timings.
-    {
+      stage = 'dialog';
+      app.log.info(
+        modelOperationFields(sceneId, writer.summary, 'dialog', briefFreshness),
+        'Script dialog phase',
+      );
+      const dialog = await convertToDialog(script, writer.client, workspaceRoot);
+      assertGeneratedScript(dialog.dialogScript, 'dialog');
+
+      // All generated values remain in memory until both variants validate.
+      // Re-read once before the single persistence operation so unrelated scene
+      // edits made during model calls are retained.
+      stage = 'persistence';
+      const latest = await loadStoryboard(project.path);
+      const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
+      if (!latest || !latestScene) throw new Error('Scene changed during script generation.');
       const narration = {
-        ...(scene.narration ?? {}),
+        ...(latestScene.narration ?? {}),
         script,
         monologueScript: script,
+        dialogScript: dialog.dialogScript,
         chunks: undefined,
         audio: undefined,
         subtitles: undefined,
         timings: undefined,
       };
-      const updated = updateScene(sb, sceneId, { narration: narration as any });
-      await saveStoryboard(projectPath, updated);
-    }
-
-    // Phase 2: auto-generate the dialog variant alongside so flipping modes
-    // is instant. Best-effort — failures are logged; the primary flow
-    // (monologue saved above) is never blocked.
-    let dialogScript: string | undefined;
-    try {
-      const result = await convertToDialog(script, llm, workspaceRoot, projectPath);
-      dialogScript = result.dialogScript;
-    } catch (err) {
-      app.log.warn(
-        `Auto dialog-conversion failed for ${sceneId}; monologue is saved. Reason: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+      await saveStoryboard(
+        project.path,
+        updateScene(latest, sceneId, { narration }),
       );
-    }
 
-    // Phase 2 save — re-load the storyboard so we don't clobber any other
-    // changes that might have landed during the LLM call. (E.g. user
-    // edited a different scene in another tab while we were waiting.)
-    if (dialogScript) {
-      const sb2 = await loadStoryboard(projectPath);
-      if (sb2) {
-        const scene2 = sb2.scenes.find((s) => s.id === sceneId);
-        if (scene2) {
-          // Same chunk-wipe rationale as Phase 1 — the dialog variant just
-          // landed, so any previously-rendered chunks are also stale.
-          const narration = {
-            ...(scene2.narration ?? {}),
-            script,
-            monologueScript: script,
-            dialogScript,
-            chunks: undefined,
-            audio: undefined,
-            subtitles: undefined,
-            timings: undefined,
-          };
-          const updated = updateScene(sb2, sceneId, { narration: narration as any });
-          await saveStoryboard(projectPath, updated);
-        }
+      return {
+        sceneId,
+        mode,
+        routing: {
+          ...(videoModel ? { videoUnderstanding: videoModel.summary } : {}),
+          writing: writer.summary,
+          ...(general ? { general: general.summary } : {}),
+        },
+        ...(briefFreshness ? { briefFreshness } : {}),
+        script,
+        dialog: dialog.dialogScript,
+        // Compatibility for the current web client while it migrates to `dialog`.
+        dialogScript: dialog.dialogScript,
+      };
+    } catch (error) {
+      try {
+        app.log.error(
+          privateGenerationDiagnostic(error, sceneId, stage),
+          'Script generation failed',
+        );
+      } catch {
+        // Logging must never change the bounded public failure.
       }
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      return reply.status(500).send({
+        error: mode === 'video' && stage === 'video-understanding'
+          ? VIDEO_SCRIPT_FAILED_MESSAGE
+          : SCRIPT_FAILED_MESSAGE,
+        code: mode === 'video' && stage === 'video-understanding'
+          ? 'video_script_failed'
+          : 'script_generation_failed',
+      });
     }
-
-    return { sceneId, script, dialogScript, mode };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/intent — save the user-authored
@@ -249,7 +345,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       subtitles: undefined,
       timings: undefined,
     };
-    const updated = updateScene(sb, sceneId, { narration: narration as any });
+    const updated = updateScene(sb, sceneId, { narration });
     await saveStoryboard(projectPath, updated);
 
     return { sceneId, script };

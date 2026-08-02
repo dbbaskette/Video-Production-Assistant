@@ -32,6 +32,8 @@ interface ContextOptions {
   summarize?: boolean;
   /** Required when `summarize` is true. */
   llm?: LlmClient;
+  /** Propagate summarizer failures instead of falling back to truncation. */
+  strictSummarization?: boolean;
 }
 
 export interface ReferenceBundle {
@@ -46,6 +48,40 @@ export interface ReferenceBundle {
   truncated: boolean;
   /** True when the bundle was reduced via the summarise path. */
   summarised: boolean;
+}
+
+/**
+ * Inspect manifest metadata only. Callers use this before model resolution so
+ * the general role is required exactly when source compression will make an
+ * LLM call.
+ */
+export async function sourceDocsNeedSummarization(
+  projectPath: string,
+  budget = REFERENCE_BUDGET_CHARS,
+): Promise<boolean> {
+  const docs = (await listDocs(projectPath)).filter(isReady);
+  return docs.reduce((total, doc) => total + doc.extractedChars, 0) > budget;
+}
+
+/**
+ * Load the source context for routed generation. If compression is required,
+ * the caller must provide the independently resolved general client and a
+ * provider failure is allowed to abort the feature without a silent fallback.
+ */
+export async function loadProjectSourceContext(
+  projectPath: string,
+  general?: LlmClient,
+): Promise<string> {
+  const needsSummarization = await sourceDocsNeedSummarization(projectPath);
+  if (needsSummarization && !general) {
+    throw new Error('Source document summarization requires the general model.');
+  }
+  const bundle = await getReferenceContext(projectPath, {
+    summarize: needsSummarization,
+    llm: general,
+    strictSummarization: true,
+  });
+  return bundle.text;
 }
 
 export async function getReferenceContext(
@@ -93,7 +129,8 @@ export async function getReferenceContext(
         truncated: false,
         summarised: true,
       };
-    } catch {
+    } catch (error) {
+      if (opts.strictSummarization) throw error;
       // Fall through to truncation if the LLM call fails.
     }
   }
