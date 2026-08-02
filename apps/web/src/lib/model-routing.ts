@@ -1,4 +1,5 @@
 import type {
+  ModelRoutingResponse,
   ModelRoutingResolution,
   ModelTaskRole,
   ResolvedModelSummary,
@@ -19,6 +20,68 @@ export interface AssignmentPresentation {
   scopeLabel: string;
   tone: 'ready' | 'attention';
   remediationHref?: string;
+}
+
+export interface ModelEditDraft {
+  name: string;
+  model: string;
+  endpoint: string;
+  apiKey: string;
+}
+
+export function modelEditDraft(
+  entry: Pick<ModelEntry, 'name' | 'model' | 'endpoint'>,
+): ModelEditDraft {
+  return {
+    name: entry.name,
+    model: entry.model,
+    endpoint: entry.endpoint ?? '',
+    apiKey: '',
+  };
+}
+
+export function routingWithAssignment(
+  routing: ModelRoutingResponse,
+  role: ModelTaskRole,
+  modelId: string | null,
+): ModelRoutingResponse {
+  const assignments = { ...routing.assignments };
+  if (modelId === null) delete assignments[role];
+  else assignments[role] = modelId;
+  return { ...routing, assignments };
+}
+
+export function roleIsPending(
+  pendingRoles: ReadonlySet<ModelTaskRole>,
+  role: ModelTaskRole,
+): boolean {
+  return pendingRoles.has(role);
+}
+
+/**
+ * Apply a full server response without rolling back selections whose writes
+ * are still queued. Resolutions for those rows stay at their last visible
+ * value until the corresponding serialized mutation completes.
+ */
+export function mergePendingRouting(
+  serverRouting: ModelRoutingResponse,
+  visibleRouting: ModelRoutingResponse,
+  pendingRoles: ReadonlySet<ModelTaskRole>,
+): ModelRoutingResponse {
+  const assignments = { ...serverRouting.assignments };
+  const resolutions = [...serverRouting.resolved];
+
+  for (const role of pendingRoles) {
+    const visibleAssignment = visibleRouting.assignments[role];
+    if (visibleAssignment === undefined) delete assignments[role];
+    else assignments[role] = visibleAssignment;
+
+    const visibleResolution = visibleRouting.resolved.find((item) => item.role === role);
+    const serverIndex = resolutions.findIndex((item) => item.role === role);
+    if (visibleResolution && serverIndex >= 0) resolutions[serverIndex] = visibleResolution;
+  }
+
+  return { assignments, resolved: resolutions };
 }
 
 export function optionsForRole(models: ModelEntry[], role: ModelTaskRole): ModelEntry[] {

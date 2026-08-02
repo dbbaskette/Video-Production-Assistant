@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { ModelRoutingResolution, ResolvedModelSummary } from '@vpa/shared';
+import type { ModelRoutingResolution, ModelRoutingResponse, ResolvedModelSummary } from '@vpa/shared';
 import type { ModelEntry } from './api.js';
 import {
   assignmentPresentation,
+  mergePendingRouting,
+  modelEditDraft,
   modelAttribution,
   optionsForRole,
   remediationDestination,
+  roleIsPending,
+  routingWithAssignment,
 } from './model-routing.js';
 
 const models: ModelEntry[] = [
@@ -124,5 +128,62 @@ describe('model routing view models', () => {
     });
     expect(remediationDestination(unavailable, 'project')).toBe('/settings#model-assignments');
     expect(remediationDestination(unavailable, 'global')).toBeUndefined();
+  });
+
+  it('preserves a newer queued role selection when an earlier full response arrives', () => {
+    const initial: ModelRoutingResponse = {
+      assignments: {
+        'video-understanding': 'gemini-pro',
+        writing: 'claude',
+        general: 'claude',
+      },
+      resolved: [
+        resolved('video-understanding', models[0]!),
+        resolved('writing', models[1]!),
+        resolved('general', models[1]!),
+      ],
+    };
+    const optimistic = routingWithAssignment(
+      routingWithAssignment(initial, 'writing', 'codex'),
+      'general',
+      'gemini-pro',
+    );
+    const firstResponse = routingWithAssignment(initial, 'writing', 'codex');
+
+    const afterFirstResponse = mergePendingRouting(
+      firstResponse,
+      optimistic,
+      new Set(['general']),
+    );
+    expect(afterFirstResponse.assignments).toMatchObject({
+      writing: 'codex',
+      general: 'gemini-pro',
+    });
+
+    const secondResponse = routingWithAssignment(firstResponse, 'general', 'gemini-pro');
+    expect(mergePendingRouting(secondResponse, afterFirstResponse, new Set()).assignments)
+      .toEqual(secondResponse.assignments);
+  });
+
+  it('marks only the selected assignment row as pending', () => {
+    const pending = new Set(['writing'] as const);
+    expect(roleIsPending(pending, 'writing')).toBe(true);
+    expect(roleIsPending(pending, 'video-understanding')).toBe(false);
+    expect(roleIsPending(pending, 'general')).toBe(false);
+  });
+
+  it('rebuilds a canceled model edit from saved values without retaining credentials', () => {
+    const draft = modelEditDraft(models[0]!);
+    draft.name = 'Canceled name';
+    draft.model = 'canceled-model';
+    draft.endpoint = 'https://canceled.example';
+    draft.apiKey = 'secret-that-must-not-survive';
+
+    expect(modelEditDraft(models[0]!)).toEqual({
+      name: 'Gemini Pro',
+      model: 'gemini-2.5-pro',
+      endpoint: '',
+      apiKey: '',
+    });
   });
 });

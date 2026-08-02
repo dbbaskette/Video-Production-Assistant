@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type {
   ModelRoutingResponse,
@@ -9,9 +9,12 @@ import type { ModelEntry } from '../lib/api.js';
 import {
   assignmentPresentation,
   boundedMessage,
+  mergePendingRouting,
   MODEL_ASSIGNMENT_ROWS,
   optionsForRole,
   resolutionForRole,
+  roleIsPending,
+  routingWithAssignment,
   type AssignmentMode,
 } from '../lib/model-routing.js';
 
@@ -29,45 +32,65 @@ export function ModelAssignments({
   onUpdate,
 }: ModelAssignmentsProps) {
   const [visibleRouting, setVisibleRouting] = useState(routing);
-  const [pendingRole, setPendingRole] = useState<ModelTaskRole | null>(null);
+  const visibleRoutingRef = useRef(routing);
+  const serverRoutingRef = useRef(routing);
+  const pendingRolesRef = useRef<Set<ModelTaskRole>>(new Set());
+  const mutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const [pendingRoles, setPendingRoles] = useState<Set<ModelTaskRole>>(new Set());
   const [errors, setErrors] = useState<Partial<Record<ModelTaskRole, string>>>({});
 
   useEffect(() => {
-    if (!pendingRole) setVisibleRouting(routing);
-  }, [routing, pendingRole]);
+    serverRoutingRef.current = routing;
+    const merged = mergePendingRouting(routing, visibleRoutingRef.current, pendingRolesRef.current);
+    visibleRoutingRef.current = merged;
+    setVisibleRouting(merged);
+  }, [routing]);
+
+  function showRouting(next: ModelRoutingResponse) {
+    visibleRoutingRef.current = next;
+    setVisibleRouting(next);
+  }
+
+  function setRolePending(role: ModelTaskRole, pending: boolean): Set<ModelTaskRole> {
+    const next = new Set(pendingRolesRef.current);
+    if (pending) next.add(role);
+    else next.delete(role);
+    pendingRolesRef.current = next;
+    setPendingRoles(next);
+    return next;
+  }
 
   async function changeAssignment(role: ModelTaskRole, value: string) {
-    if (pendingRole) return;
-    const previous = visibleRouting;
+    if (pendingRolesRef.current.has(role)) return;
     const assignment = value || null;
-    setPendingRole(role);
+    setRolePending(role, true);
     setErrors((current) => ({ ...current, [role]: undefined }));
-    setVisibleRouting({
-      ...previous,
-      assignments: {
-        ...previous.assignments,
-        ...(assignment === null ? {} : { [role]: assignment }),
-      },
-    });
-    if (assignment === null) {
-      const assignments = { ...previous.assignments };
-      delete assignments[role];
-      setVisibleRouting({ ...previous, assignments });
-    }
+    showRouting(routingWithAssignment(visibleRoutingRef.current, role, assignment));
 
-    try {
-      const updated = await onUpdate({ assignments: { [role]: assignment } });
-      setVisibleRouting(updated);
-    } catch (error) {
-      setVisibleRouting(previous);
-      const reason = error instanceof Error ? error.message : 'The server did not accept the change.';
-      setErrors((current) => ({
-        ...current,
-        [role]: boundedMessage(`Could not save this assignment. The previous setting is restored. ${reason}`),
-      }));
-    } finally {
-      setPendingRole(null);
-    }
+    const mutation = async () => {
+      try {
+        const updated = await onUpdate({ assignments: { [role]: assignment } });
+        serverRoutingRef.current = updated;
+        const remaining = setRolePending(role, false);
+        showRouting(mergePendingRouting(updated, visibleRoutingRef.current, remaining));
+      } catch (error) {
+        const remaining = setRolePending(role, false);
+        showRouting(mergePendingRouting(
+          serverRoutingRef.current,
+          visibleRoutingRef.current,
+          remaining,
+        ));
+        const reason = error instanceof Error ? error.message : 'The server did not accept the change.';
+        setErrors((current) => ({
+          ...current,
+          [role]: boundedMessage(`Could not save this assignment. The previous setting is restored. ${reason}`),
+        }));
+      }
+    };
+
+    const queued = mutationQueueRef.current.then(mutation, mutation);
+    mutationQueueRef.current = queued.then(() => undefined, () => undefined);
+    await queued;
   }
 
   return (
@@ -102,7 +125,7 @@ export function ModelAssignments({
               <select
                 id={`${mode}-${role}`}
                 value={value}
-                disabled={pendingRole !== null}
+                disabled={roleIsPending(pendingRoles, role)}
                 onChange={(event) => void changeAssignment(role, event.target.value)}
                 aria-describedby={`${mode}-${role}-status`}
               >
@@ -118,7 +141,9 @@ export function ModelAssignments({
                   <option key={model.id} value={model.id}>{model.name}</option>
                 ))}
               </select>
-              {pendingRole === role && <span className="model-assignment-row__saving">Saving…</span>}
+              {roleIsPending(pendingRoles, role) && (
+                <span className="model-assignment-row__saving">Saving…</span>
+              )}
             </div>
 
             <div

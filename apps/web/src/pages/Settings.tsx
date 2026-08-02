@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ModelAssignments } from '../components/ModelAssignments.js';
-import { boundedMessage, MODEL_ASSIGNMENT_ROWS } from '../lib/model-routing.js';
+import { boundedMessage, modelEditDraft, MODEL_ASSIGNMENT_ROWS } from '../lib/model-routing.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -79,31 +79,32 @@ function ModelCard({
 }) {
   const meta = providerMeta(entry.provider);
   const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(entry.name);
-  const [model, setModel] = useState(entry.model);
-  const [endpoint, setEndpoint] = useState(entry.endpoint ?? '');
-  const [apiKey, setApiKey] = useState('');
+  const [draft, setDraft] = useState(() => modelEditDraft(entry));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (editing) return;
-    setName(entry.name);
-    setModel(entry.model);
-    setEndpoint(entry.endpoint ?? '');
+    setDraft(modelEditDraft(entry));
   }, [editing, entry.endpoint, entry.model, entry.name]);
 
   async function save() {
     setSaving(true);
     setError('');
     try {
+      const savedDraft = {
+        name: draft.name.trim(),
+        model: draft.model.trim(),
+        endpoint: draft.endpoint.trim(),
+        apiKey: '',
+      };
       await onUpdate({
-        name: name.trim(),
-        model: model.trim(),
-        ...(meta.needsEndpoint ? { endpoint: endpoint.trim() } : {}),
-        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+        name: savedDraft.name,
+        model: savedDraft.model,
+        ...(meta.needsEndpoint ? { endpoint: savedDraft.endpoint } : {}),
+        ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}),
       });
-      setApiKey('');
+      setDraft(savedDraft);
       setEditing(false);
     } catch (saveError) {
       setError(boundedMessage(saveError instanceof Error ? saveError.message : 'Could not save this model. Try again.'));
@@ -118,16 +119,25 @@ function ModelCard({
         <div className="model-library-card__editor">
           <label>
             Display name
-            <input value={name} onChange={(event) => setName(event.target.value)} />
+            <input
+              value={draft.name}
+              onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+            />
           </label>
           <label>
             Model name / ID
-            <input value={model} onChange={(event) => setModel(event.target.value)} />
+            <input
+              value={draft.model}
+              onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+            />
           </label>
           {meta.needsEndpoint && (
             <label>
               API endpoint
-              <input value={endpoint} onChange={(event) => setEndpoint(event.target.value)} />
+              <input
+                value={draft.endpoint}
+                onChange={(event) => setDraft((current) => ({ ...current, endpoint: event.target.value }))}
+              />
             </label>
           )}
           {meta.needsApiKey && (
@@ -135,9 +145,9 @@ function ModelCard({
               Replace API key
               <input
                 type="password"
-                value={apiKey}
+                value={draft.apiKey}
                 placeholder={entry.hasApiKey ? 'Leave blank to keep the saved key' : 'Add an API key'}
-                onChange={(event) => setApiKey(event.target.value)}
+                onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
               />
             </label>
           )}
@@ -145,7 +155,11 @@ function ModelCard({
           <div className="model-library-card__actions">
             <button
               type="button"
-              onClick={() => { setEditing(false); setError(''); }}
+              onClick={() => {
+                setDraft(modelEditDraft(entry));
+                setEditing(false);
+                setError('');
+              }}
               disabled={saving}
             >
               Cancel
@@ -154,7 +168,7 @@ function ModelCard({
               type="button"
               className="btn--accent"
               onClick={() => void save()}
-              disabled={saving || !name.trim() || !model.trim()}
+              disabled={saving || !draft.name.trim() || !draft.model.trim()}
             >
               {saving ? 'Saving…' : 'Save changes'}
             </button>
