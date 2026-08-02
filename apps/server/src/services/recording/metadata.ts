@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +38,13 @@ export async function probeVideo(filePath: string): Promise<VideoMetadata> {
     fps: Math.round(fps * 100) / 100,
     size_bytes: parseInt(info.format?.size ?? '0', 10),
   };
+}
+
+/** Calculate a video's fingerprint without buffering the recording in memory. */
+export async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(createReadStream(filePath), hash);
+  return hash.digest('hex');
 }
 
 export function createFakeProbe(): typeof probeVideo {

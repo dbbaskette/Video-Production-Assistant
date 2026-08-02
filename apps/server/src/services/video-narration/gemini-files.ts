@@ -30,114 +30,34 @@ export interface GeminiFile {
   sizeBytes?: string;
 }
 
-/**
- * Upload a video (or any large file) using Gemini's resumable upload protocol.
- * The single-shot multipart endpoint is finicky for big files — resumable is
- * what the official SDKs use under the hood.
- *
- * Returns the file resource immediately after the bytes finish; the state will
- * usually be PROCESSING. Pass the result to waitForFileActive() before using.
- */
-export async function uploadVideo(
-  apiKey: string,
-  filePath: string,
-  mimeType: string,
-  displayName?: string,
-): Promise<GeminiFile> {
-  const fileStat = await stat(filePath);
-  const sizeBytes = fileStat.size;
-
-  // Phase 1: initiate the upload — server allocates an upload URL.
-  const initRes = await fetch(`${UPLOAD_BASE}/files?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'X-Goog-Upload-Protocol': 'resumable',
-      'X-Goog-Upload-Command': 'start',
-      'X-Goog-Upload-Header-Content-Length': String(sizeBytes),
-      'X-Goog-Upload-Header-Content-Type': mimeType,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      file: { display_name: displayName ?? basename(filePath) },
-    }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!initRes.ok) {
-    const txt = await initRes.text();
-    throw new Error(`Gemini Files API: upload init failed (${initRes.status}): ${txt}`);
-  }
-  const uploadUrl = initRes.headers.get('x-goog-upload-url');
-  if (!uploadUrl) {
-    throw new Error('Gemini Files API: init response missing x-goog-upload-url header');
-  }
-
-  // Phase 2: ship the bytes in a single PUT. For now we read the whole file
-  // into memory — fine for typical scene recordings (tens of MB). If we ever
-  // need to support multi-GB files we can chunk this.
-  const bytes = await readFile(filePath);
-  const uploadRes = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Length': String(sizeBytes),
-      'X-Goog-Upload-Offset': '0',
-      'X-Goog-Upload-Command': 'upload, finalize',
-    },
-    body: bytes,
-    signal: AbortSignal.timeout(3 * 60_000),
-  });
-  if (!uploadRes.ok) {
-    const txt = await uploadRes.text();
-    throw new Error(`Gemini Files API: upload bytes failed (${uploadRes.status}): ${txt}`);
-  }
-  const json = (await uploadRes.json()) as { file?: GeminiFile };
-  if (!json.file) {
-    throw new Error('Gemini Files API: upload response missing file resource');
-  }
-  return json.file;
+export interface GeminiFilesTransport {
+  uploadVideo(
+    apiKey: string,
+    filePath: string,
+    mimeType: string,
+    displayName?: string,
+  ): Promise<GeminiFile>;
+  waitForFileActive(
+    apiKey: string,
+    fileName: string,
+    opts?: WaitForFileOptions,
+  ): Promise<GeminiFile>;
+  deleteFile(apiKey: string, fileName: string): Promise<boolean>;
+  generateWithVideo(input: GenerateWithVideoInput): Promise<string>;
 }
 
-/**
- * Poll a file resource until it transitions out of PROCESSING. Videos take
- * 5–30 seconds typically; we wait up to 5 minutes by default before giving up.
- */
-export async function waitForFileActive(
-  apiKey: string,
-  fileName: string,
-  opts: {
-    timeoutMs?: number;
-    pollIntervalMs?: number;
-    onPoll?: (state: GeminiFile['state']) => void;
-  } = {},
-): Promise<GeminiFile> {
-  const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
-  const pollIntervalMs = opts.pollIntervalMs ?? 2_000;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${API_BASE}/${fileName}?key=${apiKey}`, {
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(`Gemini Files API: poll failed (${res.status}): ${txt}`);
-    }
-    const file = (await res.json()) as GeminiFile;
-    opts.onPoll?.(file.state);
-    if (file.state === 'ACTIVE') return file;
-    if (file.state === 'FAILED') {
-      throw new Error('Gemini Files API: file processing FAILED');
-    }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-  }
-  throw new Error(`Gemini Files API: file ${fileName} did not become ACTIVE within ${timeoutMs}ms`);
+export interface GeminiFilesDependencies {
+  fetch?: typeof fetch;
+  readFile?: typeof readFile;
+  stat?: typeof stat;
+  now?: () => number;
+  sleep?: (durationMs: number) => Promise<void>;
 }
 
-/** Best-effort delete. Gemini auto-expires files after 48h, so failures are fine. */
-export async function deleteFile(apiKey: string, fileName: string): Promise<void> {
-  try {
-    await fetch(`${API_BASE}/${fileName}?key=${apiKey}`, { method: 'DELETE' });
-  } catch {
-    /* ignore — auto-expiry will clean up */
-  }
+export interface WaitForFileOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  onPoll?: (state: GeminiFile['state']) => void;
 }
 
 export interface GenerateWithVideoInput {
@@ -145,7 +65,7 @@ export interface GenerateWithVideoInput {
   model: string;
   systemPrompt: string;
   userPrompt: string;
-  /** "https://generativelanguage.googleapis.com/v1beta/files/abc..." (from waitForFileActive). */
+  /** URI returned by waitForFileActive. */
   videoFileUri: string;
   videoMimeType: string;
   temperature?: number;
@@ -154,50 +74,178 @@ export interface GenerateWithVideoInput {
 }
 
 /**
- * Run generateContent with a video file part + a text prompt. Returns the
- * model's text output verbatim — caller is responsible for trimming /
- * parsing JSON if responseMimeType was application/json.
+ * Upload a video (or any large file) using Gemini's resumable upload protocol.
+ * The single-shot multipart endpoint is finicky for big files — resumable is
+ * what the official SDKs use under the hood.
+ *
+ * Returns the file resource immediately after the bytes finish; the state will
+ * usually be PROCESSING. Pass the result to waitForFileActive() before using.
  */
-export async function generateWithVideo(input: GenerateWithVideoInput): Promise<string> {
-  const endpoint = `${API_BASE}/models/${input.model}:generateContent?key=${input.apiKey}`;
+export function createGeminiFilesTransport(
+  dependencies: GeminiFilesDependencies = {},
+): GeminiFilesTransport {
+  const fetchRequest = dependencies.fetch ?? fetch;
+  const readFileBytes = dependencies.readFile ?? readFile;
+  const statFile = dependencies.stat ?? stat;
+  const now = dependencies.now ?? Date.now;
+  const sleep = dependencies.sleep ?? ((durationMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
 
-  const generationConfig: Record<string, unknown> = {};
-  if (input.temperature !== undefined) generationConfig.temperature = input.temperature;
-  if (input.maxTokens !== undefined) generationConfig.maxOutputTokens = input.maxTokens;
-  if (input.responseMimeType) generationConfig.responseMimeType = input.responseMimeType;
+  const upload: GeminiFilesTransport['uploadVideo'] = async (
+    apiKey,
+    filePath,
+    mimeType,
+    displayName,
+  ) => {
+    const fileStat = await statFile(filePath);
+    const sizeBytes = fileStat.size;
 
-  const body: Record<string, unknown> = {
-    system_instruction: { parts: [{ text: input.systemPrompt }] },
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { file_data: { mime_type: input.videoMimeType, file_uri: input.videoFileUri } },
-          { text: input.userPrompt },
-        ],
+    // Phase 1: initiate the upload — server allocates an upload URL.
+    const initRes = await fetchRequest(`${UPLOAD_BASE}/files?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'X-Goog-Upload-Protocol': 'resumable',
+        'X-Goog-Upload-Command': 'start',
+        'X-Goog-Upload-Header-Content-Length': String(sizeBytes),
+        'X-Goog-Upload-Header-Content-Type': mimeType,
+        'Content-Type': 'application/json',
       },
-    ],
-  };
-  if (Object.keys(generationConfig).length > 0) {
-    body.generationConfig = generationConfig;
-  }
+      body: JSON.stringify({
+        file: { display_name: displayName ?? basename(filePath) },
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!initRes.ok) {
+      throw new Error(`Gemini Files API: upload init failed (${initRes.status})`);
+    }
+    const uploadUrl = initRes.headers.get('x-goog-upload-url');
+    if (!uploadUrl) {
+      throw new Error('Gemini Files API: init response missing upload URL');
+    }
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(3 * 60_000),
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Gemini generateContent failed (${res.status}): ${txt}`);
-  }
-  const json = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    // Phase 2: ship the bytes in a single request. The transport is injectable
+    // so service tests never touch disk or the network.
+    const bytes = await readFileBytes(filePath);
+    const uploadRes = await fetchRequest(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Length': String(sizeBytes),
+        'X-Goog-Upload-Offset': '0',
+        'X-Goog-Upload-Command': 'upload, finalize',
+      },
+      body: bytes,
+      signal: AbortSignal.timeout(3 * 60_000),
+    });
+    if (!uploadRes.ok) {
+      throw new Error(`Gemini Files API: upload bytes failed (${uploadRes.status})`);
+    }
+    const json = (await uploadRes.json()) as { file?: GeminiFile };
+    if (!json.file) {
+      throw new Error('Gemini Files API: upload response missing file resource');
+    }
+    return json.file;
   };
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof text !== 'string') {
-    throw new Error('Gemini generateContent: response missing candidates[0].content.parts[0].text');
-  }
-  return text;
+
+  /**
+   * Poll a file resource until it transitions out of PROCESSING. Videos take
+   * 5–30 seconds typically; we wait up to 5 minutes by default before giving up.
+   */
+  const waitUntilActive: GeminiFilesTransport['waitForFileActive'] = async (
+    apiKey,
+    fileName,
+    opts = {},
+  ) => {
+    const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+    const pollIntervalMs = opts.pollIntervalMs ?? 2_000;
+    const start = now();
+    while (now() - start < timeoutMs) {
+      const res = await fetchRequest(`${API_BASE}/${fileName}?key=${apiKey}`, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        throw new Error(`Gemini Files API: poll failed (${res.status})`);
+      }
+      const file = (await res.json()) as GeminiFile;
+      opts.onPoll?.(file.state);
+      if (file.state === 'ACTIVE') return file;
+      if (file.state === 'FAILED') {
+        throw new Error('Gemini Files API: file processing failed');
+      }
+      await sleep(pollIntervalMs);
+    }
+    throw new Error(`Gemini Files API: file did not become active within ${timeoutMs}ms`);
+  };
+
+  /** Best-effort delete. A false result lets the owner emit a private warning. */
+  const remove: GeminiFilesTransport['deleteFile'] = async (apiKey, fileName) => {
+    try {
+      const response = await fetchRequest(`${API_BASE}/${fileName}?key=${apiKey}`, {
+        method: 'DELETE',
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Run generateContent with a video file part + a text prompt. Returns the
+   * model's text output verbatim — caller is responsible for parsing it.
+   */
+  const generate: GeminiFilesTransport['generateWithVideo'] = async (input) => {
+    const endpoint = `${API_BASE}/models/${input.model}:generateContent?key=${input.apiKey}`;
+
+    const generationConfig: Record<string, unknown> = {};
+    if (input.temperature !== undefined) generationConfig.temperature = input.temperature;
+    if (input.maxTokens !== undefined) generationConfig.maxOutputTokens = input.maxTokens;
+    if (input.responseMimeType) generationConfig.responseMimeType = input.responseMimeType;
+
+    const body: Record<string, unknown> = {
+      system_instruction: { parts: [{ text: input.systemPrompt }] },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { file_data: { mime_type: input.videoMimeType, file_uri: input.videoFileUri } },
+            { text: input.userPrompt },
+          ],
+        },
+      ],
+    };
+    if (Object.keys(generationConfig).length > 0) {
+      body.generationConfig = generationConfig;
+    }
+
+    const res = await fetchRequest(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(3 * 60_000),
+    });
+    if (!res.ok) {
+      throw new Error(`Gemini generateContent failed (${res.status})`);
+    }
+    const json = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof text !== 'string') {
+      throw new Error('Gemini generateContent response did not contain text');
+    }
+    return text;
+  };
+
+  return {
+    uploadVideo: upload,
+    waitForFileActive: waitUntilActive,
+    deleteFile: remove,
+    generateWithVideo: generate,
+  };
 }
+
+const defaultTransport = createGeminiFilesTransport();
+
+export const uploadVideo = defaultTransport.uploadVideo;
+export const waitForFileActive = defaultTransport.waitForFileActive;
+export const deleteFile = defaultTransport.deleteFile;
+export const generateWithVideo = defaultTransport.generateWithVideo;
