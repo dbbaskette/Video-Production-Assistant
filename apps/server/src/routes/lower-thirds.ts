@@ -9,6 +9,7 @@ import { recommendLowerThirds } from '../services/lower-thirds/index.js';
 import { recommendLowerThirdsFromBrief } from '../services/lower-thirds/video-grounded.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { sha256File } from '../services/recording/metadata.js';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import {
   LowerThirdSchema,
   type LowerThird,
@@ -111,6 +112,7 @@ interface Deps {
   workspaceRoot: string;
   router: ModelRouter;
   videoUnderstanding: VideoUnderstandingService;
+  agentRecordingCoordinator: Pick<AgentRecordingCoordinator, 'withManualUploadReservation'>;
   fingerprintRecording?: (path: string) => Promise<string>;
   persistStoryboard?: typeof saveStoryboard;
   removeArtifact?: (path: string) => Promise<void>;
@@ -129,6 +131,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     workspaceRoot,
     router,
     videoUnderstanding,
+    agentRecordingCoordinator,
     fingerprintRecording = sha256File,
     persistStoryboard = saveStoryboard,
     removeArtifact = unlink,
@@ -153,7 +156,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
   // explicit paths. A grounded failure never falls back to text-only.
   app.post('/api/projects/:id/scenes/:sceneId/lower-thirds/recommend', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const parsedBody = RecommendBodySchema.safeParse(req.body ?? {});
+    const parsedBody = RecommendBodySchema.safeParse(req.body === undefined ? {} : req.body);
     if (!parsedBody.success) {
       return reply.status(400).send({
         error: 'groundInVideo must be a boolean when provided.',
@@ -177,10 +180,10 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     }
 
     const mode: 'text' | 'video' = videoRequested ? 'video' : 'text';
-    let stage: RecommendationStage = 'preparing';
+    const operationState: { stage: RecommendationStage } = { stage: 'preparing' };
     try {
       const project = await store.readProject(id);
-      stage = 'routing';
+      operationState.stage = 'routing';
       const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
       const writer = await router.resolveText('writing', project);
       for (const resolved of [videoModel, writer]) {
@@ -192,90 +195,104 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
         }
       }
 
-      let briefFreshness: 'generated' | 'reused' | undefined;
-      let groundedBriefSource: { path: string; sha256: string } | undefined;
-      let recommendations: LowerThird[];
-      if (mode === 'video' && videoModel && scene.recording) {
-        const briefInput = {
-          projectPath: project.path,
-          sceneId,
-          sceneName: scene.name,
-          videoPath: join(project.path, scene.recording.source),
-          videoMimeType: 'video/mp4',
-        };
-        stage = 'video-understanding';
-        const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
-        briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
-        const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
+      const recommendAndPersist = async () => {
+        let briefFreshness: 'generated' | 'reused' | undefined;
+        let groundedBriefSource: { path: string; sha256: string } | undefined;
+        let recommendations: LowerThird[];
+        if (mode === 'video' && videoModel && scene.recording) {
+          const briefInput = {
+            projectPath: project.path,
+            sceneId,
+            sceneName: scene.name,
+            videoPath: join(project.path, scene.recording.source),
+            videoMimeType: 'video/mp4',
+          };
+          operationState.stage = 'video-understanding';
+          const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
+          briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
+          const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
+            app.log.info(
+              modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
+              'Video-grounded lower-third phase',
+            );
+          });
+          groundedBriefSource = {
+            path: brief.source.path,
+            sha256: brief.source.sha256,
+          };
+          operationState.stage = 'writing';
           app.log.info(
-            modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
-            'Video-grounded lower-third phase',
+            modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
+            'Lower-third writing phase',
           );
-        });
-        groundedBriefSource = {
-          path: brief.source.path,
-          sha256: brief.source.sha256,
-        };
-        stage = 'writing';
-        app.log.info(
-          modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
-          'Lower-third writing phase',
-        );
-        recommendations = await recommendLowerThirdsFromBrief({
-          videoPath: briefInput.videoPath,
-          videoMimeType: briefInput.videoMimeType,
-          sceneName: scene.name,
-          sceneDescription: scene.description,
-          sceneIntent: scene.intent,
-          durationSec: scene.recording.duration_sec ?? brief.source.duration_sec,
-          projectObjective: project.objective,
-          projectAudience: project.audience,
-          projectPath: project.path,
-          brief,
-        }, writer.client, workspaceRoot);
-      } else {
-        stage = 'writing';
-        app.log.info(
-          modelOperationFields(sceneId, writer.summary, 'writing'),
-          'Lower-third writing phase',
-        );
-        recommendations = await recommendLowerThirds({
-          sceneName: scene.name,
-          sceneDescription: scene.description,
-          sceneType: scene.type,
-          sceneIntent: scene.intent,
-          durationSec: scene.recording?.duration_sec,
-          projectObjective: project.objective,
-          projectAudience: project.audience,
-          projectPath: project.path,
-        }, writer.client, workspaceRoot);
-      }
-
-      // Keep all model output in memory until the complete set validates.
-      const lowerThirds = LowerThirdSetSchema.parse(recommendations);
-
-      // Re-read immediately before the single persistence operation so scene
-      // edits made during model calls are retained.
-      stage = 'persistence';
-      const latest = await loadStoryboard(project.path);
-      const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
-      if (!latest || !latestScene) throw new Error('Scene changed during lower-third recommendation.');
-      if (mode === 'video') {
-        if (!groundedBriefSource || !latestScene.recording?.source) {
-          throw new Error('Recording changed during lower-third recommendation.');
+          recommendations = await recommendLowerThirdsFromBrief({
+            videoPath: briefInput.videoPath,
+            videoMimeType: briefInput.videoMimeType,
+            sceneName: scene.name,
+            sceneDescription: scene.description,
+            sceneIntent: scene.intent,
+            durationSec: scene.recording.duration_sec ?? brief.source.duration_sec,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+            brief,
+          }, writer.client, workspaceRoot);
+        } else {
+          operationState.stage = 'writing';
+          app.log.info(
+            modelOperationFields(sceneId, writer.summary, 'writing'),
+            'Lower-third writing phase',
+          );
+          recommendations = await recommendLowerThirds({
+            sceneName: scene.name,
+            sceneDescription: scene.description,
+            sceneType: scene.type,
+            sceneIntent: scene.intent,
+            durationSec: scene.recording?.duration_sec,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+          }, writer.client, workspaceRoot);
         }
-        const latestRecordingPath = join(project.path, latestScene.recording.source);
-        const latestFingerprint = await fingerprintRecording(latestRecordingPath);
-        if (
-          latestRecordingPath !== groundedBriefSource.path
-          || latestFingerprint !== groundedBriefSource.sha256
-        ) {
-          throw new Error('Recording changed during lower-third recommendation.');
+
+        // Keep all model output in memory until the complete set validates.
+        const lowerThirds = LowerThirdSetSchema.parse(recommendations);
+
+        // Re-read immediately before the single persistence operation so scene
+        // edits made during model calls are retained.
+        operationState.stage = 'persistence';
+        const latest = await loadStoryboard(project.path);
+        const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
+        if (!latest || !latestScene) throw new Error('Scene changed during lower-third recommendation.');
+        if (mode === 'video') {
+          if (!groundedBriefSource || !latestScene.recording?.source) {
+            throw new Error('Recording changed during lower-third recommendation.');
+          }
+          const latestRecordingPath = join(project.path, latestScene.recording.source);
+          const latestFingerprint = await fingerprintRecording(latestRecordingPath);
+          if (
+            latestRecordingPath !== groundedBriefSource.path
+            || latestFingerprint !== groundedBriefSource.sha256
+          ) {
+            throw new Error('Recording changed during lower-third recommendation.');
+          }
         }
-      }
-      const updated = updateLowerThirds(latest, latestScene, lowerThirds);
-      await persistStoryboard(project.path, updated);
-      await cleanupLowerThirdArtifacts(project.path, latestScene, removeArtifact);
+        const updated = updateLowerThirds(latest, latestScene, lowerThirds);
+        await persistStoryboard(project.path, updated);
+        await cleanupLowerThirdArtifacts(project.path, latestScene, removeArtifact);
+        return { lowerThirds, briefFreshness };
+      };
+
+      // Grounded generation and its final save share the exact scene
+      // reservation used by manual and agent recording replacement. No
+      // coordinated replacement can commit between brief identity and save.
+      const { lowerThirds, briefFreshness } = mode === 'video'
+        ? await agentRecordingCoordinator.withManualUploadReservation(
+            id,
+            [sceneId],
+            recommendAndPersist,
+          )
+        : await recommendAndPersist();
 
       return {
         sceneId,
@@ -290,7 +307,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     } catch (error) {
       try {
         app.log.error(
-          privateRecommendationDiagnostic(error, sceneId, stage),
+          privateRecommendationDiagnostic(error, sceneId, operationState.stage),
           'Lower-third recommendation failed',
         );
       } catch {
@@ -304,10 +321,10 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
         });
       }
       return reply.status(500).send({
-        error: mode === 'video' && stage === 'video-understanding'
+        error: mode === 'video' && operationState.stage === 'video-understanding'
           ? VIDEO_LOWER_THIRDS_FAILED_MESSAGE
           : LOWER_THIRDS_FAILED_MESSAGE,
-        code: mode === 'video' && stage === 'video-understanding'
+        code: mode === 'video' && operationState.stage === 'video-understanding'
           ? 'video_lower_thirds_failed'
           : 'lower_thirds_generation_failed',
       });

@@ -17,7 +17,32 @@ import {
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { addText } from '../services/project-source-docs/index.js';
 import { sha256File } from '../services/recording/metadata.js';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { registerLowerThirdsRoutes } from './lower-thirds.js';
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function recordingReservation() {
+  const held = new Set<string>();
+  return vi.fn(async <T>(
+    projectId: string,
+    sceneIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const keys = sceneIds.map((sceneId) => `${projectId}\0${sceneId}`);
+    if (keys.some((key) => held.has(key))) throw new Error('Scene recording is reserved.');
+    for (const key of keys) held.add(key);
+    try {
+      return await operation();
+    } finally {
+      for (const key of keys) held.delete(key);
+    }
+  }) as unknown as AgentRecordingCoordinator['withManualUploadReservation'];
+}
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -93,6 +118,7 @@ interface BuildOptions {
   fingerprintRecording?: (path: string) => Promise<string>;
   persistStoryboard?: typeof saveStoryboard;
   removeArtifact?: (path: string) => Promise<void>;
+  withRecordingReservation?: AgentRecordingCoordinator['withManualUploadReservation'];
 }
 
 async function buildTestServer(options: BuildOptions = {}) {
@@ -134,6 +160,7 @@ async function buildTestServer(options: BuildOptions = {}) {
   const ensureBrief = vi.fn(options.ensureBrief ?? (async (input: { videoPath: string }) => (
     makeBrief(input.videoPath)
   )));
+  const withRecordingReservation = options.withRecordingReservation ?? recordingReservation();
   const app = Fastify();
   await app.register(async (instance) => registerLowerThirdsRoutes(instance, {
     store,
@@ -143,6 +170,7 @@ async function buildTestServer(options: BuildOptions = {}) {
     fingerprintRecording: options.fingerprintRecording ?? (async () => 'a'.repeat(64)),
     persistStoryboard: options.persistStoryboard,
     removeArtifact: options.removeArtifact,
+    agentRecordingCoordinator: { withManualUploadReservation: withRecordingReservation },
   }));
   return {
     app,
@@ -155,6 +183,7 @@ async function buildTestServer(options: BuildOptions = {}) {
     resolveVideo,
     readBriefStatus,
     ensureBrief,
+    withRecordingReservation,
   };
 }
 
@@ -425,6 +454,31 @@ describe('lower-thirds routes', () => {
     },
   );
 
+  it('rejects a top-level JSON null body instead of selecting text mode', async () => {
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.lower_thirds = [
+      { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+    ];
+    await saveStoryboard(projectPath, existing);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: 'null',
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({
+      error: 'groundInVideo must be a boolean when provided.',
+      code: 'invalid_request',
+    });
+    expect(ctx.resolveVideo).not.toHaveBeenCalled();
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds)
+      .toEqual(existing.scenes[0]!.lower_thirds);
+  });
+
   it.each([false, true])(
     'aborts %s-mode recommendation when oversized source summarization fails',
     async (groundInVideo) => {
@@ -521,6 +575,68 @@ describe('lower-thirds routes', () => {
       lower_thirds: existing.scenes[0]!.lower_thirds,
       overlay_render: 'overlays/existing.mp4',
     });
+  });
+
+  it('holds the shared scene recording reservation from validation through persistence', async () => {
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    const withRecordingReservation = recordingReservation();
+    const saveEntered = deferred();
+    const releaseSave = deferred();
+    ctx = await buildTestServer({
+      withRecordingReservation,
+      persistStoryboard: async (savePath, storyboard) => {
+        saveEntered.resolve();
+        await releaseSave.promise;
+        await saveStoryboard(savePath, storyboard);
+      },
+    });
+    const project = await ctx.store.create({ name: 'reservation-project', objective: 'Serialize recording writes' });
+    projectId = project.id;
+    projectPath = project.path;
+    const recordingPath = path.join(projectPath, 'recordings/scene-01.mp4');
+    await mkdir(path.dirname(recordingPath), { recursive: true });
+    await writeFile(recordingPath, 'original recording bytes');
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+    existing.scenes[0]!.lower_thirds = [
+      { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+    ];
+    await saveStoryboard(projectPath, existing);
+
+    const request = ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: true },
+    });
+    await saveEntered.promise;
+
+    const sameSceneReplacement = await withRecordingReservation(
+      projectId,
+      ['scene-01'],
+      async () => {
+        await writeFile(recordingPath, 'replacement recording bytes');
+        return 'replaced';
+      },
+    ).then(
+      (value) => value,
+      () => 'blocked',
+    );
+    const unrelatedSceneReplacement = await withRecordingReservation(
+      projectId,
+      ['scene-02'],
+      async () => 'unrelated-scene-proceeded',
+    );
+    releaseSave.resolve();
+    const res = await request;
+
+    expect(sameSceneReplacement).toBe('blocked');
+    expect(unrelatedSceneReplacement).toBe('unrelated-scene-proceeded');
+    expect(res.statusCode).toBe(200);
+    expect(await readFile(recordingPath, 'utf8')).toBe('original recording bytes');
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds)
+      .toEqual(res.json().lowerThirds);
   });
 
   it('keeps the previous storyboard and cache files when persistence fails', async () => {

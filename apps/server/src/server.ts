@@ -295,6 +295,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       workspaceRoot: wsRoot,
       router: modelRouter,
       videoUnderstanding,
+      agentRecordingCoordinator,
     }),
   );
   await app.register(async (instance) =>
