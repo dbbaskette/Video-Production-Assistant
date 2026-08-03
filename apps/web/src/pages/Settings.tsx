@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { ApiError, settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ModelAssignments } from '../components/ModelAssignments.js';
@@ -208,10 +209,18 @@ function ModelCard({
         <div className="model-library-card__references" role="alert">
           <strong>Reassign this model before deleting it.</strong>
           {deleteError.globalRoles.length > 0 && (
-            <p>Global jobs: {deleteError.globalRoles.map(roleLabel).join(', ')}.</p>
+            <p>
+              Global jobs: {deleteError.globalRoles.map(roleLabel).join(', ')}.{' '}
+              <a href="#model-assignments">Update global assignments</a>
+            </p>
           )}
           {deleteError.projects.map((project) => (
-            <p key={project.id}>{project.name}: {project.roles.map(roleLabel).join(', ')}.</p>
+            <p key={project.id}>
+              {project.name}: {project.roles.map(roleLabel).join(', ')}.{' '}
+              <Link to={`/project/${encodeURIComponent(project.id)}#project-ai-models-title`}>
+                Open project AI models
+              </Link>
+            </p>
           ))}
           {deleteError.truncated && <p>More project references were omitted. Reassign those projects too.</p>}
         </div>

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ModelRoutingResolution, ModelRoutingResponse, ResolvedModelSummary } from '@vpa/shared';
+import type {
+  ModelRoutingResolution,
+  ModelRoutingResponse,
+  ResolvedModelSummary,
+} from '@vpa/shared';
 import type { ModelEntry } from './api.js';
 import {
   assignmentPresentation,
@@ -13,6 +17,7 @@ import {
   optionsForRole,
   remediationDestination,
   roleIsPending,
+  routingFailureRole,
   routingWithAssignment,
   sceneGroundingPresentation,
 } from './model-routing.js';
@@ -67,20 +72,30 @@ function resolved(
 
 describe('model routing view models', () => {
   it('offers Gemini video models only and every text-capable model for writing', () => {
-    expect(optionsForRole(models, 'video-understanding').map((model) => model.id))
-      .toEqual(['gemini-pro']);
-    expect(optionsForRole(models, 'writing').map((model) => model.id))
-      .toEqual(['gemini-pro', 'claude', 'codex']);
+    expect(optionsForRole(models, 'video-understanding').map((model) => model.id)).toEqual([
+      'gemini-pro',
+    ]);
+    expect(optionsForRole(models, 'writing').map((model) => model.id)).toEqual([
+      'gemini-pro',
+      'claude',
+      'codex',
+    ]);
   });
 
   it('attributes the video and writing stages to their specialists', () => {
-    expect(modelAttribution(resolved('video-understanding', models[0]!), resolved('writing', models[2]!)))
-      .toBe('Gemini Pro watches the recording; Codex writes the script.');
-    expect(modelAttribution(
-      resolved('video-understanding', models[0]!),
-      resolved('writing', models[2]!),
-      'lower-third copy',
-    )).toBe('Gemini Pro watches the recording; Codex writes the lower-third copy.');
+    expect(
+      modelAttribution(
+        resolved('video-understanding', models[0]!),
+        resolved('writing', models[2]!),
+      ),
+    ).toBe('Gemini Pro watches the recording; Codex writes the script.');
+    expect(
+      modelAttribution(
+        resolved('video-understanding', models[0]!),
+        resolved('writing', models[2]!),
+        'lower-third copy',
+      ),
+    ).toBe('Gemini Pro watches the recording; Codex writes the lower-third copy.');
   });
 
   it('keeps video grounding visible but disabled with exact project remediation', () => {
@@ -89,7 +104,8 @@ describe('model routing view models', () => {
       scope: 'project',
       ready: false,
       code: 'model_unavailable',
-      message: 'The assigned model for video-understanding is unavailable. Check its configuration in project model settings.',
+      message:
+        'The assigned model for video-understanding is unavailable. Check its configuration in project model settings.',
     };
 
     expect(sceneGroundingPresentation(true, unavailable, 'project-7')).toEqual({
@@ -118,13 +134,17 @@ describe('model routing view models', () => {
   });
 
   it('never coerces a requested grounded action to text-only', () => {
-    const blocked = sceneGroundingPresentation(true, {
-      role: 'video-understanding',
-      scope: 'global',
-      ready: false,
-      code: 'model_assignment_missing',
-      message: 'No model is assigned to the video-understanding role.',
-    }, 'project-7');
+    const blocked = sceneGroundingPresentation(
+      true,
+      {
+        role: 'video-understanding',
+        scope: 'global',
+        ready: false,
+        code: 'model_assignment_missing',
+        message: 'No model is assigned to the video-understanding role.',
+      },
+      'project-7',
+    );
     expect(() => groundingRequestValue(true, blocked)).toThrow(blocked.disabledReason);
     expect(groundingRequestValue(false, blocked)).toBe(false);
 
@@ -140,23 +160,27 @@ describe('model routing view models', () => {
       resolved('video-understanding', models[0]!),
       'project-7',
     );
-    expect(() => groundingRequestValue(true, hidden))
-      .toThrow('Video grounding is unavailable for this scene.');
+    expect(() => groundingRequestValue(true, hidden)).toThrow(
+      'Video grounding is unavailable for this scene.',
+    );
   });
 
   it('describes routed phases, brief reuse, and preservation in plain language', () => {
     const video = resolved('video-understanding', models[0]!);
     const writer = resolved('writing', models[2]!);
-    expect(groundedGenerationPhase(video, writer, 'script'))
-      .toBe('Gemini Pro analyzes the recording → Codex drafts the script…');
-    expect(groundedGenerationPhase(video, writer, 'lower-third copy'))
-      .toBe('Gemini Pro analyzes the recording → Codex drafts the lower-third copy…');
-    expect(briefFreshnessMessage('reused', video))
-      .toBe('Reusing the current Gemini timing brief.');
-    expect(briefFreshnessMessage('generated', video))
-      .toBe('Gemini analyzed the recording and created a new timing brief.');
-    expect(groundedFailureMessage('script'))
-      .toBe('The video model is not ready. Your existing script will not be changed.');
+    expect(groundedGenerationPhase(video, writer, 'script')).toBe(
+      'Gemini Pro analyzes the recording → Codex drafts the script…',
+    );
+    expect(groundedGenerationPhase(video, writer, 'lower-third copy')).toBe(
+      'Gemini Pro analyzes the recording → Codex drafts the lower-third copy…',
+    );
+    expect(briefFreshnessMessage('reused', video)).toBe('Reusing the current Gemini timing brief.');
+    expect(briefFreshnessMessage('generated', video)).toBe(
+      'Gemini analyzed the recording and created a new timing brief.',
+    );
+    expect(groundedFailureMessage('script')).toBe(
+      'The video model is not ready. Your existing script will not be changed.',
+    );
   });
 
   it('describes inherited project assignments explicitly', () => {
@@ -183,13 +207,25 @@ describe('model routing view models', () => {
     });
   });
 
+  it('accepts only stable routing failures for remediation navigation', () => {
+    expect(
+      routingFailureRole({ code: 'model_unavailable', role: 'writing', diagnostic: 'private' }),
+    ).toBe('writing');
+    expect(
+      routingFailureRole({ code: 'script_generation_failed', role: 'writing' }),
+    ).toBeUndefined();
+    expect(routingFailureRole({ code: 'model_unavailable', role: 'unknown' })).toBeUndefined();
+    expect(routingFailureRole(null)).toBeUndefined();
+  });
+
   it('explains incompatible assignments without presenting them as ready', () => {
     const incompatible: ModelRoutingResolution = {
       role: 'video-understanding',
       scope: 'project',
       ready: false,
       code: 'model_capability_mismatch',
-      message: 'The assigned model cannot handle video-understanding. Choose a compatible model in project model settings.',
+      message:
+        'The assigned model cannot handle video-understanding. Choose a compatible model in project model settings.',
     };
     expect(assignmentPresentation(incompatible, 'project')).toMatchObject({
       label: 'Model is not compatible',
@@ -205,7 +241,8 @@ describe('model routing view models', () => {
       scope: 'global',
       ready: false,
       code: 'model_unavailable',
-      message: 'The assigned model for writing is unavailable. Check its configuration in global model settings.',
+      message:
+        'The assigned model for writing is unavailable. Check its configuration in global model settings.',
     };
     expect(assignmentPresentation(unavailable, 'project')).toMatchObject({
       label: 'Model is unavailable',
@@ -236,19 +273,16 @@ describe('model routing view models', () => {
     );
     const firstResponse = routingWithAssignment(initial, 'writing', 'codex');
 
-    const afterFirstResponse = mergePendingRouting(
-      firstResponse,
-      optimistic,
-      new Set(['general']),
-    );
+    const afterFirstResponse = mergePendingRouting(firstResponse, optimistic, new Set(['general']));
     expect(afterFirstResponse.assignments).toMatchObject({
       writing: 'codex',
       general: 'gemini-pro',
     });
 
     const secondResponse = routingWithAssignment(firstResponse, 'general', 'gemini-pro');
-    expect(mergePendingRouting(secondResponse, afterFirstResponse, new Set()).assignments)
-      .toEqual(secondResponse.assignments);
+    expect(mergePendingRouting(secondResponse, afterFirstResponse, new Set()).assignments).toEqual(
+      secondResponse.assignments,
+    );
   });
 
   it('marks only the selected assignment row as pending', () => {

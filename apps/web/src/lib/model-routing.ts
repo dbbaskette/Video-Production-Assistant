@@ -7,8 +7,16 @@ import type {
 import type { ModelEntry } from './api.js';
 
 export const MODEL_ASSIGNMENT_ROWS = [
-  ['video-understanding', 'Watch and analyze video', 'Creates visual and timing briefs from recordings.'],
-  ['writing', 'Write and refine content', 'Writes scripts, ideas, shot plans, and lower-third copy.'],
+  [
+    'video-understanding',
+    'Watch and analyze video',
+    'Creates visual and timing briefs from recordings.',
+  ],
+  [
+    'writing',
+    'Write and refine content',
+    'Writes scripts, ideas, shot plans, and lower-third copy.',
+  ],
   ['general', 'General analysis', 'Reviews quality, source documents, and brand information.'],
 ] as const satisfies ReadonlyArray<readonly [ModelTaskRole, string, string]>;
 
@@ -104,13 +112,15 @@ export function resolutionForRole(
   resolutions: ModelRoutingResolution[],
   role: ModelTaskRole,
 ): ModelRoutingResolution {
-  return resolutions.find((resolution) => resolution.role === role) ?? {
-    role,
-    scope: 'global',
-    ready: false,
-    code: 'model_assignment_missing',
-    message: `No model is assigned to the ${role} role.`,
-  };
+  return (
+    resolutions.find((resolution) => resolution.role === role) ?? {
+      role,
+      scope: 'global',
+      ready: false,
+      code: 'model_assignment_missing',
+      message: `No model is assigned to the ${role} role.`,
+    }
+  );
 }
 
 export function remediationDestination(
@@ -126,17 +136,19 @@ export function assignmentPresentation(
   resolution: ModelRoutingResolution,
   mode: AssignmentMode,
 ): AssignmentPresentation {
-  const scopeLabel = mode === 'project'
-    ? resolution.scope === 'project' ? 'Project override' : 'Global setting'
-    : 'Global setting';
+  const scopeLabel =
+    mode === 'project'
+      ? resolution.scope === 'project'
+        ? 'Project override'
+        : 'Global setting'
+      : 'Global setting';
 
   if (!('code' in resolution) && resolution.ready) {
     return {
       label: resolution.name,
       detail: `${resolution.provider} / ${resolution.model}`,
-      scopeLabel: mode === 'project' && resolution.scope === 'global'
-        ? 'Using global setting'
-        : scopeLabel,
+      scopeLabel:
+        mode === 'project' && resolution.scope === 'global' ? 'Using global setting' : scopeLabel,
       tone: 'ready',
     };
   }
@@ -152,9 +164,10 @@ export function assignmentPresentation(
   }
 
   const labelByCode = {
-    model_assignment_missing: mode === 'project' && resolution.scope === 'global'
-      ? 'Global setting needs attention'
-      : 'Not assigned',
+    model_assignment_missing:
+      mode === 'project' && resolution.scope === 'global'
+        ? 'Global setting needs attention'
+        : 'Not assigned',
     model_assignment_invalid: 'Assigned model is missing',
     model_capability_mismatch: 'Model is not compatible',
     model_unavailable: 'Model is unavailable',
@@ -201,9 +214,7 @@ export function sceneGroundingPresentation(
   if (!hasRecording) return { visible: false, ready: false };
   if (isReady(video)) return { visible: true, ready: true };
 
-  const reason = video && 'message' in video
-    ? video.message
-    : 'The video model is not ready.';
+  const reason = video && 'message' in video ? video.message : 'The video model is not ready.';
   return {
     visible: true,
     ready: false,
@@ -266,4 +277,24 @@ export function briefFreshnessMessage(
 export function groundedFailureMessage(output: SceneWritingOutput): string {
   const existing = output === 'lower-third copy' ? 'lower thirds' : output;
   return `The video model is not ready. Your existing ${existing} will not be changed.`;
+}
+
+/** Read only the stable routing role from an API error payload. Provider
+ * diagnostics and other arbitrary error fields never influence navigation. */
+export function routingFailureRole(payload: unknown): ModelTaskRole | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const candidate = payload as { code?: unknown; role?: unknown };
+  if (
+    candidate.code !== 'model_assignment_missing' &&
+    candidate.code !== 'model_assignment_invalid' &&
+    candidate.code !== 'model_capability_mismatch' &&
+    candidate.code !== 'model_unavailable'
+  ) {
+    return undefined;
+  }
+  return candidate.role === 'video-understanding' ||
+    candidate.role === 'writing' ||
+    candidate.role === 'general'
+    ? candidate.role
+    : undefined;
 }

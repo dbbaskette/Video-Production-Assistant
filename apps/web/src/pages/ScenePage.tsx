@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi } from '../lib/api.js';
+import { ApiError, agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
@@ -32,6 +32,7 @@ import {
   groundingRequestValue,
   modelAttribution,
   resolutionForRole,
+  routingFailureRole,
   sceneGroundingPresentation,
   type SceneGroundingPresentation,
 } from '../lib/model-routing.js';
@@ -1757,9 +1758,17 @@ export function ScenePage(props: ScenePageProps = {}) {
 
           {/* Error displays */}
           {generateScriptMutation.isError && (
-            <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
-              Generation failed: {generateScriptMutation.error instanceof Error ? generateScriptMutation.error.message : 'Unknown error'}
-            </p>
+            <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }} role="alert">
+              <p style={{ margin: 0 }}>
+                Generation failed: {generateScriptMutation.error instanceof Error ? generateScriptMutation.error.message : 'Unknown error'}
+              </p>
+              {generateScriptMutation.error instanceof ApiError
+                && routingFailureRole(generateScriptMutation.error.payload) && (
+                <Link to={`/project/${projectId}#project-ai-models-title`}>
+                  Open this project's AI models
+                </Link>
+              )}
+            </div>
           )}
           {(saveMonologueMutation.isError || saveDialogMutation.isError) && (
             <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
@@ -3063,12 +3072,20 @@ export function ScenePage(props: ScenePageProps = {}) {
 
           {/* Error */}
           {recommendLTsMutation.isError && (
-            <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>
-              Recommendation failed:{' '}
-              {recommendLTsMutation.error instanceof Error
-                ? recommendLTsMutation.error.message
-                : 'Unknown error'}
-            </p>
+            <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }} role="alert">
+              <p style={{ margin: 0 }}>
+                Recommendation failed:{' '}
+                {recommendLTsMutation.error instanceof Error
+                  ? recommendLTsMutation.error.message
+                  : 'Unknown error'}
+              </p>
+              {recommendLTsMutation.error instanceof ApiError
+                && routingFailureRole(recommendLTsMutation.error.payload) && (
+                <Link to={`/project/${projectId}#project-ai-models-title`}>
+                  Open this project's AI models
+                </Link>
+              )}
+            </div>
           )}
 
           {/* Lower thirds list */}

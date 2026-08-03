@@ -31,6 +31,8 @@ Open http://localhost:5173 in your browser.
 
 - [Claude Code](https://claude.ai/code) CLI installed and logged in for AI features (recommended, no API key needed), or a Gemini/Anthropic API key, or use `fake` provider for development
 
+VPA routes AI work by task: Gemini can watch recordings while Claude or Codex writes from a local text brief. See [Task-based model routing](docs/model-routing.md) for setup, privacy, override, failure, and migration behavior.
+
 ### Optional
 
 ```bash
@@ -84,6 +86,7 @@ The left sidebar lays out the workflow as a sequence of dedicated phase pages. E
 | **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand. The Render page displays which brand assets will be applied + per-render opt-out checkboxes. |
 | **Voices Library** | Record or upload voice clones in-browser; ffmpeg transcodes to canonical 24 kHz mono WAV. Use them with Fish Audio (local) or register them as xAI custom voices |
 | **AI Ideation** | Chat-based storyboard planning with scene proposals and refinement |
+| **Task-based model routing** | Assign separate global specialists for video understanding, writing, and general analysis, with optional per-project overrides. Grounded writing uses a local validated brief so only Gemini receives video. See [model routing](docs/model-routing.md). |
 | **Recording Ingestion** | Upload per-scene MP4s, upload one long recording and split it at AI-proposed boundaries, or prepare a Cap + Codex agent recording. **Replace recording** swaps a scene's video and automatically invalidates the cached lower-thirds bake + framed video. |
 | **Agent Recording** | The Recording tab derives a reviewed action plan and copies a repository-aware Codex handoff. Codex rehearses the supported target UI, asks for explicit capture confirmation, controls Cap through its structured CLI, and attaches the validated local MP4 with provenance. See [Cap agent recording](docs/agent-recording-cap.md). |
 | **Script Generation** | AI writes narration scripts with emotive tags from scene context. Monologue and dialog modes are independent. Project-wide `/script` page lists every scene with word count + preview. The editor shows a **live word-count + fit indicator** sized to the scene's recording at the project's measured TTS rate — coloured green/red so the user can self-correct length before generating TTS, with a **✨ Tighten script** button that opens directly when the verdict is "TOO LONG." Saving a script (manual edit, regenerate, or Tighten) clears any previously-generated TTS chunks so the next render doesn't play old narration over new wording. |
@@ -111,7 +114,7 @@ Copy `.env.example` to `.env` and adjust:
 | `VPA_SERVER_PORT` | `3000` | Server port |
 | `VPA_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app API base URL |
-| `VPA_LLM_PROVIDER` | `fake` | LLM backend: `fake`, `claude-code`, `gemini`, or `anthropic` |
+| `VPA_LLM_PROVIDER` | `fake` | Bootstrap catalog provider: `fake`, `claude-code`, `gemini`, or `anthropic`; runtime jobs use role assignments |
 | `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.5-flash-lite`) |
 | `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` and to enable Gemini TTS |
 | `ANTHROPIC_API_KEY` | — | Required when `VPA_LLM_PROVIDER=anthropic` (direct REST API) |
@@ -128,6 +131,8 @@ Copy `.env.example` to `.env` and adjust:
 **Gemini** — Google's Gemini REST API. Set `VPA_LLM_PROVIDER=gemini` and `GEMINI_API_KEY`.
 
 **Anthropic** — Direct Anthropic REST API. Set `VPA_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
+
+These environment variables seed local model configurations when needed; they do not select one app-wide active model. Assign the resulting entries to **Watch and analyze video**, **Write and refine content**, and **General analysis** in Settings.
 
 ## Development
 
@@ -208,7 +213,7 @@ docs/superpowers/     Design specs and implementation plans
   brands.json            # brand registry with default brand
   voices/*.yaml          # named voice profiles (engine + voice + speed)
   voice-clones/<slug>/   # per-voice clone directory: audio.wav + voice.json + transcript.txt
-  models.json            # active LLM model selection
+  models.json            # configured model catalog + global task-role assignments
 ```
 
 ## Brand Library

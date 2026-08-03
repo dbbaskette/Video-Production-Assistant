@@ -35,7 +35,11 @@ import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
 import { createLlmFromEntry } from './services/llm/factory.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
-import { ModelRouter, type CliReadinessProbe } from './services/llm/model-router.js';
+import {
+  ModelRouter,
+  type CliReadinessProbe,
+  type ModelRouterOptions,
+} from './services/llm/model-router.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
@@ -86,6 +90,10 @@ export interface BuildServerOptions {
   config?: ServerConfig;
   agentRecordingCoordinator?: AgentRecordingCoordinator;
   logger?: boolean;
+  modelClientFactory?: ModelRouterOptions['createClient'];
+  cliReadinessProbe?: CliReadinessProbe;
+  videoUnderstanding?: VideoUnderstandingService;
+  recordingProbe?: typeof probeVideo;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -119,8 +127,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
   await modelRegistry.load();
   const modelRouter = new ModelRouter({
     registry: modelRegistry,
-    createClient: createLlmFromEntry,
-    checkCliReady,
+    createClient: options.modelClientFactory ?? createLlmFromEntry,
+    checkCliReady: options.cliReadinessProbe ?? checkCliReady,
     warn: (fields, message) => app.log.warn(fields, message),
   });
 
@@ -151,7 +159,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       : 'Video understanding failed';
     app.log.warn(safeFields, safeMessage);
   };
-  const videoUnderstanding = new VideoUnderstandingService({
+  const videoUnderstanding = options.videoUnderstanding ?? new VideoUnderstandingService({
     workspaceRoot: wsRoot,
     warn: videoUnderstandingWarning,
   });
@@ -224,6 +232,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       workspaceRoot: wsRoot,
       router: modelRouter,
       videoUnderstanding,
+      probe: options.recordingProbe,
       agentRecordingCoordinator,
     }),
   );
