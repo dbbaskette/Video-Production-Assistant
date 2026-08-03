@@ -7,7 +7,7 @@ import type { TtsService } from '../services/tts/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
 import { jobQueue } from '../lib/job-queue.js';
 import {
   listProfiles,
@@ -47,11 +47,14 @@ async function resolveProject(store: ProjectStore, projectId: string) {
   }
 }
 
-async function batchUsesXai(projectPath: string, sceneId: string, fallbackEngine: string): Promise<boolean> {
-  if (fallbackEngine === 'xai') return true;
+async function batchUsesXai(
+  projectPath: string,
+  sceneId: string,
+  input: { engine: string; voice: string; speed?: number; selector?: ChunkSelector },
+): Promise<boolean> {
   const storyboard = await loadStoryboard(projectPath);
   const scene = storyboard?.scenes.find((candidate) => candidate.id === sceneId);
-  return Object.values(scene?.narration?.speakers ?? {}).some((speaker) => speaker.engine === 'xai');
+  return scene ? batchRequiresWriting(scene, input) : false;
 }
 
 // Voice clone reading script + instructions moved to routes/voice-clone.ts.
@@ -380,7 +383,12 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const projectPath = project.path;
     let writer: Awaited<ReturnType<ModelRouter['resolveText']>> | undefined;
     try {
-      if (await batchUsesXai(projectPath, sceneId, body.engine)) {
+      if (await batchUsesXai(projectPath, sceneId, {
+        engine: body.engine,
+        voice: body.voice,
+        speed: body.speed,
+        selector: body.selector ?? 'missing',
+      })) {
         writer = await router.resolveText('writing', project);
       }
     } catch (error) {

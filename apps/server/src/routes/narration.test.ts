@@ -10,6 +10,20 @@ import { registerNarrationRoutes } from './narration.js';
 import type { Storyboard } from '@vpa/shared';
 import type { LlmClient } from '../services/llm/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
+import { jobQueue } from '../lib/job-queue.js';
+
+async function waitForJobStatus(jobId: string, target: 'completed' | 'failed'): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const status = jobQueue.get(jobId)?.status;
+    if (status === target) return;
+    if (status === 'failed' && target !== 'failed') {
+      throw new Error(`Job failed: ${jobQueue.get(jobId)?.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for job ${jobId} to reach ${target}`);
+}
 
 async function buildTestServer(writerOverride?: LlmClient) {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-narr-routes-'));
@@ -233,6 +247,106 @@ describe('narration routes', () => {
     );
     const unchanged = await loadStoryboard(projectPath);
     expect(unchanged!.scenes[0]!.narration!.audio).toBe('narration/existing.mp3');
+  });
+
+  it('generate-all ignores dormant xAI speaker settings in monologue mode', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: 'First paragraph.\n\nSecond paragraph.',
+      mode: 'monologue',
+      speakers: {
+        A: { engine: 'xai', voice: 'dormant-xai', speed: 1 },
+      },
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValue(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'all' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toEqual({ total: 2, completed: 2, failed: 0 });
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('generate-all ignores xAI assigned only to an unselected dialog chunk', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: '[Speaker A] Already rendered.\n[Speaker B] Needs audio.',
+      mode: 'dialog',
+      speakers: {
+        A: { engine: 'xai', voice: 'xai-voice', speed: 1 },
+        B: { engine: 'fake', voice: 'bob', speed: 1 },
+      },
+      chunks: [{
+        index: 0,
+        text: '[Speaker A] Already rendered.',
+        audio: 'narration/existing-a.mp3',
+        durationSec: 2,
+        speaker: 'A',
+      }],
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValue(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'missing' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toEqual({ total: 1, completed: 1, failed: 0 });
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('generate-all returns the stable writing error for a selected xAI dialog chunk', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: '[Speaker A] Generate this with xAI.',
+      mode: 'dialog',
+      speakers: {
+        A: { engine: 'xai', voice: 'xai-voice', speed: 1 },
+      },
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValueOnce(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'all' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'writing' });
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
   });
 
   it('POST generate returns 400 when engine/voice missing', async () => {

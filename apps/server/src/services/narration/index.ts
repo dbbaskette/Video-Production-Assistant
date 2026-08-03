@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TtsService } from '../tts/index.js';
 import type { LlmClient } from '../llm/index.js';
-import type { Expressiveness } from '@vpa/shared';
+import type { Expressiveness, NarrationChunk, Scene } from '@vpa/shared';
 import { prepareExpressiveText } from '../tts/expressiveness.js';
 import { parsePauses, stripTimedPauseTokens } from './pause-parser.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
@@ -315,6 +315,80 @@ export interface BatchInput {
   selector?: ChunkSelector;
 }
 
+interface PlannedBatchChunk {
+  index: number;
+  text: string;
+  gapSec: number;
+  engine: string;
+  voice: string;
+  speed?: number;
+}
+
+interface BatchNarrationPlan {
+  derived: ScriptChunk[];
+  stored: NarrationChunk[];
+  targets: PlannedBatchChunk[];
+}
+
+type BatchVoiceSelection = Pick<BatchInput, 'engine' | 'voice' | 'speed' | 'selector'>;
+
+/**
+ * Build the exact set of chunks a batch request can synthesize, including
+ * dialog-only speaker overrides. Routing and generation both consume this
+ * plan so dormant or unselected speaker configuration cannot require models
+ * that the operation will never invoke.
+ */
+function planBatchNarration(scene: Scene, input: BatchVoiceSelection): BatchNarrationPlan {
+  const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
+  const derived = scene.narration?.script
+    ? splitScriptIntoChunks(scene.narration.script, isDialog)
+    : [];
+  const paragraphs = derived.map((chunk) => chunk.text);
+  const stored = scene.narration?.chunks ?? [];
+  const selector = input.selector ?? 'missing';
+  const targetIndices = paragraphs.map((_, index) => index).filter((index) => {
+    const chunk = stored.find((candidate) => candidate.index === index);
+    if (selector === 'all') return true;
+    if (selector === 'missing') {
+      return !chunk?.audio || chunk.text !== paragraphs[index];
+    }
+    if (selector === 'failed') return Boolean(chunk?.failed);
+    return true;
+  });
+
+  const targets = targetIndices.map((index): PlannedBatchChunk => {
+    const text = paragraphs[index]!;
+    let engine = input.engine;
+    let voice = input.voice;
+    let speed = input.speed;
+    if (isDialog) {
+      const storedChunk = stored.find((candidate) => candidate.index === index);
+      const speakerKey = storedChunk?.speaker
+        ?? text.match(/^\[Speaker ([A-Z])\]/)?.[1];
+      const speaker = speakerKey ? scene.narration?.speakers?.[speakerKey] : undefined;
+      if (speaker) {
+        engine = speaker.engine;
+        voice = speaker.voice;
+        speed = speaker.speed ?? input.speed;
+      }
+    }
+    return {
+      index,
+      text,
+      gapSec: derived[index]?.gapSec ?? 0,
+      engine,
+      voice,
+      speed,
+    };
+  });
+
+  return { derived, stored, targets };
+}
+
+export function batchRequiresWriting(scene: Scene, input: BatchVoiceSelection): boolean {
+  return planBatchNarration(scene, input).targets.some((chunk) => chunk.engine === 'xai');
+}
+
 /**
  * Mark one chunk as failed in storyboard.yaml. Persisted so the UI can show
  * the red border + reason after a refresh.
@@ -376,12 +450,12 @@ export async function generateAllChunks(
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);
   if (!scene.narration?.script) throw new Error('Scene has no script to narrate');
 
-  const isDialog = (scene.narration.mode ?? 'monologue') === 'dialog';
-  // Pause-aware chunks: each carries its text (pause tokens stripped) + gapSec.
-  const derived = splitScriptIntoChunks(scene.narration.script, isDialog);
-  const paragraphs = derived.map((d) => d.text);
-
-  const stored = scene.narration.chunks ?? [];
+  const { derived, stored, targets } = planBatchNarration(scene, {
+    engine,
+    voice,
+    speed,
+    selector,
+  });
 
   // Reconcile stored chunk gaps with the current script tokens BEFORE
   // generating. A token gap (>0) seeds/overrides; no token preserves any
@@ -404,39 +478,19 @@ export async function generateAllChunks(
     }
   }
 
-  const allIndices = paragraphs.map((_, i) => i);
-  // 'missing' is the default selector and what the Generate All button uses.
-  // It originally meant "no audio file rendered yet", but that's too narrow:
-  // if the script gets regenerated and the old chunks are still in
-  // storyboard.yaml (because the wipe-on-regen path was skipped or the
-  // chunks predate that fix), every chunk has an audio path pointing at the
-  // OLD paragraph's audio. We need to detect that drift here so Generate
-  // All re-renders chunks whose stored text no longer matches the current
-  // paragraph at the same index.
-  const targetIndices = allIndices.filter((i) => {
-    const c = stored.find((s) => s.index === i);
-    if (selector === 'all') return true;
-    if (selector === 'missing') {
-      if (!c?.audio) return true;  // truly missing
-      // Stale: paragraph content changed since this chunk was rendered.
-      if (c.text !== paragraphs[i]) return true;
-      return false;
-    }
-    if (selector === 'failed') return !!c?.failed;
-    return true;
-  });
-
-  const total = targetIndices.length;
+  const total = targets.length;
   let completed = 0;
   let failedCount = 0;
 
-  // In dialog mode, each chunk renders with its assigned speaker's
-  // engine/voice/speed (from narration.speakers[A|B|…]). The request's
-  // global engine/voice is the fallback for any chunk missing a speaker
-  // assignment or speaker config. Monologue mode always uses the global.
-  const speakersMap = (scene.narration as { speakers?: Record<string, { engine: string; voice: string; speed?: number }> }).speakers;
-
-  for (const i of targetIndices) {
+  for (const target of targets) {
+    const {
+      index: i,
+      text,
+      engine: chunkEngine,
+      voice: chunkVoice,
+      speed: chunkSpeed,
+      gapSec,
+    } = target;
     if (isCancelled()) {
       onProgress({
         type: 'cancelled',
@@ -446,22 +500,6 @@ export async function generateAllChunks(
         message: `Cancelled after ${completed} of ${total} chunks`,
       });
       return { total, completed, failed: failedCount };
-    }
-    const text = paragraphs[i]!;
-    // Resolve per-chunk voice settings for dialog mode
-    let chunkEngine = engine;
-    let chunkVoice = voice;
-    let chunkSpeed = speed;
-    if (isDialog) {
-      const storedChunk = stored.find((s) => s.index === i);
-      const speakerKey = storedChunk?.speaker
-        ?? (text.match(/^\[Speaker ([A-Z])\]/)?.[1] ?? undefined);
-      const cfg = speakerKey ? speakersMap?.[speakerKey] : undefined;
-      if (cfg) {
-        chunkEngine = cfg.engine;
-        chunkVoice = cfg.voice;
-        chunkSpeed = cfg.speed ?? speed;
-      }
     }
     onProgress({
       type: 'chunk-start',
@@ -476,7 +514,7 @@ export async function generateAllChunks(
         // Only pass a token-seeded gap when the script actually has one (>0);
         // omitting it lets generateChunkNarration PRESERVE a manually-set
         // (UI) gap instead of an explicit 0 clobbering it.
-        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: derived[i]?.gapSec || undefined },
+        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: gapSec || undefined },
         tts,
         llm,
         workspaceRoot,
