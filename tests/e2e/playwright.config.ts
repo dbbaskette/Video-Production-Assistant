@@ -8,32 +8,27 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:5174',
+    baseURL: 'http://localhost:5173',
     trace: 'retain-on-failure',
     headless: true,
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: 'node --import tsx fixtures/model-routing-server.ts',
-      url: 'http://127.0.0.1:3100/api/health',
-      reuseExistingServer: false,
+      command: 'npm run dev -w @vpa/server',
+      url: 'http://127.0.0.1:3000/api/health',
+      reuseExistingServer: !process.env.CI,
       timeout: 30_000,
       env: {
-        ANTHROPIC_API_KEY: '',
-        GEMINI_API_KEY: '',
-        OPENAI_API_KEY: '',
-        XAI_API_KEY: '',
+        VPA_HOME: '/tmp/vpa-e2e-home',
+        VPA_PROJECTS_DEFAULT: '/tmp/vpa-e2e-projects',
       },
     },
     {
-      command: 'npm run dev -w @vpa/web -- --host 127.0.0.1 --port 5174',
-      url: 'http://127.0.0.1:5174',
-      reuseExistingServer: false,
+      command: 'npm run dev -w @vpa/web',
+      url: 'http://localhost:5173',
+      reuseExistingServer: !process.env.CI,
       timeout: 30_000,
-      env: {
-        VITE_VPA_API_BASE: 'http://127.0.0.1:3100',
-      },
     },
   ],
 });

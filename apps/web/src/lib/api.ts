@@ -309,11 +309,27 @@ export interface IngestResult {
   metadata: VideoMetadata;
 }
 
+export interface RecordingAnalysisFailure {
+  status: 'failed';
+  code: string;
+  message: string;
+}
+
+export interface RecordingUploadResult extends IngestResult {
+  analysis:
+    | {
+        status: 'ready';
+        model: ResolvedModelSummary;
+        briefFreshness: 'generated' | 'reused';
+      }
+    | RecordingAnalysisFailure;
+}
+
 export const recordingsApi = {
   videoUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording/video`;
   },
-  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<IngestResult> {
+  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<RecordingUploadResult> {
     const form = new FormData();
     if (provenance) {
       form.append('source_kind', provenance.source_kind);

@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 export const MODEL_ROUTING_E2E_HOME = '/tmp/vpa-model-routing-e2e-home';
 export const MODEL_ROUTING_E2E_PROJECTS = '/tmp/vpa-model-routing-e2e-projects';
 export const MODEL_ROUTING_E2E_CALLS = `${MODEL_ROUTING_E2E_HOME}/provider-calls.jsonl`;
+export const MODEL_ROUTING_E2E_FAIL_NEXT_VIDEO = `${MODEL_ROUTING_E2E_HOME}/fail-next-video-analysis`;
 
 export const MODEL_IDS = {
   primaryVideo: 'e2e-gemini-primary',
@@ -13,7 +14,13 @@ export const MODEL_IDS = {
 } as const;
 
 export interface ModelRoutingE2eCall {
-  kind: 'video.upload' | 'video.wait' | 'video.generate' | 'video.delete' | 'text.complete';
+  kind:
+    | 'video.upload'
+    | 'video.wait'
+    | 'video.generate'
+    | 'video.failure'
+    | 'video.delete'
+    | 'text.complete';
   entryId?: string;
   provider?: string;
   model?: string;
@@ -40,4 +47,8 @@ export async function readModelRoutingE2eCalls(): Promise<ModelRoutingE2eCall[]>
 
 export async function clearModelRoutingE2eCalls(): Promise<void> {
   await writeFile(MODEL_ROUTING_E2E_CALLS, '', 'utf8');
+}
+
+export async function armNextVideoAnalysisFailure(): Promise<void> {
+  await writeFile(MODEL_ROUTING_E2E_FAIL_NEXT_VIDEO, 'fail once\n', 'utf8');
 }

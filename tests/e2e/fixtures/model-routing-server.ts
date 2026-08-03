@@ -8,6 +8,7 @@ import { buildServer } from '../../../apps/server/src/server.js';
 import {
   MODEL_IDS,
   MODEL_ROUTING_E2E_CALLS,
+  MODEL_ROUTING_E2E_FAIL_NEXT_VIDEO,
   MODEL_ROUTING_E2E_HOME,
   MODEL_ROUTING_E2E_PROJECTS,
   type ModelRoutingE2eCall,
@@ -18,6 +19,16 @@ const fakeProbe = createFakeProbe();
 
 async function record(call: ModelRoutingE2eCall): Promise<void> {
   await appendFile(MODEL_ROUTING_E2E_CALLS, `${JSON.stringify(call)}\n`, 'utf8');
+}
+
+async function consumeNextVideoAnalysisFailure(): Promise<boolean> {
+  try {
+    await rm(MODEL_ROUTING_E2E_FAIL_NEXT_VIDEO);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 async function prepareState(): Promise<void> {
@@ -140,6 +151,10 @@ const videoUnderstanding = new VideoUnderstandingService({
         userPrompt: input.userPrompt,
         systemPrompt: input.systemPrompt,
       });
+      if (await consumeNextVideoAnalysisFailure()) {
+        await record({ kind: 'video.failure', model: input.model });
+        throw new Error('Deterministic E2E video-analysis failure');
+      }
       return JSON.stringify({
         visual_summary: 'The recording shows a deterministic product walkthrough.',
         segments: [

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   MODEL_IDS,
+  armNextVideoAnalysisFailure,
   clearModelRoutingE2eCalls,
   readModelRoutingE2eCalls,
 } from './fixtures/model-routing-fixture.js';
@@ -324,5 +325,62 @@ test.describe.serial('task-based model routing', () => {
     await expect(page).toHaveURL(new RegExp(`/project/${projectId}#project-ai-models-title$`));
     await expect(page.locator('#project-writing')).toHaveValue(MODEL_IDS.unavailableWriter);
     await expectPreservedScene(page);
+  });
+
+  test('keeps the replacement attached and authored script intact when video analysis fails', async ({
+    page,
+  }) => {
+    expect(projectId, 'The primary staged workflow creates the shared project fixture').toBeTruthy();
+
+    await clearModelRoutingE2eCalls();
+    await armNextVideoAnalysisFailure();
+    await openSceneTab(page, 'Recording');
+    await page.getByRole('button', { name: 'Replace recording' }).click();
+
+    const uploadResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/api/projects/${projectId}/scenes/scene-01/recording`),
+    );
+    await page.locator('input[type="file"][accept*="video"]').setInputFiles({
+      name: 'routing-analysis-failure.mp4',
+      mimeType: 'video/mp4',
+      buffer: Buffer.from('replacement bytes that invalidate the existing timing brief'),
+    });
+
+    const response = await uploadResponse;
+    expect(response.status()).toBe(201);
+    expect(await response.json()).toMatchObject({
+      sceneId: 'scene-01',
+      relativePath: 'recordings/scene-01.mp4',
+      analysis: {
+        status: 'failed',
+        code: 'video_analysis_failed',
+        message: 'Video analysis failed. The recording is saved; try re-analyzing later.',
+      },
+    });
+
+    const failure = page.getByRole('alert').filter({
+      hasText: 'Recording saved; analysis needs attention.',
+    });
+    await expect(failure).toHaveAttribute('data-error-code', 'video_analysis_failed');
+    await expect(failure).toContainText(
+      'Video analysis failed. The recording is saved; try re-analyzing later.',
+    );
+    await expect(failure).not.toContainText('Deterministic E2E');
+    await expect(page.getByText('recordings/scene-01.mp4')).toBeVisible();
+
+    const calls = await readModelRoutingE2eCalls();
+    expect(calls.filter((call) => call.kind === 'video.upload')).toHaveLength(1);
+    expect(calls.filter((call) => call.kind === 'video.wait')).toHaveLength(1);
+    expect(calls.filter((call) => call.kind === 'video.generate')).toHaveLength(1);
+    expect(calls.filter((call) => call.kind === 'video.failure')).toEqual([
+      { kind: 'video.failure', model: 'gemini-e2e-primary' },
+    ]);
+    expect(calls.filter((call) => call.kind === 'video.delete')).toHaveLength(1);
+    expect(calls.filter((call) => call.kind === 'text.complete')).toHaveLength(0);
+
+    await page.getByRole('button', { name: 'Script', exact: true }).click();
+    await expect(page.getByPlaceholder('Monologue script…')).toHaveValue(PRESERVED_SCRIPT);
   });
 });

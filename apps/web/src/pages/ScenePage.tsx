@@ -3,7 +3,7 @@ import { Link, useParams, useOutletContext, useSearchParams } from 'react-router
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
-import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig } from '../lib/api.js';
+import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig, RecordingAnalysisFailure } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { ShotPlanSection } from '../components/ShotPlanSection.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
@@ -145,6 +145,8 @@ export function ScenePage(props: ScenePageProps = {}) {
   // routing, and a blocked grounded request is never coerced to text-only.
   const [groundInVideo, setGroundInVideo] = useState(true);
   const [showReplaceUpload, setShowReplaceUpload] = useState(false);
+  const [uploadAnalysisFailure, setUploadAnalysisFailure] =
+    useState<RecordingAnalysisFailure | null>(null);
   const [agentRecordingOpen, setAgentRecordingOpen] = useState(false);
   const generateAbortRef = useRef<AbortController | null>(null);
   // Local edit buffer for the user-authored "what is this scene
@@ -153,6 +155,10 @@ export function ScenePage(props: ScenePageProps = {}) {
   const [intentDraft, setIntentDraft] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const ui = useUi();
+
+  useEffect(() => {
+    setUploadAnalysisFailure(null);
+  }, [sceneId]);
 
   const { data: storyboard } = useQuery({
     queryKey: ['storyboard', projectId],
@@ -201,10 +207,22 @@ export function ScenePage(props: ScenePageProps = {}) {
       }
       return recordingsApi.uploadForScene(projectId!, sceneId!, file);
     },
-    onSuccess: (_data, file) => {
+    onMutate: () => {
+      setUploadAnalysisFailure(null);
+    },
+    onSuccess: (data, file) => {
       setShowReplaceUpload(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
+      if (data.analysis.status === 'failed') {
+        setUploadAnalysisFailure(data.analysis);
+        ui.showToast({
+          message: 'Recording saved; analysis needs attention',
+          detail: data.analysis.message,
+          tone: 'error',
+        });
+        return;
+      }
       ui.showToast({
         message: 'Recording replaced',
         detail: file.name,
@@ -975,6 +993,25 @@ export function ScenePage(props: ScenePageProps = {}) {
                 duration_sec={scene.recording.duration_sec}
                 ingested_at={scene.recording.ingested_at}
               />
+
+              {uploadAnalysisFailure && (
+                <div
+                  role="alert"
+                  data-error-code={uploadAnalysisFailure.code}
+                  style={{
+                    marginTop: 12,
+                    padding: '12px 14px',
+                    border: '1px solid color-mix(in srgb, var(--danger) 45%, var(--border))',
+                    borderRadius: 8,
+                    background: 'color-mix(in srgb, var(--danger) 8%, var(--surface))',
+                    color: 'var(--fg)',
+                    fontSize: 13,
+                  }}
+                >
+                  <strong>Recording saved; analysis needs attention.</strong>
+                  <div style={{ marginTop: 4 }}>{uploadAnalysisFailure.message}</div>
+                </div>
+              )}
 
               {/* Replace recording — lets the user swap the video file without
                   deleting the scene. The backend's ingestRecording already
