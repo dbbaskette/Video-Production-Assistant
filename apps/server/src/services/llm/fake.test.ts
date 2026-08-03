@@ -59,4 +59,21 @@ describe('createFakeLlm', () => {
       style: 'frosted',
     }]);
   });
+
+  it('keeps staged lower-third copy within the writer contract for long scene names', async () => {
+    const llm = createFakeLlm();
+    const out = await llm.complete({
+      systemPrompt: 'You are a lower-third recommender.',
+      userPrompt: [
+        'Scene name: The recording shows a deterministic product',
+        'segment-e2e-1@1.000-8.000',
+        'Return only segment IDs plus title, optional subtitle, and style.',
+      ].join('\n'),
+      responseFormat: 'json',
+    });
+
+    const [lowerThird] = JSON.parse(out.text) as Array<{ title: string }>;
+    expect(lowerThird?.title).toBe('The recording shows a deterministic pro…');
+    expect(lowerThird?.title.length).toBeLessThanOrEqual(40);
+  });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { VideoUnderstandingBrief } from '@vpa/shared';
 import type { LlmCompleteOptions } from '../llm/index.js';
+import { createFakeLlm } from '../llm/fake.js';
 import { recommendLowerThirdsFromBrief } from './video-grounded.js';
 
 function workspaceRoot(): string {
@@ -80,6 +81,19 @@ function input(inputBrief = brief()) {
 }
 
 describe('recommendLowerThirdsFromBrief', () => {
+  it('accepts deterministic fake output after grounded reanalysis produces a long scene name', async () => {
+    await expect(recommendLowerThirdsFromBrief({
+      ...input(),
+      sceneName: 'The recording shows a deterministic product',
+    }, createFakeLlm(), workspaceRoot())).resolves.toEqual([{
+      title: 'The recording shows a deterministic pro…',
+      subtitle: 'Getting Started',
+      style: 'frosted',
+      in_sec: 0,
+      out_sec: 6,
+    }]);
+  });
+
   it('maps ordered segment ids to server-owned brief times', async () => {
     const { writer } = writerResponse([
       {
