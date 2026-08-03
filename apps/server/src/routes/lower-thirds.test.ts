@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
@@ -14,6 +15,8 @@ import {
   type ResolvedVideoModel,
 } from '../services/llm/model-router.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
+import { addText } from '../services/project-source-docs/index.js';
+import { sha256File } from '../services/recording/metadata.js';
 import { registerLowerThirdsRoutes } from './lower-thirds.js';
 
 function workspaceRoot(): string {
@@ -36,14 +39,14 @@ function modelSummary(role: ResolvedModelSummary['role']): ResolvedModelSummary 
   };
 }
 
-function makeBrief(videoPath: string): VideoUnderstandingBrief {
+function makeBrief(videoPath: string, sha256 = 'a'.repeat(64)): VideoUnderstandingBrief {
   return {
     schema_version: 1,
     prompt_version: 1,
     scene_id: 'scene-01',
     source: {
       path: videoPath,
-      sha256: 'a'.repeat(64),
+      sha256,
       duration_sec: 30,
       width: 1920,
       height: 1080,
@@ -87,6 +90,9 @@ interface BuildOptions {
   resolveVideo?: () => Promise<ResolvedVideoModel>;
   readBriefStatus?: VideoUnderstandingService['readBriefStatus'];
   ensureBrief?: VideoUnderstandingService['ensureBrief'];
+  fingerprintRecording?: (path: string) => Promise<string>;
+  persistStoryboard?: typeof saveStoryboard;
+  removeArtifact?: (path: string) => Promise<void>;
 }
 
 async function buildTestServer(options: BuildOptions = {}) {
@@ -134,6 +140,9 @@ async function buildTestServer(options: BuildOptions = {}) {
     workspaceRoot: workspaceRoot(),
     router: { resolveText, resolveVideo } as unknown as ModelRouter,
     videoUnderstanding: { readBriefStatus, ensureBrief } as unknown as VideoUnderstandingService,
+    fingerprintRecording: options.fingerprintRecording ?? (async () => 'a'.repeat(64)),
+    persistStoryboard: options.persistStoryboard,
+    removeArtifact: options.removeArtifact,
   }));
   return {
     app,
@@ -387,6 +396,207 @@ describe('lower-thirds routes', () => {
     expect(ctx.resolveVideo).not.toHaveBeenCalled();
     expect(ctx.resolveText).not.toHaveBeenCalled();
     expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds).toEqual(existing.scenes[0]!.lower_thirds);
+  });
+
+  it.each(['true', 1, null])(
+    'rejects malformed groundInVideo value %j before routing or persistence',
+    async (groundInVideo) => {
+      const existing = makeSampleStoryboard(projectId);
+      existing.scenes[0]!.lower_thirds = [
+        { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+      ];
+      await saveStoryboard(projectPath, existing);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+        payload: { groundInVideo },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({
+        error: 'groundInVideo must be a boolean when provided.',
+        code: 'invalid_request',
+      });
+      expect(ctx.resolveVideo).not.toHaveBeenCalled();
+      expect(ctx.resolveText).not.toHaveBeenCalled();
+      expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds)
+        .toEqual(existing.scenes[0]!.lower_thirds);
+    },
+  );
+
+  it.each([false, true])(
+    'aborts %s-mode recommendation when oversized source summarization fails',
+    async (groundInVideo) => {
+      await ctx.app.close();
+      await rm(ctx.home, { recursive: true, force: true });
+      await rm(ctx.projects, { recursive: true, force: true });
+      const complete = vi.fn(async () => {
+        throw new Error('private source summarizer failure');
+      });
+      ctx = await buildTestServer({ writer: { complete } });
+      const project = await ctx.store.create({
+        name: `summary-failure-${groundInVideo}`,
+        objective: 'Preserve lower thirds',
+      });
+      projectId = project.id;
+      projectPath = project.path;
+      const existing = makeSampleStoryboard(projectId);
+      if (groundInVideo) {
+        existing.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+      }
+      existing.scenes[0]!.lower_thirds = [
+        { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+      ];
+      existing.scenes[0]!.overlay_render = 'overlays/existing.mp4';
+      await saveStoryboard(projectPath, existing);
+      await addText(projectPath, 'source '.repeat(5_000), 'oversized-source');
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+        payload: { groundInVideo },
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).not.toContain('private source summarizer failure');
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect((await loadStoryboard(projectPath))!.scenes[0]).toMatchObject({
+        lower_thirds: existing.scenes[0]!.lower_thirds,
+        overlay_render: 'overlays/existing.mp4',
+      });
+    },
+  );
+
+  it('rejects a same-path recording replacement before grounded persistence', async () => {
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    const originalBytes = Buffer.from('original recording bytes');
+    const originalSha256 = createHash('sha256').update(originalBytes).digest('hex');
+    let recordingPath = '';
+    const complete = vi.fn(async () => {
+      await writeFile(recordingPath, 'replacement recording bytes');
+      return {
+        text: JSON.stringify([{
+          segment_id: 'segment-002',
+          title: 'Model routing',
+          subtitle: 'One specialist per task',
+          style: 'frosted',
+        }]),
+      };
+    });
+    ctx = await buildTestServer({
+      writer: { complete },
+      ensureBrief: async (input) => makeBrief(input.videoPath, originalSha256),
+      fingerprintRecording: sha256File,
+    });
+    const project = await ctx.store.create({ name: 'replacement-project', objective: 'Keep timing grounded' });
+    projectId = project.id;
+    projectPath = project.path;
+    recordingPath = path.join(projectPath, 'recordings/scene-01.mp4');
+    await mkdir(path.dirname(recordingPath), { recursive: true });
+    await writeFile(recordingPath, originalBytes);
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+    existing.scenes[0]!.lower_thirds = [
+      { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+    ];
+    existing.scenes[0]!.overlay_render = 'overlays/existing.mp4';
+    await saveStoryboard(projectPath, existing);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: true },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({
+      error: 'Lower-third recommendation failed. Your existing lower thirds were not changed.',
+      code: 'lower_thirds_generation_failed',
+    });
+    expect((await loadStoryboard(projectPath))!.scenes[0]).toMatchObject({
+      recording: existing.scenes[0]!.recording,
+      lower_thirds: existing.scenes[0]!.lower_thirds,
+      overlay_render: 'overlays/existing.mp4',
+    });
+  });
+
+  it('keeps the previous storyboard and cache files when persistence fails', async () => {
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    ctx = await buildTestServer({
+      persistStoryboard: async () => { throw new Error('private save failure'); },
+    });
+    const project = await ctx.store.create({ name: 'save-failure-project', objective: 'Keep durable state' });
+    projectId = project.id;
+    projectPath = project.path;
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.lower_thirds = [
+      { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+    ];
+    existing.scenes[0]!.overlay_render = 'overlays/existing.mp4';
+    existing.scenes[0]!.frame_render = 'frames/existing.mp4';
+    const overlayPath = path.join(projectPath, existing.scenes[0]!.overlay_render);
+    const framePath = path.join(projectPath, existing.scenes[0]!.frame_render);
+    await mkdir(path.dirname(overlayPath), { recursive: true });
+    await mkdir(path.dirname(framePath), { recursive: true });
+    await writeFile(overlayPath, 'overlay');
+    await writeFile(framePath, 'frame');
+    await saveStoryboard(projectPath, existing);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: false },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect((await loadStoryboard(projectPath))!.scenes[0]).toMatchObject({
+      lower_thirds: existing.scenes[0]!.lower_thirds,
+      overlay_render: existing.scenes[0]!.overlay_render,
+      frame_render: existing.scenes[0]!.frame_render,
+    });
+    await expect(readFile(overlayPath, 'utf8')).resolves.toBe('overlay');
+    await expect(readFile(framePath, 'utf8')).resolves.toBe('frame');
+  });
+
+  it('keeps a successful save when best-effort cache cleanup fails', async () => {
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    const removeArtifact = vi.fn(async () => { throw new Error('private unlink failure'); });
+    ctx = await buildTestServer({ removeArtifact });
+    const project = await ctx.store.create({ name: 'cleanup-failure-project', objective: 'Save before cleanup' });
+    projectId = project.id;
+    projectPath = project.path;
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.overlay_render = 'overlays/existing.mp4';
+    existing.scenes[0]!.frame_render = 'frames/existing.mp4';
+    const overlayPath = path.join(projectPath, existing.scenes[0]!.overlay_render);
+    const framePath = path.join(projectPath, existing.scenes[0]!.frame_render);
+    await mkdir(path.dirname(overlayPath), { recursive: true });
+    await mkdir(path.dirname(framePath), { recursive: true });
+    await writeFile(overlayPath, 'overlay');
+    await writeFile(framePath, 'frame');
+    await saveStoryboard(projectPath, existing);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const savedScene = (await loadStoryboard(projectPath))!.scenes[0]!;
+    expect(savedScene.lower_thirds).toEqual(res.json().lowerThirds);
+    expect(savedScene).not.toHaveProperty('overlay_render');
+    expect(savedScene).not.toHaveProperty('frame_render');
+    expect(removeArtifact).toHaveBeenCalledTimes(2);
+    await expect(access(overlayPath)).resolves.toBeUndefined();
+    await expect(access(framePath)).resolves.toBeUndefined();
   });
 
   it('PUT saves edited lower thirds', async () => {

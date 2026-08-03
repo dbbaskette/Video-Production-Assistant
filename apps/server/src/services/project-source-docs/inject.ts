@@ -14,6 +14,8 @@ export interface InjectOptions {
   summarize?: boolean;
   /** Required when `summarize` is true. */
   llm?: LlmClient;
+  /** Propagate summarizer failures instead of silently truncating the docs. */
+  strictSummarization?: boolean;
 }
 
 /** Returns `${ref}\n\n---\n\n${userPrompt}` when there are docs; otherwise `userPrompt`. */
@@ -25,6 +27,7 @@ export async function withReferenceContext(
   const ref = await getReferenceContext(opts.projectPath, {
     summarize: opts.summarize,
     llm: opts.llm,
+    strictSummarization: opts.strictSummarization,
   });
   if (!ref.text) return userPrompt;
   return `${ref.text}\n\n---\n\n${userPrompt}`;

@@ -45,6 +45,7 @@ export async function recommendLowerThirds(
     projectPath: input.projectPath,
     summarize: true,
     llm,
+    strictSummarization: true,
   });
 
   const result = await llm.complete({

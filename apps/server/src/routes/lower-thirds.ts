@@ -8,6 +8,7 @@ import { loadStoryboard, saveStoryboard } from '../services/storyboard/index.js'
 import { recommendLowerThirds } from '../services/lower-thirds/index.js';
 import { recommendLowerThirdsFromBrief } from '../services/lower-thirds/video-grounded.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
+import { sha256File } from '../services/recording/metadata.js';
 import {
   LowerThirdSchema,
   type LowerThird,
@@ -17,6 +18,9 @@ import {
 } from '@vpa/shared';
 
 const LowerThirdSetSchema = z.array(LowerThirdSchema).min(1).max(5);
+const RecommendBodySchema = z.object({
+  groundInVideo: z.boolean().optional(),
+}).strict();
 const VIDEO_LOWER_THIRDS_FAILED_MESSAGE =
   'Video-grounded lower-third recommendation failed. Your existing lower thirds were not changed.';
 const LOWER_THIRDS_FAILED_MESSAGE =
@@ -69,18 +73,11 @@ function modelOperationFields(
  * Without this, the next render reuses the cached overlay and the user
  * sees the LTs they just deleted.
  */
-async function updateLowerThirds(
+function updateLowerThirds(
   sb: Storyboard,
-  projectPath: string,
   scene: Scene,
   lowerThirds: LowerThird[],
-): Promise<Storyboard> {
-  if (scene.overlay_render) {
-    await unlink(join(projectPath, scene.overlay_render)).catch(() => {});
-  }
-  if (scene.frame_render) {
-    await unlink(join(projectPath, scene.frame_render)).catch(() => {});
-  }
+): Storyboard {
   // Build the replacement scene with the cache pointers stripped — we can't
   // pass `undefined` through updateScene because the YAML dump trips on
   // explicit undefined values.
@@ -91,11 +88,32 @@ async function updateLowerThirds(
   return { ...sb, scenes };
 }
 
+async function cleanupLowerThirdArtifacts(
+  projectPath: string,
+  scene: Scene,
+  removeArtifact: (path: string) => Promise<void>,
+): Promise<void> {
+  const artifacts = [scene.overlay_render, scene.frame_render].filter(
+    (value): value is string => Boolean(value),
+  );
+  await Promise.all(artifacts.map(async (artifact) => {
+    try {
+      await removeArtifact(join(projectPath, artifact));
+    } catch {
+      // The pointer-free storyboard is already durable. Stale cache files are
+      // harmless and can be cleaned up by a later render or maintenance pass.
+    }
+  }));
+}
+
 interface Deps {
   store: ProjectStore;
   workspaceRoot: string;
   router: ModelRouter;
   videoUnderstanding: VideoUnderstandingService;
+  fingerprintRecording?: (path: string) => Promise<string>;
+  persistStoryboard?: typeof saveStoryboard;
+  removeArtifact?: (path: string) => Promise<void>;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -106,7 +124,15 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 }
 
 export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, workspaceRoot, router, videoUnderstanding } = deps;
+  const {
+    store,
+    workspaceRoot,
+    router,
+    videoUnderstanding,
+    fingerprintRecording = sha256File,
+    persistStoryboard = saveStoryboard,
+    removeArtifact = unlink,
+  } = deps;
 
   // GET /api/projects/:id/scenes/:sceneId/lower-thirds — get current lower thirds
   app.get('/api/projects/:id/scenes/:sceneId/lower-thirds', async (req, reply) => {
@@ -127,7 +153,14 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
   // explicit paths. A grounded failure never falls back to text-only.
   app.post('/api/projects/:id/scenes/:sceneId/lower-thirds/recommend', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean };
+    const parsedBody = RecommendBodySchema.safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: 'groundInVideo must be a boolean when provided.',
+        code: 'invalid_request',
+      });
+    }
+    const body = parsedBody.data;
     const projectPath = await resolveProjectPath(store, id);
 
     const sb = await loadStoryboard(projectPath);
@@ -160,6 +193,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
       }
 
       let briefFreshness: 'generated' | 'reused' | undefined;
+      let groundedBriefSource: { path: string; sha256: string } | undefined;
       let recommendations: LowerThird[];
       if (mode === 'video' && videoModel && scene.recording) {
         const briefInput = {
@@ -178,6 +212,10 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
             'Video-grounded lower-third phase',
           );
         });
+        groundedBriefSource = {
+          path: brief.source.path,
+          sha256: brief.source.sha256,
+        };
         stage = 'writing';
         app.log.info(
           modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
@@ -222,8 +260,22 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
       const latest = await loadStoryboard(project.path);
       const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
       if (!latest || !latestScene) throw new Error('Scene changed during lower-third recommendation.');
-      const updated = await updateLowerThirds(latest, project.path, latestScene, lowerThirds);
-      await saveStoryboard(project.path, updated);
+      if (mode === 'video') {
+        if (!groundedBriefSource || !latestScene.recording?.source) {
+          throw new Error('Recording changed during lower-third recommendation.');
+        }
+        const latestRecordingPath = join(project.path, latestScene.recording.source);
+        const latestFingerprint = await fingerprintRecording(latestRecordingPath);
+        if (
+          latestRecordingPath !== groundedBriefSource.path
+          || latestFingerprint !== groundedBriefSource.sha256
+        ) {
+          throw new Error('Recording changed during lower-third recommendation.');
+        }
+      }
+      const updated = updateLowerThirds(latest, latestScene, lowerThirds);
+      await persistStoryboard(project.path, updated);
+      await cleanupLowerThirdArtifacts(project.path, latestScene, removeArtifact);
 
       return {
         sceneId,
@@ -279,8 +331,9 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const updated = await updateLowerThirds(sb, projectPath, scene, lowerThirds);
-    await saveStoryboard(projectPath, updated);
+    const updated = updateLowerThirds(sb, scene, lowerThirds);
+    await persistStoryboard(projectPath, updated);
+    await cleanupLowerThirdArtifacts(projectPath, scene, removeArtifact);
 
     return { sceneId, lowerThirds };
   });

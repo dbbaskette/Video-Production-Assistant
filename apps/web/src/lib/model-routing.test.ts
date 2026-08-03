@@ -134,6 +134,14 @@ describe('model routing view models', () => {
       'project-7',
     );
     expect(groundingRequestValue(true, ready)).toBe(true);
+
+    const hidden = sceneGroundingPresentation(
+      false,
+      resolved('video-understanding', models[0]!),
+      'project-7',
+    );
+    expect(() => groundingRequestValue(true, hidden))
+      .toThrow('Video grounding is unavailable for this scene.');
   });
 
   it('describes routed phases, brief reuse, and preservation in plain language', () => {

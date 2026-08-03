@@ -128,6 +128,7 @@ export async function recommendLowerThirdsFromBrief(
     projectPath: input.projectPath,
     summarize: true,
     llm: writer,
+    strictSummarization: true,
   });
   const result = await writer.complete({
     systemPrompt,

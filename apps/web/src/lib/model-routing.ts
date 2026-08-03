@@ -218,7 +218,10 @@ export function groundingRequestValue(
   selected: boolean,
   presentation: SceneGroundingPresentation,
 ): boolean {
-  if (!presentation.visible || !selected) return false;
+  if (!selected) return false;
+  if (!presentation.visible) {
+    throw new Error('Video grounding is unavailable for this scene.');
+  }
   if (!presentation.ready) {
     throw new Error(presentation.disabledReason ?? 'The video model is not ready.');
   }
