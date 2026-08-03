@@ -33,9 +33,7 @@ import { trackerPath } from './services/project/paths.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
-import { createLlm, createLlmFromEntry } from './services/llm/factory.js';
-import { SwappableLlm } from './services/llm/swappable.js';
-import { RetryingLlm } from './services/llm/retrying.js';
+import { createLlmFromEntry } from './services/llm/factory.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
 import { ModelRouter, type CliReadinessProbe } from './services/llm/model-router.js';
 import { registerSettingsRoutes } from './routes/settings.js';
@@ -126,23 +124,6 @@ export async function buildServer(options: BuildServerOptions = {}) {
     warn: (fields, message) => app.log.warn(fields, message),
   });
 
-  const activeModel = modelRegistry.getActive();
-  let innerLlm;
-  let llmLabel: string;
-  if (activeModel) {
-    innerLlm = createLlmFromEntry(activeModel);
-    llmLabel = `${activeModel.name} (${activeModel.provider}/${activeModel.model})`;
-  } else {
-    innerLlm = createLlm(config.llm);
-    llmLabel = `${config.llm.provider}${config.llm.model ? ` / ${config.llm.model}` : ''}`;
-  }
-  // Wrap each provider in retry-on-transient logic. SwappableLlm sees the
-  // wrapped client; settings.swap() goes through the same wrapper helper.
-  const wrapWithRetry = (inner: ReturnType<typeof createLlmFromEntry>) =>
-    new RetryingLlm(inner, undefined, (m) => app.log.warn(m));
-  const llm = new SwappableLlm(wrapWithRetry(innerLlm), llmLabel);
-  app.log.info(`LLM: ${llm.getLabel()} (with retry on 429/5xx/network)`);
-
   const ideationManager = new IdeationManager();
   const shotPlanManager = new ShotPlanManager();
 
@@ -228,17 +209,18 @@ export async function buildServer(options: BuildServerOptions = {}) {
     // Needed so GET /api/brands/:slug/projects can list projects referencing
     // a brand (powers the Brand Usage tab + brand-delete safety check).
     trackerPath: trackerPath(config.vpaHome),
-    llm,
+    router: modelRouter,
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
-  await app.register(async (instance) => registerIdeationRoutes(instance, { store, llm, ideationManager }));
   await app.register(async (instance) =>
-    registerShotPlanRoutes(instance, { store, llm, shotPlanManager }),
+    registerIdeationRoutes(instance, { store, router: modelRouter, ideationManager }),
+  );
+  await app.register(async (instance) =>
+    registerShotPlanRoutes(instance, { store, router: modelRouter, shotPlanManager }),
   );
   await app.register(async (instance) =>
     registerRecordingRoutes(instance, {
       store,
-      llm,
       workspaceRoot: wsRoot,
       router: modelRouter,
       videoUnderstanding,
@@ -248,14 +230,19 @@ export async function buildServer(options: BuildServerOptions = {}) {
   await app.register(async (instance) =>
     registerScriptRoutes(instance, {
       store,
-      llm,
       workspaceRoot: wsRoot,
       router: modelRouter,
       videoUnderstanding,
     }),
   );
   await app.register(async (instance) =>
-    registerNarrationRoutes(instance, { store, tts, llm, workspaceRoot: wsRoot, vpaHome: config.vpaHome }),
+    registerNarrationRoutes(instance, {
+      store,
+      tts,
+      router: modelRouter,
+      workspaceRoot: wsRoot,
+      vpaHome: config.vpaHome,
+    }),
   );
   await app.register(async (instance) =>
     registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome, tts }),
@@ -264,7 +251,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerTtsScratchRoutes(instance, { vpaHome: config.vpaHome, tts }),
   );
   await app.register(async (instance) =>
-    registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome, capRuntime, capInstaller }),
+    registerSetupRoutes(instance, {
+      tts,
+      router: modelRouter,
+      vpaHome: config.vpaHome,
+      capRuntime,
+      capInstaller,
+    }),
   );
   await app.register(async (instance) =>
     registerRenderRoutes(instance, {
@@ -299,7 +292,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     }),
   );
   await app.register(async (instance) =>
-    registerQualityReviewRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
+    registerQualityReviewRoutes(instance, { store, router: modelRouter, workspaceRoot: wsRoot }),
   );
   await app.register(async (instance) =>
     registerOverlayRoutes(instance, { store, workspaceRoot: wsRoot, vpaHome: config.vpaHome }),
@@ -318,7 +311,6 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registry: modelRegistry,
     router: modelRouter,
     store,
-    llm,
   });
 
   try {

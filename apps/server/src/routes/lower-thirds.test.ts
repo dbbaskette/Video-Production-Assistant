@@ -52,10 +52,10 @@ function modelSummary(role: ResolvedModelSummary['role']): ResolvedModelSummary 
   return {
     role,
     scope: 'global',
-    entry_id: role === 'video-understanding' ? 'gemini-video' : 'codex-writer',
+    entry_id: role === 'video-understanding' ? 'gemini-video' : `codex-${role}`,
     provider: role === 'video-understanding' ? 'gemini' : 'codex-cli',
-    model: role === 'video-understanding' ? 'gemini-2.5-pro' : 'default',
-    name: role === 'video-understanding' ? 'Gemini 2.5 Pro' : 'Codex',
+    model: role === 'video-understanding' ? 'gemini-2.5-pro' : `${role}-default`,
+    name: role === 'video-understanding' ? 'Gemini 2.5 Pro' : `Codex ${role}`,
     capabilities: {
       text: role !== 'video-understanding',
       video: role === 'video-understanding',
@@ -111,6 +111,7 @@ function makeBrief(videoPath: string, sha256 = 'a'.repeat(64)): VideoUnderstandi
 
 interface BuildOptions {
   writer?: LlmClient;
+  general?: LlmClient;
   resolveText?: (role: 'writing' | 'general') => Promise<ResolvedTextModel>;
   resolveVideo?: () => Promise<ResolvedVideoModel>;
   readBriefStatus?: VideoUnderstandingService['readBriefStatus'];
@@ -146,9 +147,11 @@ async function buildTestServer(options: BuildOptions = {}) {
         ]),
   }));
   const writer = options.writer ?? { complete: writerComplete };
-  const resolveText = vi.fn(options.resolveText ?? (async () => ({
-    client: writer,
-    summary: modelSummary('writing'),
+  const generalComplete = vi.fn(async () => ({ text: 'A bounded factual source summary.' }));
+  const general = options.general ?? { complete: generalComplete };
+  const resolveText = vi.fn(options.resolveText ?? (async (role: 'writing' | 'general') => ({
+    client: role === 'writing' ? writer : general,
+    summary: modelSummary(role),
   })));
   const videoModel: ResolvedVideoModel = {
     apiKey: 'private-gemini-key',
@@ -179,6 +182,8 @@ async function buildTestServer(options: BuildOptions = {}) {
     projects,
     writer,
     writerComplete,
+    general,
+    generalComplete,
     resolveText,
     resolveVideo,
     readBriefStatus,
@@ -488,7 +493,7 @@ describe('lower-thirds routes', () => {
       const complete = vi.fn(async () => {
         throw new Error('private source summarizer failure');
       });
-      ctx = await buildTestServer({ writer: { complete } });
+      ctx = await buildTestServer({ general: { complete } });
       const project = await ctx.store.create({
         name: `summary-failure-${groundInVideo}`,
         objective: 'Preserve lower thirds',
@@ -515,6 +520,8 @@ describe('lower-thirds routes', () => {
       expect(res.statusCode).toBe(500);
       expect(res.json().error).not.toContain('private source summarizer failure');
       expect(complete).toHaveBeenCalledTimes(1);
+      expect(ctx.resolveText.mock.calls.map(([role]) => role)).toEqual(['writing', 'general']);
+      expect(ctx.writerComplete).not.toHaveBeenCalled();
       expect((await loadStoryboard(projectPath))!.scenes[0]).toMatchObject({
         lower_thirds: existing.scenes[0]!.lower_thirds,
         overlay_render: 'overlays/existing.mp4',

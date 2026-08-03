@@ -1,10 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, rename, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
 import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { probeVideo, type VideoMetadata } from '../services/recording/metadata.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
@@ -41,7 +40,6 @@ import {
 
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
   workspaceRoot: string;
   router: ModelRouter;
   videoUnderstanding: VideoUnderstandingService;
@@ -175,7 +173,7 @@ function mapBulkScenes(scenes: Scene[], uploadCount: number): Scene[] {
 }
 
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, router, videoUnderstanding } = deps;
+  const { store, workspaceRoot, router, videoUnderstanding } = deps;
   const probe = deps.probe ?? probeVideo;
   const ingest = deps.ingest ?? ingestRecording;
   const bulkUploadLimits = deps.bulkUploadLimits ?? {
@@ -459,8 +457,13 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/recordings/generate-storyboard — generate storyboard from uploaded recordings
   app.post('/api/projects/:id/recordings/generate-storyboard', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const projectPath = entry.path;
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const projectPath = project.path;
 
     // Expect multipart with one or more MP4 files
     const parts = req.parts();
@@ -484,92 +487,82 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No files uploaded', code: 'no_files' });
     }
 
-    // Probe all files for metadata
-    const metadatas: VideoMetadata[] = [];
-    for (const { tmpFile } of uploadedFiles) {
-      metadatas.push(await probe(tmpFile));
-    }
-
-    // Project objective + audience live in project.yaml, NOT on the
-    // tracker entry (which is just {id, name, path, lastOpened}). Reading
-    // them once before the loop gets the high-signal context into every
-    // scene's analysis prompt — previously this passed undefined and the
-    // model had only filename + duration to work with.
-    let projectObjective: string | undefined;
-    let projectAudience: string | undefined;
     try {
-      const project = await store.readProject(entry.id);
-      projectObjective = project.objective;
-      projectAudience = project.audience;
-    } catch {
-      // If project.yaml is missing for any reason, fall back to undefined.
-      // We don't want to fail the whole upload for a metadata read.
+      const general = await router.resolveText('general', project);
+
+      // Probe all files for metadata.
+      const metadatas: VideoMetadata[] = [];
+      for (const { tmpFile } of uploadedFiles) {
+        metadatas.push(await probe(tmpFile));
+      }
+
+      // Analyze each recording to generate scene descriptions.
+      const scenes: Scene[] = [];
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const analysis = await analyzeRecording(
+          {
+            filename: uploadedFiles[i]!.filename,
+            duration_sec: metadatas[i]!.duration_sec,
+            width: metadatas[i]!.width,
+            height: metadatas[i]!.height,
+            sceneIndex: i,
+            totalScenes: uploadedFiles.length,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+          },
+          general.client,
+          workspaceRoot,
+        );
+
+        scenes.push(
+          SceneSchema.parse({
+            id: `scene-${String(i + 1).padStart(2, '0')}`,
+            name: analysis.name,
+            description: analysis.description,
+            type: analysis.type,
+          }),
+        );
+      }
+
+      const storyboard = createStoryboard(project, scenes);
+      await saveStoryboard(projectPath, storyboard);
+
+      const files = projectFiles(projectPath);
+      await mkdir(files.recordingsDir, { recursive: true });
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        await ingestRecording(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
+      }
+
+      return await loadStoryboard(projectPath);
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'StoryboardGenerationError' }, 'Recording storyboard generation failed');
+      return reply.status(500).send({
+        error: 'Storyboard generation failed. Your existing storyboard was not changed.',
+        code: 'storyboard_generation_failed',
+      });
+    } finally {
+      await Promise.all(uploadedFiles.map(({ tmpFile }) => unlink(tmpFile).catch(() => {})));
     }
-
-    // Analyze each recording to generate scene descriptions
-    const scenes: Scene[] = [];
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      const analysis = await analyzeRecording(
-        {
-          filename: uploadedFiles[i]!.filename,
-          duration_sec: metadatas[i]!.duration_sec,
-          width: metadatas[i]!.width,
-          height: metadatas[i]!.height,
-          sceneIndex: i,
-          totalScenes: uploadedFiles.length,
-          projectObjective,
-          projectAudience,
-          projectPath: entry.path,
-        },
-        llm,
-        workspaceRoot,
-      );
-
-      scenes.push(
-        SceneSchema.parse({
-          id: `scene-${String(i + 1).padStart(2, '0')}`,
-          name: analysis.name,
-          description: analysis.description,
-          type: analysis.type,
-        }),
-      );
-    }
-
-    // Create storyboard
-    const project = {
-      id: entry.id,
-      name: entry.name,
-      path: entry.path,
-      created: entry.lastOpened ?? new Date().toISOString(),
-      brand: null,
-      model_routing: {},
-    };
-    const storyboard = createStoryboard(project, scenes);
-    await saveStoryboard(projectPath, storyboard);
-
-    // Now ingest each recording to its scene
-    const files = projectFiles(projectPath);
-    await mkdir(files.recordingsDir, { recursive: true });
-
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      await ingestRecording(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
-    }
-
-    // Clean up temp files
-    for (const { tmpFile } of uploadedFiles) {
-      await unlink(tmpFile).catch(() => {});
-    }
-
-    // Return the final storyboard (with recordings attached)
-    const finalSb = await loadStoryboard(projectPath);
-    return finalSb;
   });
 
   // POST /api/projects/:id/recordings/propose-split — upload a single file, get AI-proposed scene boundaries
   app.post('/api/projects/:id/recordings/propose-split', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const files = projectFiles(entry.path);
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const files = projectFiles(project.path);
     await mkdir(files.recordingsDir, { recursive: true });
 
     const data = await req.file();
@@ -577,32 +570,72 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No file uploaded', code: 'no_file' });
     }
 
-    // Save uploaded file as _source.mp4
+    let general;
+    try {
+      general = await router.resolveText('general', project);
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'BoundaryRoutingError' }, 'Recording boundary routing failed');
+      return reply.status(503).send({
+        error: 'The assigned model for general is unavailable. Check its configuration in project model settings.',
+        code: 'model_unavailable',
+        role: 'general',
+      });
+    }
+
+    // Stage the upload and replace the durable source only after the model
+    // returns valid boundaries. A provider failure preserves the prior source.
     const sourcePath = path.join(files.recordingsDir, '_source.mp4');
+    const stagedSourcePath = path.join(files.recordingsDir, `._source-${randomUUID()}.mp4`);
     const chunks: Buffer[] = [];
     for await (const chunk of data.file) {
       chunks.push(chunk);
     }
-    await writeFile(sourcePath, Buffer.concat(chunks));
+    await writeFile(stagedSourcePath, Buffer.concat(chunks));
 
-    // Probe metadata
-    const metadata = await probe(sourcePath);
-
-    // Propose boundaries via LLM
-    const boundaries = await proposeBoundaries(
-      { duration_sec: metadata.duration_sec, filename: '_source.mp4' },
-      llm,
-      workspaceRoot,
-    );
-
-    return { boundaries, sourceFile: '_source.mp4', metadata };
+    try {
+      const metadata = await probe(stagedSourcePath);
+      const boundaries = await proposeBoundaries(
+        { duration_sec: metadata.duration_sec, filename: '_source.mp4' },
+        general.client,
+        workspaceRoot,
+      );
+      await rename(stagedSourcePath, sourcePath);
+      return { boundaries, sourceFile: '_source.mp4', metadata };
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'BoundaryProposalError' }, 'Recording boundary proposal failed');
+      return reply.status(500).send({
+        error: 'Recording boundary proposal failed. Your existing source recording was not changed.',
+        code: 'boundary_proposal_failed',
+      });
+    } finally {
+      await unlink(stagedSourcePath).catch(() => {});
+    }
   });
 
   // POST /api/projects/:id/recordings/execute-split — split source file at given boundaries
   app.post('/api/projects/:id/recordings/execute-split', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const files = projectFiles(entry.path);
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const files = projectFiles(project.path);
 
     const body = req.body as { boundaries?: SceneBoundary[] } | null;
     if (!body?.boundaries || !Array.isArray(body.boundaries) || body.boundaries.length === 0) {
@@ -626,16 +659,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     });
 
     // Create and save storyboard
-    const project = {
-      id: entry.id,
-      name: entry.name,
-      path: entry.path,
-      created: entry.lastOpened ?? new Date().toISOString(),
-      brand: null,
-      model_routing: {},
-    };
     const storyboard = createStoryboard(project, scenes);
-    await saveStoryboard(entry.path, storyboard);
+    await saveStoryboard(project.path, storyboard);
 
     // Ingest each clip
     for (const sr of splitResults) {
@@ -646,11 +671,11 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
         codec: 'h264', fps: 30,
         size_bytes: 0,
       };
-      await ingestRecording(entry.path, sr.sceneId, clipPath, clipMeta);
+      await ingestRecording(project.path, sr.sceneId, clipPath, clipMeta);
     }
 
     // Return final storyboard
-    const finalSb = await loadStoryboard(entry.path);
+    const finalSb = await loadStoryboard(project.path);
     return finalSb ?? storyboard;
   });
 
@@ -737,7 +762,11 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     } catch (error) {
       warnAnalysisFailure(error, sceneId, 'Scene re-analysis failed');
       if (error instanceof ModelRoutingError) {
-        return reply.status(error.statusCode).send({ error: error.message, code: error.code });
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
       }
       return reply.status(500).send({
         error: VIDEO_ANALYSIS_FAILED_MESSAGE,

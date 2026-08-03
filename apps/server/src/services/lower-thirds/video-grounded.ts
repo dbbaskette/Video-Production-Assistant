@@ -121,13 +121,15 @@ export async function recommendLowerThirdsFromBrief(
   input: VideoLtInput & { brief: VideoUnderstandingBrief },
   writer: LlmClient,
   workspaceRoot: string,
+  /** Independently routed general client for oversized source-doc compression. */
+  general?: LlmClient,
 ): Promise<LowerThird[]> {
   const brief = VideoUnderstandingBriefSchema.parse(input.brief);
   const systemPrompt = await loadPrompt(workspaceRoot, 'lower-third-recommender-video');
   const prompt = await withReferenceContext(userPrompt(input, brief), {
     projectPath: input.projectPath,
     summarize: true,
-    llm: writer,
+    llm: general,
     strictSummarization: true,
   });
   const result = await writer.complete({

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,20 +7,35 @@ import { ProjectStore } from '../services/project/store.js';
 import { ShotPlanManager } from '../services/shot-plan/index.js';
 import { createFakeLlm } from '../services/llm/index.js';
 import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import { saveStoryboard, createStoryboard, loadStoryboard } from '../services/storyboard/index.js';
 import { registerShotPlanRoutes } from './shot-plan.js';
 
-async function buildTestServer(opts: { llm?: LlmClient } = {}) {
+async function buildTestServer(opts: { writer?: LlmClient } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-sp-home-'));
   const projects = await mkdtemp(path.join(tmpdir(), 'vpa-sp-projects-'));
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
-  const llm = opts.llm ?? createFakeLlm();
+  const writer = opts.writer ?? createFakeLlm();
+  const resolveText = vi.fn(async () => ({
+    client: writer,
+    summary: {
+      role: 'writing' as const,
+      scope: 'project' as const,
+      entry_id: 'writer',
+      provider: 'fake' as const,
+      model: 'fake-writer',
+      name: 'Writer',
+      capabilities: { text: true, video: false },
+      ready: true as const,
+    },
+  }));
+  const router = { resolveText } as unknown as ModelRouter;
   const shotPlanManager = new ShotPlanManager();
   const app = Fastify();
   await app.register(async (i) =>
-    registerShotPlanRoutes(i, { store, llm, shotPlanManager }),
+    registerShotPlanRoutes(i, { store, router, shotPlanManager }),
   );
-  return { app, store, llm, shotPlanManager, home, projects };
+  return { app, store, writer, resolveText, shotPlanManager, home, projects };
 }
 
 async function seedProjectWithScene(
@@ -91,6 +106,10 @@ describe('shot-plan routes', () => {
     expect(body.reply).not.toContain('```json');
     expect(body.proposedSteps.length).toBeGreaterThan(0);
     expect(body.proposedSteps[0].action).toBeTruthy();
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
   });
 
   it('GET after a message includes transcript and proposed steps from memory', async () => {
@@ -239,7 +258,7 @@ describe('shot-plan routes', () => {
     expect(res.json().code).toBe('scene_not_found');
   });
 
-  it('returns 502 with code llm_error when the LLM throws', async () => {
+  it('returns a bounded provider failure and leaves conversation state unchanged', async () => {
     // Tear down the default-context server and build a fresh one with a throwing LLM
     // so we don't pollute the other tests.
     await ctx.app.close();
@@ -250,7 +269,7 @@ describe('shot-plan routes', () => {
         throw new Error('upstream is down');
       },
     };
-    ctx = await buildTestServer({ llm: throwingLlm });
+    ctx = await buildTestServer({ writer: throwingLlm });
     const { projectId } = await seedProjectWithScene(ctx.store);
 
     const res = await ctx.app.inject({
@@ -259,6 +278,32 @@ describe('shot-plan routes', () => {
       payload: { content: 'Plan it' },
     });
     expect(res.statusCode).toBe(502);
-    expect(res.json().code).toBe('llm_error');
+    expect(res.json()).toEqual({
+      error: 'Shot-plan generation failed. Your existing plan was not changed.',
+      code: 'shot_plan_failed',
+    });
+    expect(JSON.stringify(res.json())).not.toContain('upstream is down');
+    expect(ctx.shotPlanManager.get(projectId, 'scene-01')?.transcript).toEqual([]);
+  });
+
+  it('returns a stable routing error without creating a session', async () => {
+    const { projectId } = await seedProjectWithScene(ctx.store);
+    ctx.resolveText.mockRejectedValueOnce(new ModelRoutingError(
+      'model_assignment_missing',
+      'writing',
+      'project',
+      'No model is assigned to writing.',
+      422,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/shot-plan/message`,
+      payload: { content: 'Plan it' },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({ code: 'model_assignment_missing', role: 'writing' });
+    expect(ctx.shotPlanManager.get(projectId, 'scene-01')).toBeUndefined();
   });
 });

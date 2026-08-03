@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
@@ -7,8 +7,6 @@ import { registerSettingsRoutes } from './settings.js';
 import { ModelRegistry } from '../services/llm/model-registry.js';
 import { ModelRouter } from '../services/llm/model-router.js';
 import { createLlmFromEntry } from '../services/llm/factory.js';
-import { createFakeLlm } from '../services/llm/fake.js';
-import { SwappableLlm } from '../services/llm/swappable.js';
 import { ProjectStore } from '../services/project/store.js';
 
 async function buildTestServer() {
@@ -22,10 +20,9 @@ async function buildTestServer() {
     createClient: createLlmFromEntry,
     checkCliReady: vi.fn(async () => ({ ready: true })),
   });
-  const llm = new SwappableLlm(createFakeLlm(), 'Fake');
   const app = Fastify({ logger: false });
-  await registerSettingsRoutes(app, { registry, router, store, llm });
-  return { app, home, projects, registry, store, llm };
+  await registerSettingsRoutes(app, { registry, router, store });
+  return { app, home, projects, registry, store };
 }
 
 describe('settings routes', () => {
@@ -184,8 +181,8 @@ describe('settings routes', () => {
     expect(JSON.stringify(ready.json())).not.toContain('new-secret-key');
   });
 
-  it('keeps legacy activation assignment-backed while add, update, and delete do not swap', async () => {
-    const swap = vi.spyOn(ctx.llm, 'swap');
+  it('does not alter role assignments when catalog entries are added, updated, or deleted', async () => {
+    const before = ctx.registry.getAssignments();
     await ctx.app.inject({
       method: 'POST',
       url: '/api/settings/models',
@@ -202,27 +199,6 @@ describe('settings routes', () => {
       payload: { model: 'legacy-fake-updated' },
     });
     await ctx.app.inject({ method: 'DELETE', url: '/api/settings/models/legacy-choice' });
-    expect(swap).not.toHaveBeenCalled();
-
-    await ctx.registry.add({
-      id: 'legacy-active',
-      name: 'Legacy Active',
-      provider: 'fake',
-      model: 'legacy-active-fake',
-    });
-    const activated = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/settings/models/legacy-active/activate',
-    });
-    expect(activated.statusCode).toBe(200);
-    expect(ctx.registry.getAssignments()).toMatchObject({
-      writing: 'legacy-active',
-      general: 'legacy-active',
-    });
-    expect(swap).toHaveBeenCalledTimes(1);
-
-    const persisted = await readFile(path.join(ctx.home, 'models.json'), 'utf8');
-    expect(JSON.parse(persisted).version).toBe(2);
-    expect(persisted).not.toContain('"active"');
+    expect(ctx.registry.getAssignments()).toEqual(before);
   });
 });

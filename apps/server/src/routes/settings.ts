@@ -1,9 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ModelRoutingUpdateSchema } from '@vpa/shared';
 import { ModelRegistry, type ModelProvider } from '../services/llm/model-registry.js';
-import { createLlmFromEntry } from '../services/llm/factory.js';
-import type { SwappableLlm } from '../services/llm/swappable.js';
-import { RetryingLlm } from '../services/llm/retrying.js';
 import type { ModelRouter } from '../services/llm/model-router.js';
 import { findModelReferences } from '../services/llm/model-references.js';
 import type { ProjectStore } from '../services/project/store.js';
@@ -12,18 +9,13 @@ interface SettingsDeps {
   registry: ModelRegistry;
   router: ModelRouter;
   store: ProjectStore;
-  llm: SwappableLlm;
 }
 
 export async function registerSettingsRoutes(
   app: FastifyInstance,
   deps: SettingsDeps,
 ): Promise<void> {
-  const { registry, router, store, llm } = deps;
-
-  /** Build a retry-wrapped client to hand to the SwappableLlm. */
-  const wrap = (entry: Parameters<typeof createLlmFromEntry>[0]) =>
-    new RetryingLlm(createLlmFromEntry(entry), undefined, (m) => app.log.warn(m));
+  const { registry, router, store } = deps;
 
   // ──────────────────── GET /api/settings/models ────────────────────
   app.get('/api/settings/models', async (_req, reply) => {
@@ -103,23 +95,6 @@ export async function registerSettingsRoutes(
     }
   });
 
-  // ──────────────────── POST /api/settings/models/:id/activate ──────
-  app.post<{ Params: { id: string } }>(
-    '/api/settings/models/:id/activate',
-    async (req, reply) => {
-      // Deprecated compatibility endpoint. It updates assignment-backed
-      // compatibility state only; persisted active flags no longer exist.
-      try {
-        const entry = await registry.activate(req.params.id);
-        llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
-        app.log.info(`Switched LLM to: ${entry.name} (${entry.provider}/${entry.model})`);
-        return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
-      } catch (err: any) {
-        return reply.code(404).send({ error: err.message });
-      }
-    },
-  );
-
   // ──────────────────── DELETE /api/settings/models/:id ──────────────
   app.delete<{ Params: { id: string } }>(
     '/api/settings/models/:id',
@@ -145,19 +120,4 @@ export async function registerSettingsRoutes(
       }
     },
   );
-
-  // ──────────────────── GET /api/settings/models/active ─────────────
-  app.get('/api/settings/models/active', async (_req, reply) => {
-    // Deprecated compatibility endpoint backed by the writing assignment.
-    const active = registry.getActive();
-    if (!active) return reply.code(404).send({ error: 'No active model' });
-    return reply.send({
-      id: active.id,
-      name: active.name,
-      provider: active.provider,
-      model: active.model,
-      endpoint: active.endpoint,
-      label: llm.getLabel(),
-    });
-  });
 }

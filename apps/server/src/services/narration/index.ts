@@ -144,7 +144,7 @@ export async function generateNarration(
     text: stripTimedPauseTokens(script),
     engine,
     level,
-    llm,
+    writer: llm,
     workspaceRoot,
   });
 
@@ -226,7 +226,7 @@ export async function generateChunkNarration(
   const unsupportedEmotives = tts.checkEmotives(engine, text);
 
   // Materialise emotiveness in the text where needed (xAI); Gemini via opts.
-  const prepared = await prepareExpressiveText({ text, engine, level, llm, workspaceRoot });
+  const prepared = await prepareExpressiveText({ text, engine, level, writer: llm, workspaceRoot });
 
   // Generate audio for this chunk
   const ttsResult = await tts.generate(engine, prepared, { voice, speed, expressiveness: level });

@@ -42,7 +42,7 @@ describe('ModelRegistry', () => {
       general: 'writer',
       'video-understanding': 'vision',
     });
-    expect(registry.getActive()?.id).toBe('writer');
+    expect(registry.getAssignment('writing')).toBe('writer');
     expect(registry.getById('vision')?.apiKey).toBe('secret');
     expect(registry.list()).toContainEqual({
       id: 'vision',
@@ -101,7 +101,7 @@ describe('ModelRegistry', () => {
     });
     await registry.load({});
 
-    await registry.activate('writer');
+    await registry.setAssignments({ writing: 'writer', general: 'writer' });
     await registry.setAssignments({ 'video-understanding': 'writer' });
     await registry.setAssignments({ general: null });
 

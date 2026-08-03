@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
@@ -10,11 +10,17 @@ import { jobQueue } from '../lib/job-queue.js';
 import { brandPaths, BrandPaths } from '../services/brand/paths.js';
 import { dumpYaml } from '../lib/yaml.js';
 import { v4 as uuidv4 } from 'uuid';
+import { createFakeLlm } from '../services/llm/fake.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 
 let app: FastifyInstance;
 let tmp: string;
 let vpaDir: string;
 let paths: BrandPaths;
+let resolveText: Mock<
+  Parameters<ModelRouter['resolveText']>,
+  ReturnType<ModelRouter['resolveText']>
+>;
 
 async function waitForStatus(
   jobId: string,
@@ -65,13 +71,29 @@ beforeEach(async () => {
   app = Fastify();
   await app.register(multipart, { limits: { fileSize: 50_000_000, files: 10 } });
   paths = brandPaths(tmp, vpaDir);
-  const { createFakeLlm } = await import('../services/llm/fake.js');
+  const general = createFakeLlm();
+  resolveText = vi.fn<
+    Parameters<ModelRouter['resolveText']>,
+    ReturnType<ModelRouter['resolveText']>
+  >(async () => ({
+    client: general,
+    summary: {
+      role: 'general' as const,
+      scope: 'global' as const,
+      entry_id: 'general-model',
+      provider: 'fake' as const,
+      model: 'fake-general',
+      name: 'General',
+      capabilities: { text: true, video: false },
+      ready: true as const,
+    },
+  }));
   await registerBrandRoutes(app, {
     paths,
     registryFile: paths.registryFile,
     workspaceRoot: tmp,
     trackerPath: join(vpaDir, 'projects.json'),
-    llm: createFakeLlm(),
+    router: { resolveText } as unknown as ModelRouter,
   });
   await registerJobRoutes(app);
 });
@@ -103,6 +125,28 @@ describe('POST /api/brands', () => {
     expect(body).toHaveProperty('slug', 'acme-corp');
     expect(body).toHaveProperty('job_id');
     expect(typeof body.job_id).toBe('string');
+    expect(resolveText).toHaveBeenCalledWith('general');
+    await waitForStatus(body.job_id, 'awaiting-input');
+  });
+
+  it('returns a stable global routing error before creating a job', async () => {
+    resolveText.mockRejectedValueOnce(new ModelRoutingError(
+      'model_unavailable',
+      'general',
+      'global',
+      'The assigned model for general is unavailable.',
+      503,
+    ));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Unavailable Brand', free_text: 'Brand source' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'general' });
+    expect(res.json()).not.toHaveProperty('job_id');
   });
 
   it('rejects missing name with 400', async () => {

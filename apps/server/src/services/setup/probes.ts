@@ -13,7 +13,12 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { TtsService } from '../tts/index.js';
-import type { LlmClient } from '../llm/index.js';
+import type { ModelRouter } from '../llm/model-router.js';
+import {
+  ModelTaskRoleSchema,
+  type ModelRoutingErrorCode,
+  type ModelTaskRole,
+} from '@vpa/shared';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +30,10 @@ export interface ProbeResult {
   status: ProbeStatus;
   message: string;
   fixHint?: string;
+  /** Present on task-model readiness rows. */
+  role?: ModelTaskRole;
+  /** Stable reason when a task-model assignment is not ready. */
+  code?: ModelRoutingErrorCode;
   /** When this probe ran (ms since epoch). */
   ranAt: number;
 }
@@ -39,7 +48,7 @@ export interface SetupHealth {
 
 interface Deps {
   tts: TtsService;
-  llm: LlmClient;
+  router: Pick<ModelRouter, 'describe'>;
   vpaHome: string;
 }
 
@@ -106,34 +115,42 @@ async function probeFfprobe(): Promise<ProbeResult> {
   }
 }
 
-async function probeLlm(llm: LlmClient): Promise<ProbeResult> {
-  const start = Date.now();
-  try {
-    const result = await Promise.race([
-      llm.complete({
-        systemPrompt: 'Reply with the single word OK and nothing else.',
-        userPrompt: 'Reply with OK.',
-        responseFormat: 'text',
-        temperature: 0,
-        maxTokens: 20,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('LLM ping timed out after 8s')), 8000),
-      ),
-    ]);
-    const elapsed = Date.now() - start;
-    const text = (result?.text ?? '').trim().slice(0, 60);
-    return ok('llm-connectivity', 'LLM connectivity', `Responded in ${elapsed}ms: "${text}"`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    let hint: string | undefined;
-    if (/401|403|unauthor/i.test(msg)) {
-      hint = 'Check your VPA_LLM_PROVIDER and the corresponding API key in .env';
-    } else if (/timeout|timed out/i.test(msg)) {
-      hint = 'Provider is slow or unreachable — try a different VPA_LLM_PROVIDER';
+const MODEL_ROLE_LABELS: Record<ModelTaskRole, string> = {
+  'video-understanding': 'Watch and analyze video',
+  writing: 'Write and refine content',
+  general: 'General analysis',
+};
+
+/**
+ * Describe each task assignment independently. ModelRouter performs executable
+ * CLI checks and bounded API configuration checks, but never a completion.
+ */
+export async function probeModelAssignments(
+  router: Pick<ModelRouter, 'describe'>,
+): Promise<ProbeResult[]> {
+  return Promise.all(ModelTaskRoleSchema.options.map(async (role) => {
+    const resolution = await router.describe(role);
+    const id = `model-routing-${role}`;
+    const label = MODEL_ROLE_LABELS[role];
+    if (!('code' in resolution)) {
+      return {
+        ...ok(id, label, `${resolution.name} (${resolution.provider}/${resolution.model}) is ready`),
+        role,
+      };
     }
-    return fail('llm-connectivity', 'LLM connectivity', msg.slice(0, 200), hint);
-  }
+    return {
+      ...fail(
+        id,
+        label,
+        resolution.message,
+        resolution.code === 'model_assignment_missing'
+          ? `Assign a model to ${label.toLowerCase()} in AI model settings`
+          : `Check the ${label.toLowerCase()} assignment in AI model settings`,
+      ),
+      role,
+      code: resolution.code,
+    };
+  }));
 }
 
 function probeTtsProviders(tts: TtsService): ProbeResult {
@@ -229,17 +246,28 @@ export async function runSetupHealth(deps: Deps, opts: { force?: boolean } = {})
     return cached.result;
   }
 
-  const probes = await Promise.all([
+  const [ffmpegPresent, ffmpegDrawtext, ffprobe, modelAssignments, ttsProviders, xaiKey, xaiTeamId, qwenTts, vpaHome] = await Promise.all([
     probeFfmpegPresent(),
     probeFfmpegDrawtext(),
     probeFfprobe(),
-    probeLlm(deps.llm),
+    probeModelAssignments(deps.router),
     Promise.resolve(probeTtsProviders(deps.tts)),
     Promise.resolve(probeXaiKey()),
     Promise.resolve(probeXaiTeamId()),
     probeQwenTts(),
     probeVpaHome(deps.vpaHome),
   ]);
+  const probes = [
+    ffmpegPresent,
+    ffmpegDrawtext,
+    ffprobe,
+    ...modelAssignments,
+    ttsProviders,
+    xaiKey,
+    xaiTeamId,
+    qwenTts,
+    vpaHome,
+  ];
 
   const allOk = probes.every((p) => p.status !== 'fail');
   const allClean = probes.every((p) => p.status === 'ok');

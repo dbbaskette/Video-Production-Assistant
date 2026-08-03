@@ -49,10 +49,12 @@ function splitDialogParagraphs(script: string): string[] {
 
 export async function convertToDialog(
   monologueScript: string,
-  llm: LlmClient,
+  writer: LlmClient,
   workspaceRoot: string,
   /** Optional — when provided, project source-docs are prepended to the prompt. */
   projectPath?: string,
+  /** Independently routed general client for oversized source-doc compression. */
+  general?: LlmClient,
 ): Promise<ConvertToDialogResult> {
   let systemPrompt: string;
   try {
@@ -65,10 +67,11 @@ export async function convertToDialog(
   const userPrompt = await withReferenceContext(baseUserPrompt, {
     projectPath,
     summarize: true,
-    llm,
+    llm: general,
+    strictSummarization: true,
   });
 
-  const result = await llm.complete({
+  const result = await writer.complete({
     systemPrompt,
     userPrompt,
     temperature: 0.7,

@@ -109,7 +109,13 @@ export class ShotPlanSession {
      */
     siblingScenes: ReadonlyArray<Pick<Scene, 'id' | 'name' | 'description' | 'type'>> = [],
   ): Promise<ShotPlanChatTurn> {
-    this.appendTurn('user', content);
+    // Build against a provisional user turn. Commit both sides only after the
+    // model succeeds so a failed proposal leaves the existing session intact.
+    const userTurn: ShotPlanChatTurn = {
+      role: 'user',
+      content,
+      at: new Date().toISOString(),
+    };
 
     const systemPrompt = await loadPrompt(workspaceRoot(), 'scene-shot-plan');
 
@@ -137,7 +143,7 @@ export class ShotPlanSession {
         '\n\n'
       : '';
 
-    const historyContext = this.transcript
+    const historyContext = [...this.transcript, userTurn]
       .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.content}`)
       .join('\n\n');
 
@@ -160,7 +166,13 @@ export class ShotPlanSession {
       this.proposedSteps = steps;
     }
 
-    return this.appendTurn('assistant', stripJsonBlock(completion.text));
+    const assistantTurn: ShotPlanChatTurn = {
+      role: 'assistant',
+      content: stripJsonBlock(completion.text),
+      at: new Date().toISOString(),
+    };
+    this.transcript.push(userTurn, assistantTurn);
+    return assistantTurn;
   }
 }
 

@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
 import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateScript } from '../services/script/index.js';
@@ -19,7 +18,6 @@ import type { ResolvedModelSummary } from '@vpa/shared';
 
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
   workspaceRoot: string;
   router: ModelRouter;
   videoUnderstanding: VideoUnderstandingService;
@@ -89,8 +87,16 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
   return entry.path;
 }
 
+async function resolveProject(store: ProjectStore, projectId: string) {
+  try {
+    return await store.readProject(projectId);
+  } catch {
+    throw { statusCode: 404, message: `Project not found: ${projectId}` };
+  }
+}
+
 export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, router, videoUnderstanding } = deps;
+  const { store, workspaceRoot, router, videoUnderstanding } = deps;
 
   // GET /api/projects/:id/scenes/:sceneId/script — get current script
   app.get('/api/projects/:id/scenes/:sceneId/script', async (req, reply) => {
@@ -119,7 +125,8 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
   app.post('/api/projects/:id/scenes/:sceneId/script/generate', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     const body = (req.body ?? {}) as { groundInVideo?: boolean };
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
 
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
@@ -137,7 +144,6 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const mode: 'text' | 'video' = videoRequested ? 'video' : 'text';
     let stage: GenerationStage = 'preparing';
     try {
-      const project = await store.readProject(id);
       const needsGeneral = await sourceDocsNeedSummarization(project.path);
 
       stage = 'routing';
@@ -366,7 +372,8 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
   app.post('/api/projects/:id/scenes/:sceneId/script/tighten', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     const body = (req.body ?? {}) as { targetDurationSec?: number };
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
 
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
@@ -401,6 +408,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const wpmInfo = computeProjectWpm(sb);
 
     try {
+      const writer = await router.resolveText('writing', project);
       const result = await tightenScript(
         {
           currentScript,
@@ -409,7 +417,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
           sceneIntent: scene.intent,
           wpm: wpmInfo.wpm,
         },
-        llm,
+        writer.client,
         workspaceRoot,
       );
       return {
@@ -425,11 +433,17 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         wpmIsMeasured: wpmInfo.isMeasured,
         wpmSampleChunks: wpmInfo.sampleChunks,
       };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      app.log.error({ err: msg, sceneId }, 'script tighten failed');
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      app.log.error({ sceneId, errorName: 'TightenError' }, 'Script tighten failed');
       return reply.status(500).send({
-        error: `Script tighten failed: ${msg}`,
+        error: 'Script tighten failed. Your existing script was not changed.',
         code: 'tighten_failed',
       });
     }
@@ -452,7 +466,8 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(400).send({ error: 'draft is required', code: 'no_draft' });
     }
 
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
 
@@ -471,6 +486,11 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const wpmInfo = computeProjectWpm(sb);
 
     try {
+      const needsGeneral = await sourceDocsNeedSummarization(project.path);
+      const writer = await router.resolveText('writing', project);
+      const general = needsGeneral
+        ? await router.resolveText('general', project)
+        : undefined;
       const result = await polishScript(
         {
           draft,
@@ -482,8 +502,9 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
           projectAudience: sb.project.audience,
           projectPath,
         },
-        llm,
+        writer.client,
         workspaceRoot,
+        general?.client,
       );
       return {
         sceneId,
@@ -498,11 +519,17 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         wpmIsMeasured: wpmInfo.isMeasured,
         wpmSampleChunks: wpmInfo.sampleChunks,
       };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      app.log.error({ err: msg, sceneId }, 'script polish failed');
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      app.log.error({ sceneId, errorName: 'PolishError' }, 'Script polish failed');
       return reply.status(500).send({
-        error: `Script polish failed: ${msg}`,
+        error: 'Script polish failed. Your existing script was not changed.',
         code: 'polish_failed',
       });
     }

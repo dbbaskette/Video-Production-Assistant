@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { runQualityReview } from '../services/quality-review/index.js';
 import type { ReviewResult } from '../services/quality-review/index.js';
@@ -8,7 +8,7 @@ import { buildReviewFingerprint } from '../services/workflow-status/fingerprint.
 
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
+  router: ModelRouter;
   workspaceRoot: string;
 }
 
@@ -20,30 +20,55 @@ export function getQualityReview(projectId: string): ReviewResult | null {
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
-  const tracker = await store.readTracker();
-  const entry = tracker.projects.find((p) => p.id === projectId);
-  if (!entry) throw { statusCode: 404, message: `Project not found: ${projectId}` };
-  return entry.path;
+  try {
+    return (await store.readProject(projectId)).path;
+  } catch {
+    throw { statusCode: 404, message: `Project not found: ${projectId}` };
+  }
 }
 
 export async function registerQualityReviewRoutes(
   app: FastifyInstance,
   deps: Deps,
 ): Promise<void> {
-  const { store, llm, workspaceRoot } = deps;
+  const { store, router, workspaceRoot } = deps;
 
   // POST /api/projects/:id/review — run quality review
   app.post('/api/projects/:id/review', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const projectPath = await resolveProjectPath(store, id);
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const projectPath = project.path;
 
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
 
-    const result = { ...(await runQualityReview(sb, llm, workspaceRoot, projectPath)), inputFingerprint: buildReviewFingerprint(sb) };
-    reviewCache.set(id, result);
-
-    return result;
+    try {
+      const general = await router.resolveText('general', project);
+      const result = {
+        ...(await runQualityReview(sb, general.client, workspaceRoot, projectPath)),
+        inputFingerprint: buildReviewFingerprint(sb),
+      };
+      reviewCache.set(id, result);
+      return result;
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'QualityReviewError' }, 'Quality review failed');
+      return reply.status(500).send({
+        error: 'Quality review failed. Your previous review was not changed.',
+        code: 'quality_review_failed',
+      });
+    }
   });
 
   // GET /api/projects/:id/review — get last review result

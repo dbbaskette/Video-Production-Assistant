@@ -9,6 +9,7 @@ import { recommendLowerThirds } from '../services/lower-thirds/index.js';
 import { recommendLowerThirdsFromBrief } from '../services/lower-thirds/video-grounded.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { sha256File } from '../services/recording/metadata.js';
+import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import {
   LowerThirdSchema,
@@ -27,7 +28,7 @@ const VIDEO_LOWER_THIRDS_FAILED_MESSAGE =
 const LOWER_THIRDS_FAILED_MESSAGE =
   'Lower-third recommendation failed. Your existing lower thirds were not changed.';
 
-type RecommendationStage = 'preparing' | 'routing' | 'video-understanding' | 'writing' | 'persistence';
+type RecommendationStage = 'preparing' | 'routing' | 'video-understanding' | 'source-summarization' | 'writing' | 'persistence';
 
 function privateRecommendationDiagnostic(
   error: unknown,
@@ -183,10 +184,14 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     const operationState: { stage: RecommendationStage } = { stage: 'preparing' };
     try {
       const project = await store.readProject(id);
+      const needsGeneral = await sourceDocsNeedSummarization(project.path);
       operationState.stage = 'routing';
       const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
       const writer = await router.resolveText('writing', project);
-      for (const resolved of [videoModel, writer]) {
+      const general = needsGeneral
+        ? await router.resolveText('general', project)
+        : undefined;
+      for (const resolved of [videoModel, writer, general]) {
         if (resolved) {
           app.log.info(
             modelOperationFields(sceneId, resolved.summary, 'model-resolved'),
@@ -225,6 +230,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
             modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
             'Lower-third writing phase',
           );
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
           recommendations = await recommendLowerThirdsFromBrief({
             videoPath: briefInput.videoPath,
             videoMimeType: briefInput.videoMimeType,
@@ -236,9 +242,9 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
             projectAudience: project.audience,
             projectPath: project.path,
             brief,
-          }, writer.client, workspaceRoot);
+          }, writer.client, workspaceRoot, general?.client);
         } else {
-          operationState.stage = 'writing';
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
           app.log.info(
             modelOperationFields(sceneId, writer.summary, 'writing'),
             'Lower-third writing phase',
@@ -252,7 +258,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
             projectObjective: project.objective,
             projectAudience: project.audience,
             projectPath: project.path,
-          }, writer.client, workspaceRoot);
+          }, writer.client, workspaceRoot, general?.client);
         }
 
         // Keep all model output in memory until the complete set validates.
@@ -301,6 +307,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
         routing: {
           ...(videoModel ? { videoUnderstanding: videoModel.summary } : {}),
           writing: writer.summary,
+          ...(general ? { general: general.summary } : {}),
         },
         ...(briefFreshness ? { briefFreshness } : {}),
       };

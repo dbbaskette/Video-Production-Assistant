@@ -1,6 +1,6 @@
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/index.js';
-import { withReferenceContext } from '../project-source-docs/inject.js';
+import { loadProjectSourceContext } from '../project-source-docs/context.js';
 
 export interface ScriptInput {
   sceneName: string;
@@ -53,15 +53,14 @@ export async function generateScript(
   }
 
   const basePrompt = lines.join('\n');
-  const userPrompt = input.sourceContext !== undefined
+  const sourceContext = input.sourceContext !== undefined
     ? input.sourceContext
-      ? `${input.sourceContext}\n\n---\n\n${basePrompt}`
-      : basePrompt
-    : await withReferenceContext(basePrompt, {
-        projectPath: input.projectPath,
-        summarize: true,
-        llm,
-      });
+    : input.projectPath
+      ? await loadProjectSourceContext(input.projectPath)
+      : '';
+  const userPrompt = sourceContext
+    ? `${sourceContext}\n\n---\n\n${basePrompt}`
+    : basePrompt;
 
   const result = await llm.complete({
     systemPrompt,

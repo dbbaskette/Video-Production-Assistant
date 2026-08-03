@@ -70,7 +70,10 @@ describe('runBrandExtractJob', () => {
       sources: [{ kind: 'file', path: '/tmp/x.pdf' }],
     });
     expect(queue.get(job.id)!.status).toBe('failed');
-    expect(queue.get(job.id)!.error).toMatch(/PDF corrupt/);
+    expect(queue.get(job.id)!.error).toBe(
+      'Brand extraction failed. Review the source and general model configuration, then try again.',
+    );
+    expect(queue.get(job.id)!.error).not.toContain('PDF corrupt');
   });
 });
 

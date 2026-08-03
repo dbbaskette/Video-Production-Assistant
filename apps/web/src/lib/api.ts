@@ -1318,15 +1318,6 @@ export interface ModelEntry {
   readinessMessage?: string;
 }
 
-export interface ActiveModelInfo {
-  id: string;
-  name: string;
-  provider: string;
-  model: string;
-  endpoint?: string;
-  label: string;
-}
-
 export const settingsApi = {
   async listModels(): Promise<ModelEntry[]> {
     return request<ModelEntry[]>('GET', '/api/settings/models');
@@ -1359,14 +1350,8 @@ export const settingsApi = {
       await request('PUT', '/api/settings/model-routing', update),
     );
   },
-  async activateModel(id: string): Promise<ModelEntry> {
-    return request<ModelEntry>('POST', `/api/settings/models/${id}/activate`);
-  },
   async deleteModel(id: string): Promise<void> {
     await request('DELETE', `/api/settings/models/${id}`);
-  },
-  async getActiveModel(): Promise<ActiveModelInfo> {
-    return request<ActiveModelInfo>('GET', '/api/settings/models/active');
   },
 };
 

@@ -67,8 +67,8 @@ export async function runBrandExtractJob(input: BrandExtractJobInput): Promise<v
 
     queue.setStatus(jobId, 'awaiting-input');
     queue.emit(jobId, 'tokens-ready', { frontMatter: tokens.frontMatter });
-  } catch (err: any) {
-    queue.fail(jobId, err.message ?? String(err));
+  } catch {
+    queue.fail(jobId, 'Brand extraction failed. Review the source and general model configuration, then try again.');
   }
 }
 
@@ -102,7 +102,7 @@ export async function runBrandGenerateJob(input: BrandGenerateJobInput): Promise
     const persisted = await readBrand(paths, registryFile, slug);
 
     queue.complete(jobId, { brand_slug: slug, version: persisted.registry.version });
-  } catch (err: any) {
-    queue.fail(jobId, err.message ?? String(err));
+  } catch {
+    queue.fail(jobId, 'Brand generation failed. Your existing brand was not changed.');
   }
 }

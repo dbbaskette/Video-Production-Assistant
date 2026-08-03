@@ -243,12 +243,6 @@ export class ModelRegistry {
     await this.save();
   }
 
-  /** Temporary compatibility for callers still using the global active model. */
-  getActive(): ModelEntry | undefined {
-    const id = this.getAssignment('writing');
-    return id ? this.getById(id) : undefined;
-  }
-
   async add(entry: ModelEntry): Promise<ModelEntry> {
     if (this.getById(entry.id)) throw new Error(`Model "${entry.id}" already exists`);
     this.data.models.push(entry);
@@ -262,14 +256,6 @@ export class ModelRegistry {
     Object.assign(entry, patch);
     await this.save();
     return entry;
-  }
-
-  /** Temporary compatibility: selecting an active model selects both text roles. */
-  async activate(id: string): Promise<ModelEntry> {
-    const target = this.getById(id);
-    if (!target) throw new Error(`Model "${id}" not found`);
-    await this.setAssignments({ writing: id, general: id });
-    return target;
   }
 
   async remove(id: string): Promise<void> {

@@ -66,25 +66,27 @@ export class IdeationSession {
 
   async sendMessage(
     content: string,
-    llm: LlmClient,
+    writer: LlmClient,
     objective?: string,
     /** When provided, project source-docs are prepended to the user prompt. */
     projectPath?: string,
+    /** Independently routed general client used only for oversized source-doc compression. */
+    general?: LlmClient,
   ): Promise<IdeationMessage> {
-    // Add user message
+    // Keep the new turn in memory until both source preparation and writing
+    // succeed. A routing/provider failure must not leave half a conversation.
     const userMsg: IdeationMessage = {
       id: randomUUID(),
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
     };
-    this.messages.push(userMsg);
 
     // Build the LLM prompt
     const systemPrompt = await loadPrompt(workspaceRoot(), 'ideation-system');
 
     // Build conversation context
-    const historyContext = this.messages
+    const historyContext = [...this.messages, userMsg]
       .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n\n');
 
@@ -100,11 +102,12 @@ export class IdeationSession {
     const userPrompt = await withReferenceContext(baseUserPrompt, {
       projectPath,
       summarize: true,
-      llm,
+      llm: general,
+      strictSummarization: true,
     });
 
     // Call LLM
-    const completion = await llm.complete({
+    const completion = await writer.complete({
       systemPrompt,
       userPrompt,
       temperature: 0.7,
@@ -124,7 +127,7 @@ export class IdeationSession {
       scenes: scenes.length > 0 ? scenes : undefined,
       timestamp: new Date().toISOString(),
     };
-    this.messages.push(assistantMsg);
+    this.messages.push(userMsg, assistantMsg);
 
     return assistantMsg;
   }

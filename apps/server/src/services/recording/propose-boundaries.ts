@@ -4,7 +4,7 @@ import type { SceneBoundary } from './split.js';
 
 export async function proposeBoundaries(
   metadata: { duration_sec: number; filename: string },
-  llm: LlmClient,
+  general: LlmClient,
   workspaceRoot: string,
 ): Promise<SceneBoundary[]> {
   const systemPrompt = await loadPrompt(workspaceRoot, 'scene-splitter');
@@ -14,7 +14,7 @@ export async function proposeBoundaries(
     `Duration: ${metadata.duration_sec.toFixed(1)} seconds`,
   ].join('\n');
 
-  const result = await llm.complete({
+  const result = await general.complete({
     systemPrompt,
     userPrompt,
     responseFormat: 'json',

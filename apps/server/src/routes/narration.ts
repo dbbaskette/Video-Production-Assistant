@@ -4,7 +4,7 @@ import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
 import type { TtsService } from '../services/tts/index.js';
-import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
@@ -16,11 +16,12 @@ import {
 } from '../services/voice-profile/index.js';
 import type { VoiceProfile } from '../services/voice-profile/index.js';
 import { VoiceCloneStore } from '../services/voice-clone/store.js';
+import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
 
 interface Deps {
   store: ProjectStore;
   tts: TtsService;
-  llm: LlmClient;
+  router: ModelRouter;
   workspaceRoot: string;
   vpaHome: string;
 }
@@ -38,10 +39,18 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
   return entry.path;
 }
 
+async function resolveProject(store: ProjectStore, projectId: string) {
+  try {
+    return await store.readProject(projectId);
+  } catch {
+    throw { statusCode: 404, message: `Project not found: ${projectId}` };
+  }
+}
+
 // Voice clone reading script + instructions moved to routes/voice-clone.ts.
 
 export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, tts, llm, workspaceRoot, vpaHome } = deps;
+  const { store, tts, router, workspaceRoot, vpaHome } = deps;
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
 
@@ -204,17 +213,22 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         .send({ error: 'engine and voice are required', code: 'invalid_request' });
     }
 
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
 
     try {
+      const writer = await router.resolveText('writing', project);
       const result = await generateNarration(
         { projectPath, sceneId, engine, voice, speed, expressiveness },
         tts,
-        llm,
+        writer.client,
         workspaceRoot,
       );
       return result;
     } catch (err) {
+      if (err instanceof ModelRoutingError) {
+        return reply.status(err.statusCode).send({ error: err.message, code: err.code, role: err.role });
+      }
       const message = err instanceof Error ? err.message : 'Narration generation failed';
       if (message.includes('not found') || message.includes('No storyboard')) {
         return reply.status(404).send({ error: message, code: 'not_found' });
@@ -224,7 +238,11 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
           .status(400)
           .send({ error: message, code: 'missing_script' });
       }
-      throw err;
+      req.log.error({ projectId: id, sceneId, errorName: 'NarrationGenerationError' }, 'Narration generation failed');
+      return reply.status(500).send({
+        error: 'Narration generation failed. Your existing narration was not changed.',
+        code: 'narration_generation_failed',
+      });
     }
   });
 
@@ -248,22 +266,31 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         .send({ error: 'chunkIndex, text, engine, and voice are required', code: 'invalid_request' });
     }
 
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
 
     try {
+      const writer = await router.resolveText('writing', project);
       const result = await generateChunkNarration(
         { projectPath, sceneId, chunkIndex, text, engine, voice, speed, expressiveness },
         tts,
-        llm,
+        writer.client,
         workspaceRoot,
       );
       return result;
     } catch (err) {
+      if (err instanceof ModelRoutingError) {
+        return reply.status(err.statusCode).send({ error: err.message, code: err.code, role: err.role });
+      }
       const message = err instanceof Error ? err.message : 'Chunk generation failed';
       if (message.includes('not found') || message.includes('No storyboard')) {
         return reply.status(404).send({ error: message, code: 'not_found' });
       }
-      throw err;
+      req.log.error({ projectId: id, sceneId, errorName: 'ChunkGenerationError' }, 'Narration chunk generation failed');
+      return reply.status(500).send({
+        error: 'Narration chunk generation failed. Your existing narration was not changed.',
+        code: 'narration_chunk_generation_failed',
+      });
     }
   });
 
@@ -333,11 +360,25 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'engine and voice are required', code: 'invalid_request' });
     }
     const expressiveness = coerceExpressiveness(body.expressiveness);
-    let projectPath: string;
+    let project;
     try {
-      projectPath = await resolveProjectPath(store, id);
+      project = await resolveProject(store, id);
     } catch {
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const projectPath = project.path;
+    let writer;
+    try {
+      writer = await router.resolveText('writing', project);
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      throw error;
     }
 
     const job = jobQueue.create('narration-generate-all', {
@@ -360,7 +401,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
             selector: body.selector ?? 'missing',
           },
           tts,
-          llm,
+          writer.client,
           workspaceRoot,
           (progress) => jobQueue.emit(job.id, 'progress', progress),
           () => jobQueue.get(job.id)?.status === 'cancelled',
@@ -369,9 +410,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         const j = jobQueue.get(job.id);
         if (j?.status === 'cancelled') return;
         jobQueue.complete(job.id, result);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        jobQueue.fail(job.id, message);
+      } catch {
+        jobQueue.fail(job.id, 'Narration chunk generation failed. Review model and TTS settings, then try again.');
       }
     })();
 
@@ -404,7 +444,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'script is required', code: 'invalid_request' });
     }
 
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
 
@@ -646,7 +687,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/scenes/:sceneId/narration/convert-dialog — LLM converts monologue to dialog
   app.post('/api/projects/:id/scenes/:sceneId/narration/convert-dialog', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const projectPath = await resolveProjectPath(store, id);
+    const project = await resolveProject(store, id);
+    const projectPath = project.path;
 
     const sb = await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
@@ -662,8 +704,19 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     const wsRoot = join(import.meta.dirname, '../../../../..');
     try {
+      const needsGeneral = await sourceDocsNeedSummarization(project.path);
+      const writer = await router.resolveText('writing', project);
+      const general = needsGeneral
+        ? await router.resolveText('general', project)
+        : undefined;
       const { convertToDialog } = await import('../services/script/convert-to-dialog.js');
-      const { dialogScript, chunks } = await convertToDialog(script, llm, wsRoot, projectPath);
+      const { dialogScript, chunks } = await convertToDialog(
+        script,
+        writer.client,
+        wsRoot,
+        projectPath,
+        general?.client,
+      );
 
       // Explicit user-triggered conversion: flip mode to 'dialog', persist
       // both versions, clear stale full-narration audio. (The script-generate
@@ -686,9 +739,19 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       await saveStoryboard(projectPath, updated);
 
       return { script: dialogScript, chunks };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Dialog conversion failed';
-      return reply.status(500).send({ error: message, code: 'llm_error' });
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, sceneId, errorName: 'DialogConversionError' }, 'Dialog conversion failed');
+      return reply.status(500).send({
+        error: 'Dialog conversion failed. Your existing narration was not changed.',
+        code: 'dialog_conversion_failed',
+      });
     }
   });
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import Fastify from 'fastify';
 import { ProjectStore } from '../services/project/store.js';
 import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
-import { createFakeLlm, type LlmClient, type LlmCompleteOptions } from '../services/llm/index.js';
+import type { LlmClient, LlmCompleteOptions } from '../services/llm/index.js';
 import {
   ModelRoutingError,
   type ModelRouter,
@@ -75,7 +75,6 @@ function makeBrief(videoPath = '/project/recordings/scene-01.mp4'): VideoUnderst
 interface TestServerOptions {
   writer?: LlmClient;
   general?: LlmClient;
-  legacyLlm?: LlmClient;
   resolveText?: ModelRouter['resolveText'];
   resolveVideo?: ModelRouter['resolveVideo'];
   videoUnderstanding?: Pick<VideoUnderstandingService, 'readBriefStatus' | 'ensureBrief'>;
@@ -92,10 +91,6 @@ async function buildTestServer(options: TestServerOptions = {}) {
   };
   const general = options.general ?? {
     complete: vi.fn(async () => ({ text: 'A bounded factual source summary.' })),
-  };
-  const fakeLegacy = createFakeLlm();
-  const legacyLlm = options.legacyLlm ?? {
-    complete: vi.fn(fakeLegacy.complete.bind(fakeLegacy)),
   };
   const resolvedWriter: ResolvedTextModel = {
     client: writer,
@@ -126,7 +121,6 @@ async function buildTestServer(options: TestServerOptions = {}) {
   await app.register(async (i) =>
     registerScriptRoutes(i, {
       store,
-      llm: legacyLlm,
       workspaceRoot: workspaceRoot(),
       router: { resolveText, resolveVideo } as unknown as ModelRouter,
       videoUnderstanding: videoUnderstanding as VideoUnderstandingService,
@@ -140,7 +134,6 @@ async function buildTestServer(options: TestServerOptions = {}) {
     writer,
     writerComplete,
     general,
-    legacyLlm,
     resolveText,
     resolveVideo,
     readBriefStatus,
@@ -291,7 +284,6 @@ describe('script routes', () => {
     expect(ctx.resolveText).toHaveBeenCalledWith('writing', expect.objectContaining({ id: projectId }));
     expect(ctx.resolveText).toHaveBeenCalledTimes(1);
     expect(ctx.resolveVideo).not.toHaveBeenCalled();
-    expect(ctx.legacyLlm.complete).not.toHaveBeenCalled();
 
     // Verify it was saved to storyboard
     const updated = await loadStoryboard(projectPath);
@@ -391,7 +383,6 @@ describe('script routes', () => {
       'generativelanguage.googleapis.com',
     );
     expect(ctx.resolveText).toHaveBeenCalledWith('writing', expect.objectContaining({ id: projectId }));
-    expect(ctx.legacyLlm.complete).not.toHaveBeenCalled();
     expect(res.json()).toMatchObject({
       mode: 'video',
       briefFreshness: 'generated',
@@ -664,11 +655,53 @@ describe('script routes', () => {
     expect(Array.isArray(body.notes)).toBe(true);
     expect(body.currentWords).toBeGreaterThan(0);
     expect(body.proposedWords).toBeGreaterThan(0);
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
+    expect(ctx.resolveText).not.toHaveBeenCalledWith('general', expect.anything());
 
     // The storyboard must be untouched — polish only proposes.
     const after = await loadStoryboard(projectPath);
     const scene = after!.scenes.find((s) => s.id === 'scene-01');
     expect(scene?.narration).toBeUndefined();
+  });
+
+  it('routes script tightening through writing and leaves the stored script unchanged', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    const original = Array.from({ length: 80 }, (_, index) => `word${index}`).join(' ');
+    sb.scenes[0]!.narration = { script: original, monologueScript: original };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/tighten`,
+      payload: { targetDurationSec: 1 },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().proposedWords).toBeLessThan(res.json().currentWords);
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration!.script).toBe(original);
+  });
+
+  it('uses general only for oversized source-document summarization during polish', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    await addText(projectPath, 'f'.repeat(REFERENCE_BUDGET_CHARS + 1), 'large-polish-reference.md');
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/polish`,
+      payload: { draft: 'A draft grounded in project source material.' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(ctx.resolveText.mock.calls.map(([role]) => role)).toEqual(['writing', 'general']);
+    expect(ctx.general.complete).toHaveBeenCalledOnce();
+    expect(ctx.writer.complete).toHaveBeenCalledOnce();
   });
 
   it('POST polish returns 400 when draft is empty', async () => {

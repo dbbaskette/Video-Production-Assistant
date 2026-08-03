@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -112,7 +112,6 @@ async function buildTestServer(options: {
   await app.register(async (i) =>
     registerRecordingRoutes(i, {
       store,
-      llm,
       workspaceRoot: workspaceRoot(),
       router: { resolveVideo, resolveText } as unknown as ModelRouter,
       videoUnderstanding: { readBriefStatus, ensureBrief } as unknown as VideoUnderstandingService,
@@ -483,6 +482,7 @@ describe('recording routes', () => {
       expect(res.json()).toEqual({
         error: 'The assigned model cannot handle video-understanding. Choose a compatible model in project model settings.',
         code: 'model_capability_mismatch',
+        role: 'video-understanding',
       });
       expect(ctx.resolveText).not.toHaveBeenCalled();
       expect(ctx.ensureBrief).not.toHaveBeenCalled();
@@ -808,6 +808,58 @@ describe('recording routes', () => {
       expect(body.scenes[0].recording).toBeDefined();
       expect(body.scenes[0].recording.source).toContain('recordings/');
       expect(body.scenes[1].recording).toBeDefined();
+      expect(ctx.resolveText).toHaveBeenCalledWith(
+        'general',
+        expect.objectContaining({ id: projectId }),
+      );
+    });
+
+    it('preserves the existing storyboard and bounds provider diagnostics', async () => {
+      const existing = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, existing);
+      ctx.llmComplete.mockRejectedValueOnce(new Error('private provider response'));
+      const form = new FormData();
+      form.append('file', Buffer.from('mp4-data'), { filename: 'intro.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/generate-storyboard`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({
+        error: 'Storyboard generation failed. Your existing storyboard was not changed.',
+        code: 'storyboard_generation_failed',
+      });
+      expect(JSON.stringify(res.json())).not.toContain('private provider response');
+      expect(await loadStoryboard(projectPath)).toEqual(existing);
+    });
+
+    it('returns a stable general routing error without changing the storyboard', async () => {
+      const existing = makeSampleStoryboard(projectId, 'test-proj');
+      await saveStoryboard(projectPath, existing);
+      ctx.resolveText.mockRejectedValueOnce(new ModelRoutingError(
+        'model_assignment_missing',
+        'general',
+        'project',
+        'No general model is assigned.',
+        422,
+      ));
+      const form = new FormData();
+      form.append('file', Buffer.from('mp4-data'), { filename: 'intro.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/generate-storyboard`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(422);
+      expect(res.json()).toMatchObject({ code: 'model_assignment_missing', role: 'general' });
+      expect(await loadStoryboard(projectPath)).toEqual(existing);
     });
 
     it('returns 400 when no files uploaded', async () => {
@@ -821,6 +873,53 @@ describe('recording routes', () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().code).toBe('no_files');
+    });
+  });
+
+  describe('POST /api/projects/:id/recordings/propose-split', () => {
+    it('uses the project general model for boundary proposals', async () => {
+      const form = new FormData();
+      form.append('file', Buffer.from('source-video'), { filename: 'source.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/propose-split`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().boundaries).toHaveLength(3);
+      expect(ctx.resolveText).toHaveBeenCalledWith(
+        'general',
+        expect.objectContaining({ id: projectId }),
+      );
+    });
+
+    it('preserves the prior source recording when the provider fails', async () => {
+      const recordingsDir = path.join(projectPath, 'recordings');
+      const sourcePath = path.join(recordingsDir, '_source.mp4');
+      await mkdir(recordingsDir, { recursive: true });
+      await writeFile(sourcePath, 'existing-source');
+      ctx.llmComplete.mockRejectedValueOnce(new Error('private boundary provider body'));
+      const form = new FormData();
+      form.append('file', Buffer.from('replacement-source'), { filename: 'source.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/propose-split`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({
+        error: 'Recording boundary proposal failed. Your existing source recording was not changed.',
+        code: 'boundary_proposal_failed',
+      });
+      expect(JSON.stringify(res.json())).not.toContain('private boundary provider body');
+      expect(await readFile(sourcePath, 'utf8')).toBe('existing-source');
+      expect((await readdir(recordingsDir)).some((name) => name.startsWith('._source-'))).toBe(false);
     });
   });
 });
