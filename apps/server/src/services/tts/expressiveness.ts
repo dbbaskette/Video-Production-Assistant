@@ -68,7 +68,7 @@ export interface PrepareExpressiveTextInput {
   engine: string;
   level: Expressiveness;
   /** Independently routed writing client for xAI tag authoring. */
-  writer: LlmClient;
+  writer?: LlmClient;
   workspaceRoot: string;
 }
 
@@ -143,6 +143,9 @@ export async function prepareExpressiveText(
   // directive in its provider; other engines ignore it.
   if (input.engine !== 'xai') {
     return input.text;
+  }
+  if (!input.writer) {
+    throw new Error('A writing model is required for xAI narration expressiveness.');
   }
 
   // Clean prose to annotate — drop app emotive cues first.

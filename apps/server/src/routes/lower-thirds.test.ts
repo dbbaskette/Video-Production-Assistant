@@ -16,6 +16,7 @@ import {
 } from '../services/llm/model-router.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { addText } from '../services/project-source-docs/index.js';
+import { REFERENCE_BUDGET_CHARS } from '../services/project-source-docs/context.js';
 import { sha256File } from '../services/recording/metadata.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { registerLowerThirdsRoutes } from './lower-thirds.js';
@@ -235,6 +236,35 @@ describe('lower-thirds routes', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sceneId: 'scene-01', lowerThirds: [] });
+  });
+
+  it('fails the final strict source check when docs grow after routing preflight', async () => {
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.lower_thirds = [
+      { title: 'Keep me', style: 'solid', in_sec: 2, out_sec: 6 },
+    ];
+    await saveStoryboard(projectPath, existing);
+    ctx.resolveText.mockImplementationOnce(async (role) => {
+      expect(role).toBe('writing');
+      await addText(projectPath, 'x'.repeat(REFERENCE_BUDGET_CHARS + 1), 'Late source');
+      return { client: ctx.writer, summary: modelSummary(role) };
+    });
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: false },
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({
+      error: 'Lower-third recommendation failed. Your existing lower thirds were not changed.',
+      code: 'lower_thirds_generation_failed',
+    });
+    expect(ctx.resolveText).toHaveBeenCalledTimes(1);
+    expect(ctx.writerComplete).not.toHaveBeenCalled();
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds)
+      .toEqual(existing.scenes[0]!.lower_thirds);
   });
 
   it('text-only recommendation resolves writing only and returns its routing summary', async () => {

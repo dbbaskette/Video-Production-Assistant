@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { mkdir, rename, stat, writeFile, unlink } from 'node:fs/promises';
+import { copyFile, mkdir, rename, rm, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
@@ -487,6 +487,10 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No files uploaded', code: 'no_files' });
     }
 
+    let previousStoryboard: Awaited<ReturnType<typeof loadStoryboard>> | undefined;
+    let transactionDir: string | undefined;
+    const recordingBackups: Array<{ destination: string; backup?: string }> = [];
+    let mutationStarted = false;
     try {
       const general = await router.resolveText('general', project);
 
@@ -526,16 +530,64 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       }
 
       const storyboard = createStoryboard(project, scenes);
-      await saveStoryboard(projectPath, storyboard);
-
       const files = projectFiles(projectPath);
+      previousStoryboard = await loadStoryboard(projectPath);
+      transactionDir = path.join(tmpDir, `generate-storyboard-${randomUUID()}`);
+      await mkdir(transactionDir, { recursive: true });
       await mkdir(files.recordingsDir, { recursive: true });
-      for (let i = 0; i < uploadedFiles.length; i++) {
-        await ingestRecording(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
+      for (const scene of scenes) {
+        const destination = path.join(files.recordingsDir, `${scene.id}.mp4`);
+        const backup = path.join(transactionDir, `${scene.id}.mp4`);
+        try {
+          await copyFile(destination, backup);
+          recordingBackups.push({ destination, backup });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          recordingBackups.push({ destination });
+        }
       }
 
-      return await loadStoryboard(projectPath);
+      mutationStarted = true;
+      await saveStoryboard(projectPath, storyboard);
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        await ingest(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
+      }
+
+      const generated = await loadStoryboard(projectPath);
+      if (!generated) throw new Error('Generated storyboard could not be loaded.');
+      return generated;
     } catch (error) {
+      let rollbackFailed = false;
+      if (mutationStarted) {
+        for (const { destination, backup } of recordingBackups) {
+          try {
+            if (backup) await copyFile(backup, destination);
+            else await unlink(destination).catch((unlinkError: NodeJS.ErrnoException) => {
+              if (unlinkError.code !== 'ENOENT') throw unlinkError;
+            });
+          } catch {
+            rollbackFailed = true;
+          }
+        }
+        try {
+          if (previousStoryboard) {
+            await saveStoryboard(projectPath, previousStoryboard);
+          } else {
+            await unlink(projectFiles(projectPath).storyboard).catch((unlinkError: NodeJS.ErrnoException) => {
+              if (unlinkError.code !== 'ENOENT') throw unlinkError;
+            });
+          }
+        } catch {
+          rollbackFailed = true;
+        }
+      }
+      if (rollbackFailed) {
+        req.log.error({ projectId: id, errorName: 'StoryboardRollbackError' }, 'Recording storyboard rollback was incomplete');
+        return reply.status(500).send({
+          error: 'Storyboard generation failed and cleanup was incomplete. Review the project recordings before retrying.',
+          code: 'storyboard_rollback_failed',
+        });
+      }
       if (error instanceof ModelRoutingError) {
         return reply.status(error.statusCode).send({
           error: error.message,
@@ -550,6 +602,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     } finally {
       await Promise.all(uploadedFiles.map(({ tmpFile }) => unlink(tmpFile).catch(() => {})));
+      if (transactionDir) await rm(transactionDir, { recursive: true, force: true }).catch(() => {});
     }
   });
 

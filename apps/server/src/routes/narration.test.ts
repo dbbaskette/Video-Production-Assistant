@@ -204,11 +204,7 @@ describe('narration routes', () => {
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
     expect(scene?.narration?.audio).toBe('narration/scene-01.mp3');
     expect(scene?.narration?.tts?.engine).toBe('fake');
-    expect(ctx.resolveText).toHaveBeenCalledWith(
-      'writing',
-      expect.objectContaining({ id: projectId }),
-    );
-    expect(ctx.resolveText).not.toHaveBeenCalledWith('general', expect.anything());
+    expect(ctx.resolveText).not.toHaveBeenCalled();
   });
 
   it('returns a stable writing routing error without changing narration', async () => {
@@ -226,11 +222,15 @@ describe('narration routes', () => {
     const res = await ctx.app.inject({
       method: 'POST',
       url: `/api/projects/${projectId}/scenes/scene-01/narration/generate`,
-      payload: { engine: 'fake', voice: 'alice' },
+      payload: { engine: 'xai', voice: 'alice' },
     });
 
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'writing' });
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
     const unchanged = await loadStoryboard(projectPath);
     expect(unchanged!.scenes[0]!.narration!.audio).toBe('narration/existing.mp3');
   });

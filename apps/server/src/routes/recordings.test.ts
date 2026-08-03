@@ -837,6 +837,51 @@ describe('recording routes', () => {
       expect(await loadStoryboard(projectPath)).toEqual(existing);
     });
 
+    it('rolls back the storyboard and owned recording files when injected ingestion fails', async () => {
+      await ctx.app.close();
+      await rm(ctx.home, { recursive: true, force: true });
+      await rm(ctx.projects, { recursive: true, force: true });
+      const ingestWithFailure = vi.fn(async (...args: Parameters<typeof ingestRecording>) => {
+        const result = await ingestRecording(...args);
+        if (args[1] === 'scene-02') throw new Error('private ingestion failure');
+        return result;
+      });
+      ctx = await buildTestServer({ ingest: ingestWithFailure });
+      const project = await ctx.store.create({ name: 'ingestion-rollback', objective: 'Preserve existing work' });
+      projectId = project.id;
+      projectPath = project.path;
+      const existing = makeSampleStoryboard(projectId, 'ingestion-rollback');
+      existing.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 10 };
+      existing.scenes[1]!.recording = { source: 'recordings/scene-02.mp4', duration_sec: 20 };
+      await saveStoryboard(projectPath, existing);
+      const recordingsDir = path.join(projectPath, 'recordings');
+      await mkdir(recordingsDir, { recursive: true });
+      await writeFile(path.join(recordingsDir, 'scene-01.mp4'), 'existing-scene-01');
+      await writeFile(path.join(recordingsDir, 'scene-02.mp4'), 'existing-scene-02');
+      const form = new FormData();
+      form.append('file1', Buffer.from('replacement-01'), { filename: 'one.mp4', contentType: 'video/mp4' });
+      form.append('file2', Buffer.from('replacement-02'), { filename: 'two.mp4', contentType: 'video/mp4' });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/recordings/generate-storyboard`,
+        payload: form.getBuffer(),
+        headers: form.getHeaders(),
+      });
+
+      expect(res.statusCode).toBe(500);
+      expect(res.json()).toEqual({
+        error: 'Storyboard generation failed. Your existing storyboard was not changed.',
+        code: 'storyboard_generation_failed',
+      });
+      expect(ingestWithFailure).toHaveBeenCalledTimes(2);
+      expect(await loadStoryboard(projectPath)).toEqual(existing);
+      await expect(readFile(path.join(recordingsDir, 'scene-01.mp4'), 'utf8'))
+        .resolves.toBe('existing-scene-01');
+      await expect(readFile(path.join(recordingsDir, 'scene-02.mp4'), 'utf8'))
+        .resolves.toBe('existing-scene-02');
+    });
+
     it('returns a stable general routing error without changing the storyboard', async () => {
       const existing = makeSampleStoryboard(projectId, 'test-proj');
       await saveStoryboard(projectPath, existing);

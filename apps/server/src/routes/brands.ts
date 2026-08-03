@@ -149,10 +149,14 @@ export async function registerBrandRoutes(
       return reply.code(409).send({ error: `Brand "${slug}" already exists` });
     }
 
+    // Reserve before the first await after the duplicate check so concurrent
+    // requests cannot both pass validation for the same slug.
+    pendingSlugs.add(slug);
     let general;
     try {
       general = await router.resolveText('general');
     } catch (error) {
+      pendingSlugs.delete(slug);
       if (error instanceof ModelRoutingError) {
         return reply.code(error.statusCode).send({
           error: error.message,
@@ -169,8 +173,13 @@ export async function registerBrandRoutes(
     }
 
     // Create job
-    const job = jobQueue.create('brand.extract');
-    pendingSlugs.add(slug);
+    let job: ReturnType<typeof jobQueue.create>;
+    try {
+      job = jobQueue.create('brand.extract');
+    } catch (error) {
+      pendingSlugs.delete(slug);
+      throw error;
+    }
 
     // Fire-and-forget extract
     runBrandExtractJob({
@@ -185,7 +194,10 @@ export async function registerBrandRoutes(
       sources,
     }).catch(() => {
       jobQueue.fail(job.id, 'Brand extraction failed. Review the source and general model configuration, then try again.');
-      pendingSlugs.delete(slug);
+    }).finally(() => {
+      // Extraction intentionally retains the reservation while the job waits
+      // for user input, but a failed job is terminal and must release it.
+      if (jobQueue.get(job.id)?.status === 'failed') pendingSlugs.delete(slug);
     });
 
     return reply.code(202).send({ job_id: job.id, slug });

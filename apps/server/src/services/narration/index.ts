@@ -114,7 +114,7 @@ export function splitScriptIntoChunks(script: string, isDialog: boolean): Script
 export async function generateNarration(
   input: NarrationInput,
   tts: TtsService,
-  llm: LlmClient,
+  llm: LlmClient | undefined,
   workspaceRoot: string,
 ): Promise<NarrationResult> {
   const { projectPath, sceneId, engine, voice, speed } = input;
@@ -205,7 +205,7 @@ export async function generateNarration(
 export async function generateChunkNarration(
   input: ChunkNarrationInput,
   tts: TtsService,
-  llm: LlmClient,
+  llm: LlmClient | undefined,
   workspaceRoot: string,
 ): Promise<ChunkNarrationResult> {
   const { projectPath, sceneId, chunkIndex, engine, voice, speed } = input;
@@ -363,7 +363,7 @@ async function markChunkFailed(
 export async function generateAllChunks(
   input: BatchInput,
   tts: TtsService,
-  llm: LlmClient,
+  llm: LlmClient | undefined,
   workspaceRoot: string,
   onProgress: (p: BatchProgress) => void,
   isCancelled: () => boolean = () => false,

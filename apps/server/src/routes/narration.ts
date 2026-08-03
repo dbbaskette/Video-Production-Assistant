@@ -47,6 +47,13 @@ async function resolveProject(store: ProjectStore, projectId: string) {
   }
 }
 
+async function batchUsesXai(projectPath: string, sceneId: string, fallbackEngine: string): Promise<boolean> {
+  if (fallbackEngine === 'xai') return true;
+  const storyboard = await loadStoryboard(projectPath);
+  const scene = storyboard?.scenes.find((candidate) => candidate.id === sceneId);
+  return Object.values(scene?.narration?.speakers ?? {}).some((speaker) => speaker.engine === 'xai');
+}
+
 // Voice clone reading script + instructions moved to routes/voice-clone.ts.
 
 export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
@@ -217,11 +224,13 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const projectPath = project.path;
 
     try {
-      const writer = await router.resolveText('writing', project);
+      const writer = engine === 'xai'
+        ? await router.resolveText('writing', project)
+        : undefined;
       const result = await generateNarration(
         { projectPath, sceneId, engine, voice, speed, expressiveness },
         tts,
-        writer.client,
+        writer?.client,
         workspaceRoot,
       );
       return result;
@@ -270,11 +279,13 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const projectPath = project.path;
 
     try {
-      const writer = await router.resolveText('writing', project);
+      const writer = engine === 'xai'
+        ? await router.resolveText('writing', project)
+        : undefined;
       const result = await generateChunkNarration(
         { projectPath, sceneId, chunkIndex, text, engine, voice, speed, expressiveness },
         tts,
-        writer.client,
+        writer?.client,
         workspaceRoot,
       );
       return result;
@@ -367,9 +378,11 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
     }
     const projectPath = project.path;
-    let writer;
+    let writer: Awaited<ReturnType<ModelRouter['resolveText']>> | undefined;
     try {
-      writer = await router.resolveText('writing', project);
+      if (await batchUsesXai(projectPath, sceneId, body.engine)) {
+        writer = await router.resolveText('writing', project);
+      }
     } catch (error) {
       if (error instanceof ModelRoutingError) {
         return reply.status(error.statusCode).send({
@@ -401,7 +414,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
             selector: body.selector ?? 'missing',
           },
           tts,
-          writer.client,
+          writer?.client,
           workspaceRoot,
           (progress) => jobQueue.emit(job.id, 'progress', progress),
           () => jobQueue.get(job.id)?.status === 'cancelled',

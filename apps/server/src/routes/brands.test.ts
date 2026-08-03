@@ -114,6 +114,38 @@ describe('GET /api/brands', () => {
 });
 
 describe('POST /api/brands', () => {
+  it('reserves a slug while model routing is still pending', async () => {
+    let releaseRouting!: () => void;
+    let routingStarted!: () => void;
+    const routingStartedPromise = new Promise<void>((resolve) => { routingStarted = resolve; });
+    const releaseRoutingPromise = new Promise<void>((resolve) => { releaseRouting = resolve; });
+    const defaultResolve = resolveText.getMockImplementation()!;
+    resolveText.mockImplementationOnce(async (...args) => {
+      routingStarted();
+      await releaseRoutingPromise;
+      return defaultResolve(...args);
+    });
+
+    const firstPromise = app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Concurrent Brand', free_text: 'First source' },
+    });
+    await routingStartedPromise;
+    const duplicate = await app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Concurrent Brand', free_text: 'Second source' },
+    });
+    releaseRouting();
+    const first = await firstPromise;
+
+    expect(duplicate.statusCode).toBe(409);
+    expect(first.statusCode).toBe(202);
+    expect(resolveText).toHaveBeenCalledTimes(1);
+    await waitForStatus(first.json().job_id, 'awaiting-input');
+  });
+
   it('creates brand from free_text and returns 202 with slug + job_id', async () => {
     const res = await app.inject({
       method: 'POST',
@@ -147,6 +179,38 @@ describe('POST /api/brands', () => {
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'general' });
     expect(res.json()).not.toHaveProperty('job_id');
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Unavailable Brand', free_text: 'Brand source' },
+    });
+    expect(retry.statusCode).toBe(202);
+    await waitForStatus(retry.json().job_id, 'awaiting-input');
+  });
+
+  it('releases a reserved slug when extraction fails', async () => {
+    const resolved = await resolveText.getMockImplementation()!('general');
+    resolveText.mockResolvedValueOnce({
+      ...resolved,
+      client: { complete: vi.fn(async () => { throw new Error('private extraction failure'); }) },
+    });
+
+    const failed = await app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Retryable Brand', free_text: 'Brand source' },
+    });
+    expect(failed.statusCode).toBe(202);
+    await waitForStatus(failed.json().job_id, 'failed');
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/brands',
+      payload: { name: 'Retryable Brand', free_text: 'Brand source' },
+    });
+    expect(retry.statusCode).toBe(202);
+    await waitForStatus(retry.json().job_id, 'awaiting-input');
   });
 
   it('rejects missing name with 400', async () => {

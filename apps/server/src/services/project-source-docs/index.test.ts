@@ -105,4 +105,14 @@ describe('source-docs register + background extract', () => {
     expect(bundle.docCount).toBe(1);
     expect(bundle.text).toContain('Ready reference text');
   });
+
+  it('does not silently truncate an oversized strict bundle without general', async () => {
+    await addText(projectPath, 'Reference content that exceeds the test budget.', 'large-note');
+
+    await expect(getReferenceContext(projectPath, {
+      budget: 10,
+      summarize: true,
+      strictSummarization: true,
+    })).rejects.toThrow('Source document summarization requires the general model.');
+  });
 });
