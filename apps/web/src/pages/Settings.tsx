@@ -4,7 +4,12 @@ import { Link } from 'react-router-dom';
 import { ApiError, settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ModelAssignments } from '../components/ModelAssignments.js';
-import { boundedMessage, modelEditDraft, MODEL_ASSIGNMENT_ROWS } from '../lib/model-routing.js';
+import {
+  boundedMessage,
+  isEffectiveProjectRoutingQuery,
+  modelEditDraft,
+  MODEL_ASSIGNMENT_ROWS,
+} from '../lib/model-routing.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -719,6 +724,14 @@ export function Settings() {
   const ui = useUi();
   const [deleteErrors, setDeleteErrors] = useState<Record<string, ModelReferences>>({});
   const [deleteMessages, setDeleteMessages] = useState<Record<string, string>>({});
+  const invalidateModelRouting = useCallback(async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
+      qc.invalidateQueries({
+        predicate: (query) => isEffectiveProjectRoutingQuery(query.queryKey),
+      }),
+    ]);
+  }, [qc]);
 
   // Models
   const { data: models, isLoading, error } = useQuery({
@@ -758,7 +771,7 @@ export function Settings() {
       });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
-        qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
+        invalidateModelRouting(),
       ]);
     },
     onError: (deleteError, id) => {
@@ -839,6 +852,9 @@ export function Settings() {
             onUpdate={async (update) => {
               const next = await settingsApi.updateModelRouting(update);
               qc.setQueryData(['settings', 'model-routing'], next);
+              await qc.invalidateQueries({
+                predicate: (query) => isEffectiveProjectRoutingQuery(query.queryKey),
+              });
               return next;
             }}
           />
@@ -879,7 +895,7 @@ export function Settings() {
                   await settingsApi.updateModel(m.id, patch);
                   await Promise.all([
                     qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
-                    qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
+                    invalidateModelRouting(),
                   ]);
                 }}
                 onDelete={async () => {
@@ -896,7 +912,7 @@ export function Settings() {
             <AddModelForm onAdded={() => {
               void Promise.all([
                 qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
-                qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
+                invalidateModelRouting(),
               ]);
             }} />
           </>

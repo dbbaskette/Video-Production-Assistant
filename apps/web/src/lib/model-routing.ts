@@ -39,6 +39,14 @@ export interface ModelEditDraft {
 
 export type SceneWritingOutput = 'scene description' | 'script' | 'lower-third copy';
 
+export function isEffectiveProjectRoutingQuery(queryKey: readonly unknown[]): boolean {
+  return queryKey.length === 3
+    && queryKey[0] === 'project'
+    && typeof queryKey[1] === 'string'
+    && queryKey[1].length > 0
+    && queryKey[2] === 'model-routing';
+}
+
 export interface SceneGroundingPresentation {
   visible: boolean;
   ready: boolean;

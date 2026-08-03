@@ -11,6 +11,7 @@ import {
   groundedFailureMessage,
   groundedGenerationPhase,
   groundingRequestValue,
+  isEffectiveProjectRoutingQuery,
   mergePendingRouting,
   modelEditDraft,
   modelAttribution,
@@ -71,6 +72,14 @@ function resolved(
 }
 
 describe('model routing view models', () => {
+  it('matches only effective per-project routing cache keys', () => {
+    expect(isEffectiveProjectRoutingQuery(['project', 'project-01', 'model-routing'])).toBe(true);
+    expect(isEffectiveProjectRoutingQuery(['project', '', 'model-routing'])).toBe(false);
+    expect(isEffectiveProjectRoutingQuery(['settings', 'model-routing'])).toBe(false);
+    expect(isEffectiveProjectRoutingQuery(['project', 'project-01', 'other'])).toBe(false);
+    expect(isEffectiveProjectRoutingQuery(['project', 42, 'model-routing'])).toBe(false);
+  });
+
   it('offers Gemini video models only and every text-capable model for writing', () => {
     expect(optionsForRole(models, 'video-understanding').map((model) => model.id)).toEqual([
       'gemini-pro',

@@ -388,6 +388,7 @@ export const recordingsApi = {
         description: string;
         type: string;
         mode: 'text' | 'video';
+        recordingVersion: string;
         dryRun?: false;
       }
     | {
@@ -396,6 +397,7 @@ export const recordingsApi = {
         proposed: { name: string; description: string; type: string };
         current: { name: string; description: string; type: string };
         mode: 'text' | 'video';
+        recordingVersion: string;
       }
   > {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts, {
@@ -418,6 +420,7 @@ export const recordingsApi = {
       transition_duration_sec?: number | null;
       frame_style?: string | null;
       frame_background?: string | null;
+      recordingVersion?: string;
     },
   ): Promise<{
     sceneId: string;

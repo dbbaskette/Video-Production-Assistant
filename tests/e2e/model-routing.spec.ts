@@ -134,10 +134,29 @@ test.describe.serial('task-based model routing', () => {
     let calls = await readModelRoutingE2eCalls();
     expect(calls.filter((call) => call.kind === 'video.upload')).toHaveLength(1);
     expect(calls.find((call) => call.kind === 'video.upload')?.inputPath).toMatch(
-      /model-routing-e2e\/recordings\/scene-01\.mp4$/,
+      /vpa-video-understanding-[^/]+\/recording\.snapshot$/,
     );
 
     const reanalysisUrl = `**/api/projects/${projectId}/scenes/scene-01/analyze`;
+    await page.route(reanalysisUrl, async (route) => {
+      await route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: 'The assigned model is unavailable.',
+          code: 'model_unavailable',
+          role: 'video-understanding',
+        }),
+      });
+    });
+    await page.getByRole('button', { name: 'Re-analyze scene' }).click();
+    const reanalysisFailure = page.getByRole('alert').filter({ hasText: 'Re-analyze failed:' });
+    await expect(reanalysisFailure).toContainText('The assigned model is unavailable.');
+    await expect(
+      reanalysisFailure.getByRole('link', { name: "Open this project's AI models" }),
+    ).toHaveAttribute('href', `/project/${projectId}#project-ai-models-title`);
+    await page.unroute(reanalysisUrl);
+
     await page.route(reanalysisUrl, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 200));
       await route.continue();
@@ -153,7 +172,8 @@ test.describe.serial('task-based model routing', () => {
     await expect(reanalysisDialog).toBeHidden();
     await page.unroute(reanalysisUrl);
     await expect(page.getByText('Proposed update')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.getByText('Proposed update')).toBeHidden();
 
     calls = await readModelRoutingE2eCalls();
     expect(calls.filter((call) => call.kind === 'video.upload')).toHaveLength(1);
@@ -258,6 +278,68 @@ test.describe.serial('task-based model routing', () => {
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Unsaved changes')).not.toBeVisible();
     await expect(script).toHaveValue(PRESERVED_SCRIPT);
+  });
+
+  test('refreshes cached effective project routing after a global assignment change', async ({
+    page,
+  }) => {
+    expect(projectId, 'The primary staged workflow creates the shared project fixture').toBeTruthy();
+
+    await openSceneTab(page, 'Script');
+    await expect(
+      page.getByText(
+        'Gemini Vision Secondary watches the recording; Codex Writer (fake) writes the script.',
+      ),
+    ).toBeVisible();
+
+    await page.getByTitle('Settings').click();
+    await selectGlobal(page, 'writing', MODEL_IDS.projectWriter);
+    await page.goBack();
+    await expect(
+      page.getByText(
+        'Gemini Vision Secondary watches the recording; Claude Analyst (fake) writes the script.',
+      ),
+    ).toBeVisible();
+
+    await page.getByTitle('Settings').click();
+    await selectGlobal(page, 'writing', MODEL_IDS.writer);
+    await page.goBack();
+    await expect(
+      page.getByText(
+        'Gemini Vision Secondary watches the recording; Codex Writer (fake) writes the script.',
+      ),
+    ).toBeVisible();
+  });
+
+  test('keeps model assignments readable without clipping at phone, tablet, and desktop widths', async ({
+    page,
+  }) => {
+    expect(projectId, 'The primary staged workflow creates the shared project fixture').toBeTruthy();
+
+    for (const width of [390, 768, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const destination of [`/project/${projectId}`, '/settings#model-assignments']) {
+        await page.goto(destination);
+        const rows = page.locator('.model-assignment-row');
+        await expect(rows.first()).toBeVisible();
+        const measurements = await rows.evaluateAll((elements) => elements.map((element) => {
+          const row = element as HTMLElement;
+          const rowBounds = row.getBoundingClientRect();
+          const cells = Array.from(row.children) as HTMLElement[];
+          return {
+            clipped: row.scrollWidth > row.clientWidth + 1
+              || cells.some((cell) => cell.getBoundingClientRect().right > rowBounds.right + 1),
+            columns: getComputedStyle(row).gridTemplateColumns.trim().split(/\s+/).length,
+          };
+        }));
+        expect(measurements.every(({ clipped }) => !clipped)).toBe(true);
+        const expectedColumns = width === 390
+          || (width === 768 && destination.startsWith('/project/'))
+          ? 1
+          : 3;
+        expect(measurements.every(({ columns }) => columns === expectedColumns)).toBe(true);
+      }
+    }
   });
 
   test('fails cleanly for missing video, unavailable writing, and blocked deletion', async ({

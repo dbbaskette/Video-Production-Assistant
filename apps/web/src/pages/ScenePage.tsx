@@ -265,6 +265,7 @@ export function ScenePage(props: ScenePageProps = {}) {
         proposed: { name: string; description: string; type: string };
         current: { name: string; description: string; type: string };
         mode: 'text' | 'video';
+        recordingVersion: string;
       }
   >(null);
   const reanalyzeMutation = useMutation({
@@ -287,13 +288,17 @@ export function ScenePage(props: ScenePageProps = {}) {
           proposed: data.proposed,
           current: data.current,
           mode: data.mode,
+          recordingVersion: data.recordingVersion,
         });
       }
     },
   });
   const applyAnalyzeMutation = useMutation({
-    mutationFn: (proposed: { name: string; description: string; type: string }) =>
-      recordingsApi.saveSceneMetadata(projectId!, sceneId!, proposed),
+    mutationFn: (preview: NonNullable<typeof analyzePreview>) =>
+      recordingsApi.saveSceneMetadata(projectId!, sceneId!, {
+        ...preview.proposed,
+        recordingVersion: preview.recordingVersion,
+      }),
     onSuccess: () => {
       setAnalyzePreview(null);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
@@ -1427,7 +1432,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       }}
                     >
                       <button
-                        onClick={() => applyAnalyzeMutation.mutate(analyzePreview.proposed)}
+                        onClick={() => applyAnalyzeMutation.mutate(analyzePreview)}
                         disabled={applyAnalyzeMutation.isPending}
                         className="primary"
                         style={{ padding: '7px 16px', fontSize: 12, fontWeight: 600 }}
@@ -1462,12 +1467,20 @@ export function ScenePage(props: ScenePageProps = {}) {
                 )}
 
                 {reanalyzeMutation.isError && (
-                  <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
-                    Re-analyze failed:{' '}
-                    {reanalyzeMutation.error instanceof Error
-                      ? reanalyzeMutation.error.message
-                      : 'Unknown error'}
-                  </p>
+                  <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }} role="alert">
+                    <p style={{ margin: 0 }}>
+                      Re-analyze failed:{' '}
+                      {reanalyzeMutation.error instanceof Error
+                        ? reanalyzeMutation.error.message
+                        : 'Unknown error'}
+                    </p>
+                    {reanalyzeMutation.error instanceof ApiError
+                      && routingFailureRole(reanalyzeMutation.error.payload) && (
+                      <Link to={`/project/${projectId}#project-ai-models-title`}>
+                        Open this project's AI models
+                      </Link>
+                    )}
+                  </div>
                 )}
               </div>
             </>
