@@ -1,6 +1,6 @@
-import { readdirSync } from 'node:fs';
+import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join, normalize, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -97,11 +97,45 @@ export function selectE2eInvocation(args, availableSpecs) {
   return { config: sharedConfig, args: [...sharedSpecs, ...args] };
 }
 
-function discoverSpecs() {
-  const e2eDir = join(root, 'tests', 'e2e');
-  return readdirSync(e2eDir)
-    .filter((name) => name.endsWith('.spec.ts'))
-    .map((name) => relative(root, join(e2eDir, name)).split(sep).join('/'));
+export function discoverSpecs(
+  e2eDir = join(root, 'tests', 'e2e'),
+  repositoryRoot = root,
+) {
+  const canonicalE2eDir = realpathSync(e2eDir);
+  const identities = new Set();
+  return readdirSync(e2eDir, { withFileTypes: true })
+    .filter((entry) => entry.name.endsWith('.spec.ts'))
+    .map((entry) => {
+      if (!entry.isFile()) {
+        throw new Error(`E2E spec entries must be regular files; rejected: ${entry.name}.`);
+      }
+
+      const specPath = join(e2eDir, entry.name);
+      const stats = lstatSync(specPath, { bigint: true });
+      if (!stats.isFile() || stats.isSymbolicLink()) {
+        throw new Error(`E2E spec entries must be regular files; rejected: ${entry.name}.`);
+      }
+
+      const canonicalSpecPath = realpathSync(specPath);
+      const canonicalRelative = relative(canonicalE2eDir, canonicalSpecPath);
+      if (
+        canonicalRelative === '..' ||
+        canonicalRelative.startsWith(`..${sep}`) ||
+        isAbsolute(canonicalRelative)
+      ) {
+        throw new Error(`E2E spec files must remain inside the E2E directory: ${entry.name}.`);
+      }
+
+      const identity = stats.ino === 0n ? null : `${stats.dev}:${stats.ino}`;
+      if (stats.nlink !== 1n || (identity !== null && identities.has(identity))) {
+        throw new Error(
+          `E2E spec files must have unique filesystem identities; rejected: ${entry.name}.`,
+        );
+      }
+      if (identity !== null) identities.add(identity);
+
+      return relative(repositoryRoot, specPath).split(sep).join('/');
+    });
 }
 
 function run() {
