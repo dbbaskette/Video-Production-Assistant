@@ -12,13 +12,14 @@ const specs = [
 ];
 
 async function withTemporaryE2eDirectory(run) {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), 'vpa-e2e-discovery-'));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'vpa-e2e-discovery-'));
+  const repositoryRoot = join(workspaceRoot, 'repository');
   const e2eDir = join(repositoryRoot, 'tests', 'e2e');
   await mkdir(e2eDir, { recursive: true });
   try {
-    await run({ repositoryRoot, e2eDir });
+    await run({ workspaceRoot, repositoryRoot, e2eDir });
   } finally {
-    await rm(repositoryRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
@@ -171,6 +172,47 @@ test('hard-link spec aliases fail closed during discovery when supported', async
     assert.throws(
       () => discoverSpecs(e2eDir, repositoryRoot),
       /E2E spec files must have unique filesystem identities/,
+    );
+  });
+});
+
+test('an external E2E directory fails canonical repository containment', async () => {
+  await withTemporaryE2eDirectory(async ({ workspaceRoot, repositoryRoot }) => {
+    const externalE2eDir = join(workspaceRoot, 'external-e2e');
+    await mkdir(externalE2eDir);
+    await writeFile(join(externalE2eDir, 'model-routing.spec.ts'), 'routing\n');
+
+    assert.throws(
+      () => discoverSpecs(externalE2eDir, repositoryRoot),
+      /E2E directory must be the real in-repository tests\/e2e directory/,
+    );
+  });
+});
+
+test('a symlinked in-repository E2E directory to an external sibling fails closed', async () => {
+  await withTemporaryE2eDirectory(async ({ workspaceRoot, repositoryRoot, e2eDir }) => {
+    const externalE2eDir = join(workspaceRoot, 'external-e2e');
+    await mkdir(externalE2eDir);
+    await writeFile(join(externalE2eDir, 'model-routing.spec.ts'), 'routing\n');
+    await rm(e2eDir, { recursive: true });
+    await symlink(externalE2eDir, e2eDir, 'dir');
+
+    assert.throws(
+      () => discoverSpecs(e2eDir, repositoryRoot),
+      /E2E directory must be the real in-repository tests\/e2e directory/,
+    );
+  });
+});
+
+test('a symlinked repository-root prefix remains safe when E2E is the expected real directory', async () => {
+  await withTemporaryE2eDirectory(async ({ workspaceRoot, repositoryRoot, e2eDir }) => {
+    await writeFile(join(e2eDir, 'brand-creation.spec.ts'), 'ordinary\n');
+    const repositoryAlias = join(workspaceRoot, 'repository-alias');
+    await symlink(repositoryRoot, repositoryAlias, 'dir');
+
+    assert.deepEqual(
+      discoverSpecs(join(repositoryAlias, 'tests', 'e2e'), repositoryAlias),
+      ['tests/e2e/brand-creation.spec.ts'],
     );
   });
 });

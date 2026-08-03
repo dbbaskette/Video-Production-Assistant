@@ -101,7 +101,31 @@ export function discoverSpecs(
   e2eDir = join(root, 'tests', 'e2e'),
   repositoryRoot = root,
 ) {
-  const canonicalE2eDir = realpathSync(e2eDir);
+  const boundaryError = () =>
+    new Error('E2E directory must be the real in-repository tests/e2e directory.');
+  let canonicalRepositoryRoot;
+  let canonicalE2eDir;
+  let e2eDirStats;
+  let expectedE2eDirStats;
+  try {
+    canonicalRepositoryRoot = realpathSync(repositoryRoot);
+    e2eDirStats = lstatSync(e2eDir);
+    canonicalE2eDir = realpathSync(e2eDir);
+    expectedE2eDirStats = lstatSync(join(canonicalRepositoryRoot, 'tests', 'e2e'));
+  } catch {
+    throw boundaryError();
+  }
+  const expectedCanonicalE2eDir = join(canonicalRepositoryRoot, 'tests', 'e2e');
+  if (
+    !e2eDirStats.isDirectory() ||
+    e2eDirStats.isSymbolicLink() ||
+    !expectedE2eDirStats.isDirectory() ||
+    expectedE2eDirStats.isSymbolicLink() ||
+    canonicalE2eDir !== expectedCanonicalE2eDir
+  ) {
+    throw boundaryError();
+  }
+
   const identities = new Set();
   return readdirSync(e2eDir, { withFileTypes: true })
     .filter((entry) => entry.name.endsWith('.spec.ts'))
