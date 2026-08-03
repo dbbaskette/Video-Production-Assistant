@@ -77,6 +77,8 @@ export function ScenePage(props: ScenePageProps = {}) {
   const outletProject = useOutletContextSafe<WorkspaceContext>()?.project;
   const projectId = props.projectId ?? params.projectId;
   const sceneId = props.sceneId ?? params.sceneId;
+  const activeSceneRef = useRef({ projectId, sceneId });
+  activeSceneRef.current = { projectId, sceneId };
   const project = props.project ?? outletProject;
   const embedded = props.embedded ?? false;
   // Quality Review can deep-link with ?tab=Script (etc.) so a click-to-jump
@@ -266,12 +268,20 @@ export function ScenePage(props: ScenePageProps = {}) {
       }
   >(null);
   const reanalyzeMutation = useMutation({
-    mutationFn: () =>
-      recordingsApi.reanalyze(projectId!, sceneId!, {
-        groundInVideo: groundingRequestValue(reanalyzeGroundInVideo, grounding),
+    mutationFn: (request: { projectId: string; sceneId: string; groundInVideo: boolean }) =>
+      recordingsApi.reanalyze(request.projectId, request.sceneId, {
+        groundInVideo: request.groundInVideo,
         dryRun: true,
       }),
-    onSuccess: (data) => {
+    onSuccess: (data, request) => {
+      const activeScene = activeSceneRef.current;
+      if (
+        activeScene.projectId !== request.projectId ||
+        activeScene.sceneId !== request.sceneId
+      ) {
+        return;
+      }
+      setUploadAnalysisFailure(null);
       if ('dryRun' in data && data.dryRun) {
         setAnalyzePreview({
           proposed: data.proposed,
@@ -1310,7 +1320,16 @@ export function ScenePage(props: ScenePageProps = {}) {
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <button
-                    onClick={() => reanalyzeMutation.mutate()}
+                    onClick={() =>
+                      reanalyzeMutation.mutate({
+                        projectId: projectId!,
+                        sceneId: sceneId!,
+                        groundInVideo: groundingRequestValue(
+                          reanalyzeGroundInVideo,
+                          grounding,
+                        ),
+                      })
+                    }
                     disabled={
                       reanalyzeMutation.isPending ||
                       !!analyzePreview ||

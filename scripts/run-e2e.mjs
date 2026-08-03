@@ -7,12 +7,75 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const routingSpec = normalize('tests/e2e/model-routing.spec.ts');
 const sharedConfig = 'tests/e2e/playwright.config.ts';
 const routingConfig = 'tests/e2e/model-routing.playwright.config.ts';
+const standaloneOptions = new Set([
+  '--debug',
+  '--fail-on-flaky-tests',
+  '--forbid-only',
+  '--headed',
+  '--list',
+  '--pass-with-no-tests',
+  '--quiet',
+  '--ui',
+  '-x',
+]);
+const inlineValueOptions = new Set([
+  '--grep',
+  '--grep-invert',
+  '--max-failures',
+  '--output',
+  '--project',
+  '--repeat-each',
+  '--reporter',
+  '--retries',
+  '--shard',
+  '--timeout',
+  '--trace',
+  '--workers',
+  '-g',
+]);
+
+function validateOption(arg) {
+  if (
+    arg === '--config' ||
+    arg.startsWith('--config=') ||
+    arg === '-c' ||
+    arg.startsWith('-c=')
+  ) {
+    throw new Error(
+      'Configuration overrides are not supported; the E2E runner owns harness selection.',
+    );
+  }
+
+  if (standaloneOptions.has(arg)) return;
+
+  const separator = arg.indexOf('=');
+  const name = separator === -1 ? arg : arg.slice(0, separator);
+  if (inlineValueOptions.has(name)) {
+    if (separator !== -1 && arg.slice(separator + 1).length > 0) return;
+    throw new Error(`Unsupported Playwright option ${arg}; pass its value inline as ${name}=VALUE.`);
+  }
+
+  throw new Error(`Unsupported Playwright option ${arg}; add it to the audited safe-option list.`);
+}
 
 export function selectE2eInvocation(args, availableSpecs) {
-  const normalizedArgs = args.map((arg) => normalize(arg));
-  const requestedSpecs = normalizedArgs.filter((arg) => arg.endsWith('.spec.ts'));
-  const requestsRouting = requestedSpecs.some((arg) => arg.endsWith(routingSpec));
-  const requestsOther = requestedSpecs.some((arg) => !arg.endsWith(routingSpec));
+  for (const arg of args) {
+    if (arg.startsWith('-')) validateOption(arg);
+  }
+
+  const available = new Set(availableSpecs.map((spec) => normalize(spec)));
+  const requestedSpecs = args
+    .filter((arg) => !arg.startsWith('-'))
+    .map((arg) => normalize(arg));
+  const unknownSpecs = requestedSpecs.filter((spec) => !available.has(spec));
+  if (unknownSpecs.length > 0) {
+    throw new Error(
+      `Only exact repository-relative spec paths are supported; rejected: ${unknownSpecs.join(', ')}.`,
+    );
+  }
+
+  const requestsRouting = requestedSpecs.includes(routingSpec);
+  const requestsOther = requestedSpecs.some((spec) => spec !== routingSpec);
 
   if (requestsRouting && requestsOther) {
     throw new Error(
@@ -24,7 +87,7 @@ export function selectE2eInvocation(args, availableSpecs) {
     return { config: routingConfig, args };
   }
 
-  if (requestedSpecs.length > 0) {
+  if (requestsOther) {
     return { config: sharedConfig, args };
   }
 

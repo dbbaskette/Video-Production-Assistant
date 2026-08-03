@@ -380,6 +380,12 @@ test.describe.serial('task-based model routing', () => {
     expect(calls.filter((call) => call.kind === 'video.delete')).toHaveLength(1);
     expect(calls.filter((call) => call.kind === 'text.complete')).toHaveLength(0);
 
+    await page.getByRole('button', { name: 'Re-analyze scene' }).click();
+    await expect(page.getByText('Proposed update')).toBeVisible();
+    await expect(failure).toBeHidden();
+    await expect(page.getByText('recordings/scene-01.mp4')).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
     await page.getByRole('button', { name: 'Script', exact: true }).click();
     await expect(page.getByPlaceholder('Monologue script…')).toHaveValue(PRESERVED_SCRIPT);
   });
