@@ -9,18 +9,22 @@ import {
 } from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
 import type { ServerConfig } from '../config.js';
-import type { ModelRegistry } from '../services/llm/model-registry.js';
+import { ModelRegistryError } from '../services/llm/model-registry.js';
 import { projectFieldByRole, type ModelRouter } from '../services/llm/model-router.js';
+import {
+  ModelRoutingCoordinatorError,
+  type ModelRoutingCoordinator,
+} from '../services/llm/model-routing-coordinator.js';
 
 interface Deps {
   store: ProjectStore;
   config: ServerConfig;
-  registry: ModelRegistry;
   router: ModelRouter;
+  coordinator: ModelRoutingCoordinator;
 }
 
 export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, config, registry, router } = deps;
+  const { store, config, router, coordinator } = deps;
 
   const projectAssignments = (project: Awaited<ReturnType<ProjectStore['readProject']>>) =>
     Object.fromEntries(
@@ -134,32 +138,30 @@ export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<
     const parsed = ModelRoutingUpdateSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({
-        error: parsed.error.message,
+        error: 'Project model assignment request is invalid.',
         code: 'invalid_request',
       });
     }
 
-    for (const modelId of Object.values(parsed.data.assignments)) {
-      if (modelId !== null && modelId !== undefined && !registry.getById(modelId)) {
-        return reply.status(400).send({
-          error: `Model "${modelId}" not found`,
-          code: 'invalid_model_assignment',
-        });
-      }
-    }
-
     try {
-      const project = await store.setProjectModelRouting(id, parsed.data.assignments);
+      const project = await coordinator.setProjectAssignments(id, parsed.data.assignments);
       return reply.send({
         assignments: projectAssignments(project),
         resolved: await router.describeAll(project),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = /not found/i.test(message) ? 404 : 500;
-      return reply.status(status).send({
-        error: message,
-        code: status === 404 ? 'not_found' : 'update_failed',
+      if (error instanceof ModelRegistryError && error.code === 'invalid_assignment') {
+        return reply.status(400).send({
+          error: 'The selected model assignment is invalid.',
+          code: 'invalid_model_assignment',
+        });
+      }
+      if (error instanceof ModelRoutingCoordinatorError && error.code === 'project_not_found') {
+        return reply.status(404).send({ error: 'Project was not found.', code: 'not_found' });
+      }
+      return reply.status(500).send({
+        error: 'Project model settings could not be saved. Try again.',
+        code: 'project_routing_persistence_failed',
       });
     }
   });

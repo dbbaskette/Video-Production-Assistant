@@ -39,19 +39,28 @@ export interface SanitizedModelEntry extends Omit<ModelEntry, 'apiKey'> {
   readinessMessage?: string;
 }
 
-const ModelEntrySchema = z.object({
-  id: z.string(),
-  name: z.string(),
+export const ModelEntrySchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(200),
   provider: ModelProviderSchema,
-  model: z.string(),
-  endpoint: z.string().optional(),
-  apiKey: z.string().optional(),
+  model: z.string().min(1).max(500),
+  endpoint: z.string().max(2_048).optional(),
+  apiKey: z.string().max(20_000).optional(),
 }).strict();
 
+export const ModelEntryUpdateSchema = ModelEntrySchema
+  .omit({ id: true, provider: true })
+  .partial()
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: 'At least one editable model field is required.',
+  });
+export type ModelEntryUpdate = z.infer<typeof ModelEntryUpdateSchema>;
+
 const AssignmentSchema = z.object({
-  'video-understanding': z.string().optional(),
-  writing: z.string().optional(),
-  general: z.string().optional(),
+  'video-understanding': z.string().min(1).max(200).optional(),
+  writing: z.string().min(1).max(200).optional(),
+  general: z.string().min(1).max(200).optional(),
 }).strict();
 
 const Version2ModelsFileSchema = z.object({
@@ -70,6 +79,24 @@ const LegacyModelsFileSchema = z.object({
 const DiskModelsFileSchema = z.union([Version2ModelsFileSchema, LegacyModelsFileSchema]);
 
 type LegacyModelsFile = z.infer<typeof LegacyModelsFileSchema>;
+
+export type ModelRegistryErrorCode =
+  | 'invalid_model'
+  | 'invalid_assignment'
+  | 'model_exists'
+  | 'model_not_found'
+  | 'persistence_failed';
+
+export class ModelRegistryError extends Error {
+  constructor(
+    readonly code: ModelRegistryErrorCode,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'ModelRegistryError';
+  }
+}
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
@@ -144,8 +171,50 @@ function migrateLegacy(legacy: LegacyModelsFile): ModelsFile {
   };
 }
 
+function cloneModelsFile(data: ModelsFile): ModelsFile {
+  return Version2ModelsFileSchema.parse({
+    version: 2,
+    models: data.models.map((entry) => ({ ...entry })),
+    assignments: { ...data.assignments },
+  });
+}
+
+function mergeEnvEntries(
+  current: ModelsFile,
+  env: NodeJS.ProcessEnv,
+): { candidate: ModelsFile; changed: boolean } {
+  const candidate = cloneModelsFile(current);
+  const existingIds = new Set(candidate.models.map((entry) => entry.id));
+  const seeded = seedFromEnv(env);
+  const seededById = new Map(seeded.map((entry) => [entry.id, entry] as const));
+  let changed = false;
+
+  for (const entry of seeded) {
+    if (!existingIds.has(entry.id)) {
+      candidate.models.push(entry);
+      changed = true;
+    }
+  }
+
+  for (const entry of candidate.models) {
+    const fromEnv = seededById.get(entry.id);
+    if (!fromEnv) continue;
+    if (entry.model !== fromEnv.model) {
+      entry.model = fromEnv.model;
+      changed = true;
+    }
+    if (fromEnv.apiKey && entry.apiKey !== fromEnv.apiKey) {
+      entry.apiKey = fromEnv.apiKey;
+      changed = true;
+    }
+  }
+
+  return { candidate: Version2ModelsFileSchema.parse(candidate), changed };
+}
+
 export class ModelRegistry {
   private data: ModelsFile = { version: 2, models: [], assignments: {} };
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly filePath: string,
@@ -158,48 +227,23 @@ export class ModelRegistry {
       raw = await readFile(this.filePath, 'utf8');
     } catch (error) {
       if (!isMissingFileError(error)) throw error;
-      this.data = initialDataFromEnv(env);
-      await this.save();
+      const candidate = initialDataFromEnv(env);
+      await this.persistCandidate(candidate);
+      this.data = candidate;
       return;
     }
 
     const parsed = DiskModelsFileSchema.parse(JSON.parse(raw));
-    if (parsed.version === 2) {
-      this.data = parsed;
-    } else {
-      this.data = migrateLegacy(parsed);
-      await this.save();
+    const migrated = parsed.version === 2 ? parsed : migrateLegacy(parsed);
+    const merged = mergeEnvEntries(migrated, env);
+    // A valid v2 catalog is already the durable source of truth. Publish that
+    // exact disk state before attempting optional environment enrichment so a
+    // failed enrichment save cannot make runtime assignments disappear.
+    if (parsed.version === 2) this.data = cloneModelsFile(parsed);
+    if (parsed.version !== 2 || merged.changed) {
+      await this.persistCandidate(merged.candidate);
     }
-    await this.mergeEnvEntries(env);
-  }
-
-  private async mergeEnvEntries(env: NodeJS.ProcessEnv): Promise<void> {
-    const existingIds = new Set(this.data.models.map((entry) => entry.id));
-    const seeded = seedFromEnv(env);
-    const seededById = new Map(seeded.map((entry) => [entry.id, entry] as const));
-    let changed = false;
-
-    for (const entry of seeded) {
-      if (!existingIds.has(entry.id)) {
-        this.data.models.push(entry);
-        changed = true;
-      }
-    }
-
-    for (const entry of this.data.models) {
-      const fromEnv = seededById.get(entry.id);
-      if (!fromEnv) continue;
-      if (entry.model !== fromEnv.model) {
-        entry.model = fromEnv.model;
-        changed = true;
-      }
-      if (fromEnv.apiKey && entry.apiKey !== fromEnv.apiKey) {
-        entry.apiKey = fromEnv.apiKey;
-        changed = true;
-      }
-    }
-
-    if (changed) await this.save();
+    this.data = merged.candidate;
   }
 
   list(): SanitizedModelEntry[] {
@@ -216,7 +260,8 @@ export class ModelRegistry {
   }
 
   getById(id: string): ModelEntry | undefined {
-    return this.data.models.find((entry) => entry.id === id);
+    const entry = this.data.models.find((candidate) => candidate.id === id);
+    return entry ? { ...entry } : undefined;
   }
 
   getAssignment(role: ModelTaskRole): string | undefined {
@@ -228,48 +273,98 @@ export class ModelRegistry {
   }
 
   async setAssignments(patch: Partial<Record<ModelTaskRole, string | null>>): Promise<void> {
-    for (const id of Object.values(patch)) {
-      if (id !== null && id !== undefined && !this.getById(id)) {
-        throw new Error(`Model "${id}" not found`);
+    await this.mutate((candidate) => {
+      for (const id of Object.values(patch)) {
+        if (id !== null && id !== undefined && !candidate.models.some((entry) => entry.id === id)) {
+          throw new ModelRegistryError('invalid_assignment', 'The assignment references an unknown model.');
+        }
       }
-    }
-
-    const assignments = { ...this.data.assignments };
-    for (const [role, id] of Object.entries(patch) as Array<[ModelTaskRole, string | null | undefined]>) {
-      if (id === null) delete assignments[role];
-      else if (id !== undefined) assignments[role] = id;
-    }
-    this.data.assignments = assignments;
-    await this.save();
+      for (const [role, id] of Object.entries(patch) as Array<[ModelTaskRole, string | null | undefined]>) {
+        if (id === null) delete candidate.assignments[role];
+        else if (id !== undefined) candidate.assignments[role] = id;
+      }
+      return { candidate, result: undefined };
+    });
   }
 
   async add(entry: ModelEntry): Promise<ModelEntry> {
-    if (this.getById(entry.id)) throw new Error(`Model "${entry.id}" already exists`);
-    this.data.models.push(entry);
-    await this.save();
-    return entry;
+    const parsed = this.parseEntry(entry);
+    return this.mutate((candidate) => {
+      if (candidate.models.some((existing) => existing.id === parsed.id)) {
+        throw new ModelRegistryError('model_exists', 'A model with this ID already exists.');
+      }
+      candidate.models.push({ ...parsed });
+      return { candidate, result: { ...parsed } };
+    });
   }
 
-  async update(id: string, patch: Partial<Omit<ModelEntry, 'id'>>): Promise<ModelEntry> {
-    const entry = this.getById(id);
-    if (!entry) throw new Error(`Model "${id}" not found`);
-    Object.assign(entry, patch);
-    await this.save();
-    return entry;
+  async update(id: string, patch: ModelEntryUpdate): Promise<ModelEntry> {
+    const parsedPatch = this.parseUpdate(patch);
+    return this.mutate((candidate) => {
+      const index = candidate.models.findIndex((entry) => entry.id === id);
+      if (index === -1) {
+        throw new ModelRegistryError('model_not_found', 'Model configuration was not found.');
+      }
+      const updated = this.parseEntry({ ...candidate.models[index]!, ...parsedPatch });
+      candidate.models[index] = updated;
+      return { candidate, result: { ...updated } };
+    });
   }
 
   async remove(id: string): Promise<void> {
-    const index = this.data.models.findIndex((entry) => entry.id === id);
-    if (index === -1) throw new Error(`Model "${id}" not found`);
-    this.data.models.splice(index, 1);
-    for (const [role, assignedId] of Object.entries(this.data.assignments) as Array<[ModelTaskRole, string]>) {
-      if (assignedId === id) delete this.data.assignments[role];
-    }
-    await this.save();
+    await this.mutate((candidate) => {
+      const index = candidate.models.findIndex((entry) => entry.id === id);
+      if (index === -1) {
+        throw new ModelRegistryError('model_not_found', 'Model configuration was not found.');
+      }
+      candidate.models.splice(index, 1);
+      for (const [role, assignedId] of Object.entries(candidate.assignments) as Array<[ModelTaskRole, string]>) {
+        if (assignedId === id) delete candidate.assignments[role];
+      }
+      return { candidate, result: undefined };
+    });
   }
 
-  private async save(): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
-    await this.persist(this.filePath, JSON.stringify(this.data, null, 2) + '\n');
+  private parseEntry(entry: unknown): ModelEntry {
+    const parsed = ModelEntrySchema.safeParse(entry);
+    if (!parsed.success) {
+      throw new ModelRegistryError('invalid_model', 'Model configuration is invalid.');
+    }
+    return parsed.data;
+  }
+
+  private parseUpdate(patch: unknown): ModelEntryUpdate {
+    const parsed = ModelEntryUpdateSchema.safeParse(patch);
+    if (!parsed.success) {
+      throw new ModelRegistryError('invalid_model', 'Model configuration update is invalid.');
+    }
+    return parsed.data;
+  }
+
+  private mutate<T>(
+    build: (candidate: ModelsFile) => { candidate: ModelsFile; result: T },
+  ): Promise<T> {
+    const operation = this.mutationQueue.then(async () => {
+      const outcome = build(cloneModelsFile(this.data));
+      const candidate = Version2ModelsFileSchema.parse(outcome.candidate);
+      await this.persistCandidate(candidate);
+      this.data = candidate;
+      return outcome.result;
+    });
+    this.mutationQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async persistCandidate(candidate: ModelsFile): Promise<void> {
+    try {
+      await mkdir(dirname(this.filePath), { recursive: true });
+      await this.persist(this.filePath, JSON.stringify(candidate, null, 2) + '\n');
+    } catch (error) {
+      throw new ModelRegistryError(
+        'persistence_failed',
+        'Model settings could not be saved.',
+        { cause: error },
+      );
+    }
   }
 }

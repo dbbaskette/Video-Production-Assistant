@@ -1,10 +1,20 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ModelRegistry } from './model-registry.js';
 
 const tempDirs: string[] = [];
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 async function createRegistryFile(contents: unknown): Promise<{ registry: ModelRegistry; filePath: string }> {
   const directory = await mkdtemp(path.join(tmpdir(), 'vpa-model-registry-'));
@@ -108,7 +118,7 @@ describe('ModelRegistry', () => {
     expect(registry.getAssignments()).toEqual({ writing: 'writer', 'video-understanding': 'writer' });
 
     await expect(registry.setAssignments({ writing: 'missing', general: null }))
-      .rejects.toThrow('Model "missing" not found');
+      .rejects.toMatchObject({ code: 'invalid_assignment' });
     expect(registry.getAssignments()).toEqual({ writing: 'writer', 'video-understanding': 'writer' });
   });
 
@@ -149,12 +159,160 @@ describe('ModelRegistry', () => {
     };
     const registry = new ModelRegistry(filePath, rejectWrite);
 
-    await expect(registry.load({ GEMINI_API_KEY: 'env-secret' })).rejects.toThrow('disk unavailable');
+    await expect(registry.load({ GEMINI_API_KEY: 'env-secret' }))
+      .rejects.toMatchObject({ code: 'persistence_failed' });
 
     expect(registry.getAssignments()).toEqual({ writing: 'writer', general: 'writer' });
     expect(JSON.parse(await readFile(filePath, 'utf8')).assignments).toEqual({
       writing: 'writer',
       general: 'writer',
     });
+  });
+
+  it.each([
+    ['setAssignments', async (registry: ModelRegistry) => registry.setAssignments({ writing: 'writer' })],
+    ['add', async (registry: ModelRegistry) => registry.add({
+      id: 'added', name: 'Added', provider: 'fake', model: 'added-model',
+    })],
+    ['update', async (registry: ModelRegistry) => registry.update('writer', { name: 'Changed' })],
+    ['remove', async (registry: ModelRegistry) => registry.remove('writer')],
+  ] as const)('keeps runtime and disk unchanged when %s persistence rejects', async (_name, mutate) => {
+    const { filePath } = await createRegistryFile({
+      version: 2,
+      models: [{ id: 'writer', name: 'Writer', provider: 'fake', model: 'writer-v1' }],
+      assignments: { writing: 'writer', general: 'writer' },
+    });
+    let rejectWrites = false;
+    const persist = vi.fn(async (target: string, contents: string) => {
+      if (rejectWrites) throw new Error(`/private/catalog/models.json could not be saved: ${target}`);
+      await writeFile(target, contents);
+    });
+    const registry = new ModelRegistry(filePath, persist);
+    await registry.load({});
+    const beforeDisk = await readFile(filePath, 'utf8');
+    const beforeModels = registry.list();
+    const beforeAssignments = registry.getAssignments();
+    rejectWrites = true;
+
+    await expect(mutate(registry)).rejects.toThrow();
+
+    expect(registry.list()).toEqual(beforeModels);
+    expect(registry.getAssignments()).toEqual(beforeAssignments);
+    expect(await readFile(filePath, 'utf8')).toBe(beforeDisk);
+    // A failed delete must not silently clear either assignment.
+    if (_name === 'remove') {
+      expect(registry.getAssignments()).toEqual({ writing: 'writer', general: 'writer' });
+      expect(registry.getById('writer')).toBeDefined();
+    }
+  });
+
+  it('serializes concurrent assignment patches so acknowledged writes compose', async () => {
+    const { filePath } = await createRegistryFile({
+      version: 2,
+      models: [
+        { id: 'writer', name: 'Writer', provider: 'fake', model: 'writer-v1' },
+        { id: 'general', name: 'General', provider: 'fake', model: 'general-v1' },
+      ],
+      assignments: {},
+    });
+    const firstWrite = deferred();
+    let block = false;
+    const writes: string[] = [];
+    const persist = vi.fn(async (_target: string, contents: string) => {
+      writes.push(contents);
+      if (block && writes.length === 1) await firstWrite.promise;
+    });
+    const registry = new ModelRegistry(filePath, persist);
+    await registry.load({});
+    persist.mockClear();
+    writes.length = 0;
+    block = true;
+
+    const first = registry.setAssignments({ writing: 'writer' });
+    const second = registry.setAssignments({ general: 'general' });
+    await vi.waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
+    expect(registry.getAssignments()).toEqual({});
+    firstWrite.resolve();
+    await Promise.all([first, second]);
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(writes[0]!).assignments).toEqual({ writing: 'writer' });
+    expect(JSON.parse(writes[1]!).assignments).toEqual({ writing: 'writer', general: 'general' });
+    expect(registry.getAssignments()).toEqual({ writing: 'writer', general: 'general' });
+  });
+
+  it.each([
+    {
+      name: 'add',
+      setup: async (_registry: ModelRegistry) => {},
+      first: (registry: ModelRegistry) => registry.add({ id: 'one', name: 'One', provider: 'fake', model: 'one' }),
+      second: (registry: ModelRegistry) => registry.add({ id: 'two', name: 'Two', provider: 'fake', model: 'two' }),
+      assertFinal: (registry: ModelRegistry) => expect(registry.list().map((entry) => entry.id)).toEqual(expect.arrayContaining(['one', 'two'])),
+    },
+    {
+      name: 'update',
+      setup: async (registry: ModelRegistry) => { await registry.add({ id: 'target', name: 'Target', provider: 'fake', model: 'v1' }); },
+      first: (registry: ModelRegistry) => registry.update('target', { name: 'First name' }),
+      second: (registry: ModelRegistry) => registry.update('target', { model: 'v2' }),
+      assertFinal: (registry: ModelRegistry) => expect(registry.getById('target')).toMatchObject({ name: 'First name', model: 'v2' }),
+    },
+    {
+      name: 'remove',
+      setup: async (registry: ModelRegistry) => {
+        await registry.add({ id: 'one', name: 'One', provider: 'fake', model: 'one' });
+        await registry.add({ id: 'two', name: 'Two', provider: 'fake', model: 'two' });
+      },
+      first: (registry: ModelRegistry) => registry.remove('one'),
+      second: (registry: ModelRegistry) => registry.remove('two'),
+      assertFinal: (registry: ModelRegistry) => {
+        expect(registry.getById('one')).toBeUndefined();
+        expect(registry.getById('two')).toBeUndefined();
+      },
+    },
+  ])('serializes concurrent $name mutations against the last durable candidate', async ({ setup, first, second, assertFinal }) => {
+    const { filePath } = await createRegistryFile({ version: 2, models: [], assignments: {} });
+    const gate = deferred();
+    const writes: string[] = [];
+    let block = false;
+    const persist = vi.fn(async (_target: string, contents: string) => {
+      writes.push(contents);
+      if (block && writes.length === 1) await gate.promise;
+    });
+    const registry = new ModelRegistry(filePath, persist);
+    await registry.load({});
+    await setup(registry);
+    persist.mockClear();
+    writes.length = 0;
+    block = true;
+
+    const firstMutation = first(registry);
+    const secondMutation = second(registry);
+    await vi.waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
+    gate.resolve();
+    await Promise.all([firstMutation, secondMutation]);
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    assertFinal(registry);
+    expect(JSON.parse(writes[1]!).models).toEqual(
+      registry.list().map(({ hasApiKey: _hasApiKey, capabilities: _capabilities, ready: _ready, readinessMessage: _readinessMessage, ...entry }) => entry),
+    );
+  });
+
+  it('defensively rejects invalid runtime candidates without calling persistence', async () => {
+    const { registry } = await createRegistryFile({ version: 2, models: [], assignments: {} });
+    await registry.load({});
+    const before = registry.list();
+
+    await expect(registry.add({
+      id: 'bad',
+      name: 'Bad',
+      provider: 'not-a-provider',
+      model: 'bad',
+    } as never)).rejects.toThrow();
+    await expect(registry.update('fake', {
+      provider: 'gemini',
+    } as never)).rejects.toThrow();
+
+    expect(registry.list()).toEqual(before);
   });
 });

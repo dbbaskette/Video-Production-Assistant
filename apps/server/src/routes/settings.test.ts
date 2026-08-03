@@ -8,11 +8,19 @@ import { ModelRegistry } from '../services/llm/model-registry.js';
 import { ModelRouter } from '../services/llm/model-router.js';
 import { createLlmFromEntry } from '../services/llm/factory.js';
 import { ProjectStore } from '../services/project/store.js';
+import { ModelRoutingCoordinator } from '../services/llm/model-routing-coordinator.js';
+import { atomicWriteFile } from '../lib/fs-atomic.js';
 
 async function buildTestServer() {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-settings-home-'));
   const projects = await mkdtemp(path.join(tmpdir(), 'vpa-settings-projects-'));
-  const registry = new ModelRegistry(path.join(home, 'models.json'));
+  let rejectRegistryWrites = false;
+  const registry = new ModelRegistry(path.join(home, 'models.json'), async (target, contents) => {
+    if (rejectRegistryWrites) {
+      throw new Error(`/private/Users/alice/.vpa/models.json could not be saved at ${target}`);
+    }
+    await atomicWriteFile(target, contents);
+  });
   await registry.load({});
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
   const router = new ModelRouter({
@@ -20,9 +28,17 @@ async function buildTestServer() {
     createClient: createLlmFromEntry,
     checkCliReady: vi.fn(async () => ({ ready: true })),
   });
+  const coordinator = new ModelRoutingCoordinator({ registry, store });
   const app = Fastify({ logger: false });
-  await registerSettingsRoutes(app, { registry, router, store });
-  return { app, home, projects, registry, store };
+  await registerSettingsRoutes(app, { registry, router, store, coordinator });
+  return {
+    app,
+    home,
+    projects,
+    registry,
+    store,
+    rejectRegistryWrites() { rejectRegistryWrites = true; },
+  };
 }
 
 describe('settings routes', () => {
@@ -201,4 +217,104 @@ describe('settings routes', () => {
     await ctx.app.inject({ method: 'DELETE', url: '/api/settings/models/legacy-choice' });
     expect(ctx.registry.getAssignments()).toEqual(before);
   });
+
+  it.each([
+    ['unknown provider', {
+      id: 'invalid-provider', name: 'Invalid', provider: 'mystery', model: 'x',
+    }],
+    ['undeclared key', {
+      id: 'extra-field', name: 'Invalid', provider: 'fake', model: 'x', active: true,
+    }],
+    ['wrong field type', {
+      id: 'wrong-type', name: 42, provider: 'fake', model: 'x',
+    }],
+  ])('rejects create requests with %s using one bounded validation response', async (_label, payload) => {
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/settings/models',
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Model configuration request is invalid.',
+      code: 'invalid_request',
+    });
+    expect(ctx.registry.getById(String(payload.id))).toBeUndefined();
+  });
+
+  it.each([
+    ['id mutation', { id: 'replacement-id' }],
+    ['provider mutation', { provider: 'gemini' }],
+    ['undeclared key', { active: true }],
+    ['wrong field type', { model: 99 }],
+  ])('rejects update requests with %s without changing the entry', async (_label, payload) => {
+    await ctx.registry.add({ id: 'strict-update', name: 'Strict', provider: 'fake', model: 'v1' });
+
+    const response = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/settings/models/strict-update',
+      payload,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Model configuration request is invalid.',
+      code: 'invalid_request',
+    });
+    expect(ctx.registry.getById('strict-update')).toMatchObject({
+      id: 'strict-update', provider: 'fake', model: 'v1',
+    });
+  });
+
+  it('accepts strict create and update requests while keeping identity immutable', async () => {
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/settings/models',
+      payload: { id: 'valid-entry', name: 'Valid', provider: 'fake', model: 'v1' },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const updated = await ctx.app.inject({
+      method: 'PUT',
+      url: '/api/settings/models/valid-entry',
+      payload: { name: 'Renamed', model: 'v2' },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(ctx.registry.getById('valid-entry')).toMatchObject({
+      id: 'valid-entry', provider: 'fake', name: 'Renamed', model: 'v2',
+    });
+  });
+
+  it.each(['assignment', 'create', 'update', 'delete'] as const)(
+    'returns one bounded 500 when %s persistence fails without exposing a filesystem path',
+    async (operation) => {
+      if (operation === 'update' || operation === 'delete') {
+        await ctx.registry.add({
+          id: `persist-${operation}`,
+          name: 'Persistence target',
+          provider: 'fake',
+          model: 'v1',
+        });
+      }
+      ctx.rejectRegistryWrites();
+      const request = operation === 'assignment'
+        ? { method: 'PUT' as const, url: '/api/settings/model-routing', payload: { assignments: { writing: null } } }
+        : operation === 'create'
+          ? { method: 'POST' as const, url: '/api/settings/models', payload: { id: 'persist-create', name: 'Create', provider: 'fake', model: 'v1' } }
+          : operation === 'update'
+            ? { method: 'PUT' as const, url: '/api/settings/models/persist-update', payload: { model: 'v2' } }
+            : { method: 'DELETE' as const, url: '/api/settings/models/persist-delete' };
+
+      const response = await ctx.app.inject(request);
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        error: 'Model settings could not be saved. Try again.',
+        code: 'settings_persistence_failed',
+      });
+      expect(response.body).not.toContain('/private/');
+      expect(response.body).not.toContain(ctx.home);
+    },
+  );
 });

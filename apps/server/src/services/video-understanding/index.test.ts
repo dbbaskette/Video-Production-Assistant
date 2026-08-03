@@ -1,5 +1,9 @@
 import type { VideoUnderstandingBrief } from '@vpa/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ResolvedVideoModel } from '../llm/model-router.js';
 import type { GeminiFile, GenerateWithVideoInput } from '../video-narration/gemini-files.js';
 import {
@@ -81,6 +85,7 @@ function fixture(overrides: Partial<VideoUnderstandingServiceOptions> = {}) {
   const generateWithVideo = vi.fn(async (_request: GenerateWithVideoInput) => modelOutput);
   const deleteFile = vi.fn(async () => true);
   const warn = vi.fn();
+  const cleanupSnapshot = vi.fn(async () => {});
   const defaults: VideoUnderstandingServiceOptions = {
     workspaceRoot: '/workspace',
     readTextFile: async (path) => {
@@ -102,6 +107,10 @@ function fixture(overrides: Partial<VideoUnderstandingServiceOptions> = {}) {
     transport: { uploadVideo, waitForFileActive, generateWithVideo, deleteFile },
     now: () => new Date('2026-08-02T12:00:00.000Z'),
     warn,
+    snapshotVideo: async (sourcePath) => ({
+      path: `${sourcePath}.stable-snapshot`,
+      cleanup: cleanupSnapshot,
+    }),
   };
   const service = new VideoUnderstandingService({ ...defaults, ...overrides });
   return {
@@ -113,6 +122,7 @@ function fixture(overrides: Partial<VideoUnderstandingServiceOptions> = {}) {
     generateWithVideo,
     deleteFile,
     warn,
+    cleanupSnapshot,
     setHash(value: string) { hash = value; },
   };
 }
@@ -350,6 +360,84 @@ describe('VideoUnderstandingService', () => {
     expect(saved).toEqual(stale);
     await expect(ctx.service.readBriefStatus(input, model())).resolves.toEqual({ status: 'stale' });
   });
+
+  it('fingerprints and uploads the same staged bytes when the source path is replaced', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'vpa-video-snapshot-test-'));
+    const sourcePath = join(directory, 'scene.mp4');
+    const original = Buffer.from('original recording bytes');
+    const replacement = Buffer.from('replacement recording bytes');
+    await writeFile(sourcePath, original);
+    let uploadedBytes: Buffer | undefined;
+    const persist = vi.fn(async () => {});
+    const transport = {
+      uploadVideo: vi.fn(async (_apiKey: string, uploadPath: string) => {
+        uploadedBytes = await readFile(uploadPath);
+        return uploaded;
+      }),
+      waitForFileActive: vi.fn(async () => active),
+      generateWithVideo: vi.fn(async () => modelOutput),
+      deleteFile: vi.fn(async () => true),
+    };
+    const service = new VideoUnderstandingService({
+      workspaceRoot: '/workspace',
+      hashFile: async (snapshotPath) => {
+        const bytes = await readFile(snapshotPath);
+        await writeFile(sourcePath, replacement);
+        return createHash('sha256').update(bytes).digest('hex');
+      },
+      probe: async () => ({
+        duration_sec: 12, width: 1920, height: 1080, codec: 'h264', fps: 30, size_bytes: original.length,
+      }),
+      persist,
+      readPrompt: async () => 'Return JSON.',
+      transport,
+      warn: vi.fn(),
+    });
+
+    try {
+      const brief = await service.ensureBrief({ ...input, videoPath: sourcePath }, model());
+
+      expect(uploadedBytes).toEqual(original);
+      expect(await readFile(sourcePath)).toEqual(replacement);
+      expect(brief.source.path).toBe(sourcePath);
+      expect(brief.source.sha256).toBe(createHash('sha256').update(original).digest('hex'));
+      expect(transport.uploadVideo.mock.calls[0]![1]).not.toBe(sourcePath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['success', 'generation failure'] as const)(
+    'settles %s even when remote cleanup never settles',
+    async (outcome) => {
+      const warn = vi.fn();
+      const generate = outcome === 'success'
+        ? vi.fn(async () => modelOutput)
+        : vi.fn(async () => { throw new Error('generation failed'); });
+      const ctx = fixture({
+        cleanupTimeoutMs: 5,
+        warn,
+        transport: {
+          uploadVideo: vi.fn(async () => uploaded),
+          waitForFileActive: vi.fn(async () => active),
+          generateWithVideo: generate,
+          deleteFile: vi.fn(() => new Promise<boolean>(() => {})),
+        },
+      });
+
+      if (outcome === 'success') {
+        await expect(ctx.service.ensureBrief(input, model()))
+          .resolves.toMatchObject({ scene_id: 'scene-1' });
+      } else {
+        await expect(ctx.service.ensureBrief(input, model()))
+          .rejects.toBeInstanceOf(VideoUnderstandingError);
+      }
+      expect(warn).toHaveBeenCalledWith(
+        { sceneId: 'scene-1', errorName: 'CleanupTimedOut' },
+        'Gemini video cleanup failed',
+      );
+    },
+  );
 
   it('rejects unsafe scene IDs before filesystem or model access', async () => {
     const ctx = fixture();

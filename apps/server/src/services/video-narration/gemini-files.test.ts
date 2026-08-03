@@ -103,6 +103,21 @@ describe('Gemini Files transport', () => {
     await expect(networkTransport.deleteFile('key', 'files/abc')).resolves.toBe(false);
   });
 
+  it('uses a short abort signal for Gemini DELETE cleanup', async () => {
+    let cleanupSignal: AbortSignal | undefined;
+    const transport = createGeminiFilesTransport({
+      fetch: vi.fn(async (_input, init) => {
+        cleanupSignal = init?.signal as AbortSignal;
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+      cleanupTimeoutMs: 25,
+    });
+
+    await expect(transport.deleteFile('key', 'files/abc')).resolves.toBe(true);
+    expect(cleanupSignal).toBeInstanceOf(AbortSignal);
+    expect(cleanupSignal?.aborted).toBe(false);
+  });
+
   it('does not include provider response bodies or remote names in errors', async () => {
     const fetchRequest = vi.fn(async () => new Response(
       'secret response https://generativelanguage.googleapis.com/v1beta/files/private',

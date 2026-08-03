@@ -230,4 +230,22 @@ describe('ProjectStore.setProjectModelRouting', () => {
     expect(persisted).toContain('objective: keep this objective');
     expect(persisted).not.toContain('writing:');
   });
+
+  it('serializes concurrent different-role patches so both acknowledged updates survive', async () => {
+    const projectsDefault = path.join(home, 'projects-root');
+    const store = new ProjectStore({ vpaHome: home, projectsDefault });
+    const project = await store.create({ name: 'concurrent-routing' });
+
+    await Promise.all([
+      store.setProjectModelRouting(project.id, { writing: 'writer-model' }),
+      store.setProjectModelRouting(project.id, { general: 'general-model' }),
+      store.setProjectModelRouting(project.id, { 'video-understanding': 'video-model' }),
+    ]);
+
+    expect((await store.readProject(project.id)).model_routing).toEqual({
+      writing: 'writer-model',
+      general: 'general-model',
+      video_understanding: 'video-model',
+    });
+  });
 });

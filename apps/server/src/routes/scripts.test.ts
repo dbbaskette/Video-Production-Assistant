@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
@@ -18,6 +18,31 @@ import { addText } from '../services/project-source-docs/index.js';
 import { REFERENCE_BUDGET_CHARS } from '../services/project-source-docs/context.js';
 import { registerScriptRoutes } from './scripts.js';
 import type { Storyboard } from '@vpa/shared';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function recordingReservation() {
+  const held = new Set<string>();
+  return vi.fn(async <T>(
+    projectId: string,
+    sceneIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const keys = sceneIds.map((sceneId) => `${projectId}\0${sceneId}`);
+    if (keys.some((key) => held.has(key))) throw new Error('Scene recording is reserved.');
+    for (const key of keys) held.add(key);
+    try {
+      return await operation();
+    } finally {
+      for (const key of keys) held.delete(key);
+    }
+  }) as unknown as AgentRecordingCoordinator['withManualUploadReservation'];
+}
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
@@ -78,6 +103,8 @@ interface TestServerOptions {
   resolveText?: ModelRouter['resolveText'];
   resolveVideo?: ModelRouter['resolveVideo'];
   videoUnderstanding?: Pick<VideoUnderstandingService, 'readBriefStatus' | 'ensureBrief'>;
+  withRecordingReservation?: AgentRecordingCoordinator['withManualUploadReservation'];
+  fingerprintRecording?: (path: string) => Promise<string>;
 }
 
 async function buildTestServer(options: TestServerOptions = {}) {
@@ -115,6 +142,8 @@ async function buildTestServer(options: TestServerOptions = {}) {
     readBriefStatus,
     ensureBrief,
   };
+  const withRecordingReservation = options.withRecordingReservation ?? recordingReservation();
+  const fingerprintRecording = options.fingerprintRecording ?? (async () => 'b'.repeat(64));
   const writerComplete = vi.mocked(writer.complete);
 
   const app = Fastify();
@@ -124,6 +153,8 @@ async function buildTestServer(options: TestServerOptions = {}) {
       workspaceRoot: workspaceRoot(),
       router: { resolveText, resolveVideo } as unknown as ModelRouter,
       videoUnderstanding: videoUnderstanding as VideoUnderstandingService,
+      agentRecordingCoordinator: { withManualUploadReservation: withRecordingReservation },
+      fingerprintRecording,
     }),
   );
   return {
@@ -140,6 +171,8 @@ async function buildTestServer(options: TestServerOptions = {}) {
     ensureBrief,
     videoUnderstanding,
     videoModel,
+    withRecordingReservation,
+    fingerprintRecording,
   };
 }
 
@@ -226,11 +259,15 @@ describe('script routes', () => {
     const realVideoUnderstanding = new VideoUnderstandingService({
       workspaceRoot: workspaceRoot(),
       warn: vi.fn(),
+      snapshotVideo: async (sourcePath) => ({ path: sourcePath, cleanup: async () => {} }),
     });
     await ctx.app.close();
     await rm(ctx.home, { recursive: true, force: true });
     await rm(ctx.projects, { recursive: true, force: true });
-    ctx = await buildTestServer({ videoUnderstanding: realVideoUnderstanding });
+    ctx = await buildTestServer({
+      videoUnderstanding: realVideoUnderstanding,
+      fingerprintRecording: async () => 'c'.repeat(64),
+    });
     const project = await ctx.store.create({ name: 'missing-recording-project', objective: 'Preserve scripts' });
     projectId = project.id;
     projectPath = project.path;
@@ -343,6 +380,7 @@ describe('script routes', () => {
     const realVideoUnderstanding = new VideoUnderstandingService({
       workspaceRoot: workspaceRoot(),
       hashFile: async () => 'c'.repeat(64),
+      snapshotVideo: async (sourcePath) => ({ path: sourcePath, cleanup: async () => {} }),
       probe: async () => ({
         duration_sec: 30,
         width: 1920,
@@ -359,7 +397,10 @@ describe('script routes', () => {
     await ctx.app.close();
     await rm(ctx.home, { recursive: true, force: true });
     await rm(ctx.projects, { recursive: true, force: true });
-    ctx = await buildTestServer({ videoUnderstanding: realVideoUnderstanding });
+    ctx = await buildTestServer({
+      videoUnderstanding: realVideoUnderstanding,
+      fingerprintRecording: async () => 'c'.repeat(64),
+    });
     const project = await ctx.store.create({ name: 'grounded-project', objective: 'Demo grounding' });
     projectId = project.id;
     projectPath = project.path;
@@ -581,6 +622,116 @@ describe('script routes', () => {
     expect(res.json()).toMatchObject({ code: 'model_assignment_missing', role: 'writing' });
     expect(ctx.ensureBrief).not.toHaveBeenCalled();
     expect(ctx.writer.complete).not.toHaveBeenCalled();
+  });
+
+  it.each(['true', 1, null])(
+    'rejects malformed groundInVideo value %j before routing or persistence',
+    async (groundInVideo) => {
+      const existing = makeSampleStoryboard(projectId);
+      existing.scenes[0]!.narration = { script: 'Keep me', monologueScript: 'Keep me' };
+      await saveStoryboard(projectPath, existing);
+
+      const response = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+        payload: { groundInVideo },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'groundInVideo must be a boolean when provided.',
+        code: 'invalid_request',
+      });
+      expect(ctx.resolveText).not.toHaveBeenCalled();
+      expect(ctx.resolveVideo).not.toHaveBeenCalled();
+      expect((await loadStoryboard(projectPath))!.scenes[0]!.narration?.script).toBe('Keep me');
+    },
+  );
+
+  it('rejects undeclared generation fields and a top-level null body', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const extra = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: false, provider: 'gemini' },
+    });
+    const topLevelNull = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: 'null',
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(extra.statusCode).toBe(400);
+    expect(topLevelNull.statusCode).toBe(400);
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('rejects a same-path replacement fingerprint before persisting a grounded script', async () => {
+    const existing = makeSampleStoryboard(projectId);
+    existing.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+    existing.scenes[0]!.narration = {
+      script: 'Existing script.', monologueScript: 'Existing script.', dialogScript: '[Speaker A] Existing dialog.',
+    };
+    await saveStoryboard(projectPath, existing);
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    ctx = await buildTestServer({ fingerprintRecording: async () => 'c'.repeat(64) });
+    const project = await ctx.store.create({ name: 'script-replacement', objective: 'Keep old script' });
+    projectId = project.id;
+    projectPath = project.path;
+    const storyboard = makeSampleStoryboard(projectId);
+    storyboard.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+    storyboard.scenes[0]!.narration = existing.scenes[0]!.narration;
+    await saveStoryboard(projectPath, storyboard);
+
+    const response = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: true },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration).toEqual(
+      storyboard.scenes[0]!.narration,
+    );
+  });
+
+  it('holds the shared scene reservation through grounded script persistence', async () => {
+    const gate = deferred();
+    const complete = vi.fn()
+      .mockImplementationOnce(async () => {
+        await gate.promise;
+        return { text: SCRIPT };
+      })
+      .mockResolvedValueOnce({ text: DIALOG });
+    const reservation = recordingReservation();
+    await ctx.app.close();
+    await rm(ctx.home, { recursive: true, force: true });
+    await rm(ctx.projects, { recursive: true, force: true });
+    ctx = await buildTestServer({ writer: { complete }, withRecordingReservation: reservation });
+    const project = await ctx.store.create({ name: 'script-reservation' });
+    projectId = project.id;
+    projectPath = project.path;
+    const storyboard = makeSampleStoryboard(projectId);
+    storyboard.scenes[0]!.recording = { source: 'recordings/scene-01.mp4', duration_sec: 30 };
+    await saveStoryboard(projectPath, storyboard);
+
+    const generation = ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/generate`,
+      payload: { groundInVideo: true },
+    });
+    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    await expect(reservation(projectId, ['scene-01'], async () => {
+      await mkdir(path.join(projectPath, 'recordings'), { recursive: true });
+      await writeFile(path.join(projectPath, 'recordings/scene-01.mp4'), 'replacement');
+    })).rejects.toThrow('reserved');
+    gate.resolve();
+
+    await expect(generation).resolves.toMatchObject({ statusCode: 200 });
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration?.script).toBe(SCRIPT);
   });
 
   it('PUT script saves an edited script', async () => {

@@ -25,6 +25,30 @@ function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../..');
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+function recordingReservation() {
+  const held = new Set<string>();
+  return vi.fn(async <T>(
+    projectId: string,
+    sceneIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const keys = sceneIds.map((sceneId) => `${projectId}\0${sceneId}`);
+    if (keys.some((key) => held.has(key))) throw new Error('Scene recording is reserved.');
+    for (const key of keys) held.add(key);
+    try {
+      return await operation();
+    } finally {
+      for (const key of keys) held.delete(key);
+    }
+  }) as unknown as AgentRecordingCoordinator['withManualUploadReservation'];
+}
+
 async function buildTestServer(options: {
   bulkUploadLimits?: { fileSizeBytes: number; fileCount: number };
   ingest?: typeof ingestRecording;
@@ -32,6 +56,8 @@ async function buildTestServer(options: {
   resolveText?: ModelRouter['resolveText'];
   readBriefStatus?: VideoUnderstandingService['readBriefStatus'];
   ensureBrief?: VideoUnderstandingService['ensureBrief'];
+  withManualUploadReservation?: AgentRecordingCoordinator['withManualUploadReservation'];
+  fingerprintRecording?: (filePath: string) => Promise<string>;
 } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-rec-routes-'));
   const projects = await mkdtemp(path.join(tmpdir(), 'vpa-rec-projects-'));
@@ -101,11 +127,10 @@ async function buildTestServer(options: {
       source_kind: 'cap-agent', capture_session_id: sessionId, captured_at: input.capturedAt,
     });
   });
-  const withManualUploadReservation = vi.fn(async <T>(
-    _projectId: string,
-    _sceneIds: readonly string[],
-    operation: () => Promise<T>,
-  ) => operation());
+  const withManualUploadReservation = vi.fn(
+    options.withManualUploadReservation ?? recordingReservation(),
+  );
+  const fingerprintRecording = vi.fn(options.fingerprintRecording ?? (async () => 'a'.repeat(64)));
 
   const app = Fastify();
   await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024, files: 10 } });
@@ -118,6 +143,7 @@ async function buildTestServer(options: {
       probe,
       bulkUploadLimits: options.bulkUploadLimits,
       ingest: options.ingest,
+      fingerprintRecording,
       agentRecordingCoordinator: {
         recoverAttachment,
         withManualUploadReservation: withManualUploadReservation as unknown as AgentRecordingCoordinator['withManualUploadReservation'],
@@ -139,6 +165,7 @@ async function buildTestServer(options: {
     readBriefStatus,
     ensureBrief,
     makeBrief,
+    fingerprintRecording,
   };
 }
 
@@ -395,6 +422,7 @@ describe('recording routes', () => {
         },
         current: { name: 'Intro', description: 'Intro scene', type: 'desktop' },
         mode: 'video',
+        recordingVersion: 'a'.repeat(64),
       });
       expect(ctx.resolveVideo).toHaveBeenCalledOnce();
       expect(ctx.resolveText).not.toHaveBeenCalled();
@@ -404,6 +432,153 @@ describe('recording routes', () => {
         description: 'Intro scene',
         type: 'desktop',
       });
+    });
+
+    it.each([
+      ['groundInVideo', 'true'],
+      ['groundInVideo', 1],
+      ['groundInVideo', null],
+      ['dryRun', 'true'],
+      ['dryRun', 1],
+      ['dryRun', null],
+    ])('rejects malformed %s value %j before routing', async (field, value) => {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+        payload: { [field]: value },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({
+        error: 'groundInVideo and dryRun must be booleans when provided.',
+        code: 'invalid_request',
+      });
+      expect(ctx.resolveVideo).not.toHaveBeenCalled();
+      expect(ctx.resolveText).not.toHaveBeenCalled();
+    });
+
+    it('rejects undeclared analysis fields and a top-level null body', async () => {
+      const extra = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+        payload: { dryRun: true, provider: 'gemini' },
+      });
+      const topLevelNull = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+        payload: 'null',
+        headers: { 'content-type': 'application/json' },
+      });
+
+      expect(extra.statusCode).toBe(400);
+      expect(topLevelNull.statusCode).toBe(400);
+      expect(ctx.resolveVideo).not.toHaveBeenCalled();
+      expect(ctx.resolveText).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])(
+      'rejects a same-path recording replacement before returning or saving when dryRun=%s',
+      async (dryRun) => {
+        ctx.fingerprintRecording.mockResolvedValueOnce('b'.repeat(64));
+        const res = await ctx.app.inject({
+          method: 'POST',
+          url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+          payload: { groundInVideo: true, dryRun },
+        });
+
+        expect(res.statusCode).toBe(409);
+        expect(res.json()).toEqual({
+          error: 'The recording changed during analysis. Run Re-analyze again.',
+          code: 'recording_changed',
+        });
+        expect((await loadStoryboard(projectPath))?.scenes[0]).toMatchObject({
+          name: 'Intro',
+          description: 'Intro scene',
+          type: 'desktop',
+        });
+      },
+    );
+
+    it('preserves unrelated scene edits made while grounded analysis is running', async () => {
+      ctx.ensureBrief.mockImplementationOnce(async (input) => {
+        const latest = (await loadStoryboard(projectPath))!;
+        latest.scenes[0]!.narration = {
+          script: 'Concurrent narration.',
+          monologueScript: 'Concurrent narration.',
+        };
+        latest.scenes[0]!.lower_thirds = [{
+          title: 'Concurrent edit',
+          style: 'solid',
+          in_sec: 1,
+          out_sec: 3,
+        }];
+        await saveStoryboard(projectPath, latest);
+        return ctx.makeBrief(input.sceneId, input.videoPath);
+      });
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+        payload: { groundInVideo: true, dryRun: false },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((await loadStoryboard(projectPath))?.scenes[0]).toMatchObject({
+        name: 'A browser opens the deployment dashboard',
+        narration: { script: 'Concurrent narration.' },
+        lower_thirds: [{ title: 'Concurrent edit' }],
+      });
+    });
+
+    it('holds the shared scene reservation through grounded reanalysis', async () => {
+      const entered = deferred();
+      const gate = deferred();
+      ctx.ensureBrief.mockImplementationOnce(async (input) => {
+        entered.resolve();
+        await gate.promise;
+        return ctx.makeBrief(input.sceneId, input.videoPath);
+      });
+
+      const analysis = ctx.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/scenes/scene-01/analyze`,
+        payload: { groundInVideo: true, dryRun: false },
+      });
+      await entered.promise;
+      await expect(ctx.withManualUploadReservation(
+        projectId,
+        ['scene-01'],
+        async () => undefined,
+      )).rejects.toThrow('reserved');
+      gate.resolve();
+
+      await expect(analysis).resolves.toMatchObject({ statusCode: 200 });
+    });
+
+    it('requires the preview recording version when applying analyzed metadata', async () => {
+      const withoutVersion = await ctx.app.inject({
+        method: 'PUT',
+        url: `/api/projects/${projectId}/scenes/scene-01/metadata`,
+        payload: { name: 'Proposed name' },
+      });
+      expect(withoutVersion.statusCode).toBe(409);
+      expect(withoutVersion.json()).toMatchObject({ code: 'recording_version_required' });
+
+      const stale = await ctx.app.inject({
+        method: 'PUT',
+        url: `/api/projects/${projectId}/scenes/scene-01/metadata`,
+        payload: { name: 'Proposed name', recordingVersion: 'b'.repeat(64) },
+      });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json()).toMatchObject({ code: 'recording_changed' });
+
+      const current = await ctx.app.inject({
+        method: 'PUT',
+        url: `/api/projects/${projectId}/scenes/scene-01/metadata`,
+        payload: { name: 'Proposed name', recordingVersion: 'a'.repeat(64) },
+      });
+      expect(current.statusCode).toBe(200);
+      expect((await loadStoryboard(projectPath))?.scenes[0]?.name).toBe('Proposed name');
     });
 
     it('applies validated grounded metadata only when dry-run is disabled', async () => {

@@ -8,12 +8,14 @@ import {
   VideoUnderstandingSegmentSchema,
   type VideoUnderstandingBrief,
 } from '@vpa/shared';
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import type { ResolvedVideoModel } from '../llm/model-router.js';
 import { probeVideo, sha256File, type VideoMetadata } from '../recording/metadata.js';
+import { safeSceneDiagnosticFields } from '../../lib/safe-diagnostics.js';
 import {
   deleteFile,
   generateWithVideo,
@@ -91,7 +93,14 @@ export interface VideoUnderstandingServiceOptions {
   readPrompt?: () => Promise<string>;
   transport?: VideoUnderstandingTransport;
   now?: () => Date;
+  snapshotVideo?: (sourcePath: string) => Promise<VideoSnapshot>;
+  cleanupTimeoutMs?: number;
   warn: VideoUnderstandingWarning;
+}
+
+export interface VideoSnapshot {
+  path: string;
+  cleanup(): Promise<void>;
 }
 
 export class VideoUnderstandingError extends Error {
@@ -144,11 +153,27 @@ function stripSingleJsonFence(text: string): string {
 
 const VIDEO_UNDERSTANDING_ERROR_CLASSES = new Set([
   'CleanupRejected',
+  'CleanupTimedOut',
   'Error',
   'ModelRoutingError',
   'UnknownError',
   'VideoUnderstandingError',
 ]);
+
+async function snapshotVideo(sourcePath: string): Promise<VideoSnapshot> {
+  const directory = await mkdtemp(join(tmpdir(), 'vpa-video-understanding-'));
+  const snapshotPath = join(directory, 'recording.snapshot');
+  try {
+    await copyFile(sourcePath, snapshotPath);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+  return {
+    path: snapshotPath,
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
+}
 
 export function videoUnderstandingErrorClass(error: unknown): string {
   if (error instanceof VideoUnderstandingError) return 'VideoUnderstandingError';
@@ -164,13 +189,7 @@ export function sanitizeVideoUnderstandingWarningFields(
       ? fields.errorName
       : 'UnknownError',
   };
-  if (
-    typeof fields.sceneId === 'string'
-    && fields.sceneId.length <= 120
-    && SAFE_SCENE_ID.test(fields.sceneId)
-  ) {
-    safe.sceneId = fields.sceneId;
-  }
+  Object.assign(safe, safeSceneDiagnosticFields(fields.sceneId));
   return safe;
 }
 
@@ -183,6 +202,8 @@ export class VideoUnderstandingService {
   private readonly readPrompt: () => Promise<string>;
   private readonly transport: VideoUnderstandingTransport;
   private readonly now: () => Date;
+  private readonly snapshotVideo: (sourcePath: string) => Promise<VideoSnapshot>;
+  private readonly cleanupTimeoutMs: number;
   private readonly warn: VideoUnderstandingWarning;
   private readonly inFlight = new Map<string, Promise<VideoUnderstandingBrief>>();
 
@@ -201,6 +222,8 @@ export class VideoUnderstandingService {
       deleteFile,
     };
     this.now = options.now ?? (() => new Date());
+    this.snapshotVideo = options.snapshotVideo ?? snapshotVideo;
+    this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
     this.warn = options.warn;
   }
 
@@ -217,13 +240,17 @@ export class VideoUnderstandingService {
     model: ResolvedVideoModel,
   ): Promise<VideoUnderstandingBriefStatus> {
     assertSafeSceneId(input.sceneId);
-    let sourceSha256: string;
+    let snapshot: VideoSnapshot | undefined;
     try {
-      sourceSha256 = await this.hashFile(input.videoPath);
-    } catch {
+      snapshot = await this.snapshotVideo(input.videoPath);
+      const sourceSha256 = await this.hashFile(snapshot.path);
+      return await this.readBriefStatusForHash(input, model, sourceSha256);
+    } catch (error) {
+      if (error instanceof VideoUnderstandingError) throw error;
       throw new VideoUnderstandingError('Unable to fingerprint video for analysis.');
+    } finally {
+      await snapshot?.cleanup().catch(() => undefined);
     }
-    return this.readBriefStatusForHash(input, model, sourceSha256);
   }
 
   async ensureBrief(
@@ -234,38 +261,42 @@ export class VideoUnderstandingService {
     assertSafeSceneId(input.sceneId);
     onPhase?.('hashing');
 
-    let sourceSha256: string;
+    let snapshot: VideoSnapshot | undefined;
     try {
-      sourceSha256 = await this.hashFile(input.videoPath);
-    } catch {
+      snapshot = await this.snapshotVideo(input.videoPath);
+      const sourceSha256 = await this.hashFile(snapshot.path);
+
+      const status = await this.readBriefStatusForHash(input, model, sourceSha256);
+      if (status.status === 'fresh') {
+        onPhase?.('done');
+        return status.brief;
+      }
+
+      const key = [
+        input.projectPath,
+        input.sceneId,
+        sourceSha256,
+        model.summary.entry_id,
+        model.model,
+        VIDEO_BRIEF_SCHEMA_VERSION,
+        VIDEO_BRIEF_PROMPT_VERSION,
+      ].join('\0');
+
+      const existing = this.inFlight.get(key);
+      if (existing) return await existing;
+
+      const generated = this.generateBrief(input, snapshot.path, model, sourceSha256, onPhase);
+      const tracked = generated.finally(() => {
+        this.inFlight.delete(key);
+      });
+      this.inFlight.set(key, tracked);
+      return await tracked;
+    } catch (error) {
+      if (error instanceof VideoUnderstandingError) throw error;
       throw new VideoUnderstandingError('Unable to fingerprint video for analysis.');
+    } finally {
+      await snapshot?.cleanup().catch(() => undefined);
     }
-
-    const status = await this.readBriefStatusForHash(input, model, sourceSha256);
-    if (status.status === 'fresh') {
-      onPhase?.('done');
-      return status.brief;
-    }
-
-    const key = [
-      input.projectPath,
-      input.sceneId,
-      sourceSha256,
-      model.summary.entry_id,
-      model.model,
-      VIDEO_BRIEF_SCHEMA_VERSION,
-      VIDEO_BRIEF_PROMPT_VERSION,
-    ].join('\0');
-
-    const existing = this.inFlight.get(key);
-    if (existing) return existing;
-
-    const generated = this.generateBrief(input, model, sourceSha256, onPhase);
-    const tracked = generated.finally(() => {
-      this.inFlight.delete(key);
-    });
-    this.inFlight.set(key, tracked);
-    return tracked;
   }
 
   private async readBriefStatusForHash(
@@ -293,6 +324,7 @@ export class VideoUnderstandingService {
 
   private async generateBrief(
     input: EnsureBriefInput,
+    snapshotPath: string,
     model: ResolvedVideoModel,
     sourceSha256: string,
     onPhase?: VideoUnderstandingPhaseCallback,
@@ -302,14 +334,14 @@ export class VideoUnderstandingService {
 
     try {
       const [metadata, systemPrompt] = await Promise.all([
-        this.probe(input.videoPath),
+        this.probe(snapshotPath),
         this.readPrompt(),
       ]);
 
       onPhase?.('uploading');
       uploaded = await this.transport.uploadVideo(
         model.apiKey,
-        input.videoPath,
+        snapshotPath,
         mimeType,
         `${input.sceneId} recording`,
       );
@@ -375,21 +407,41 @@ export class VideoUnderstandingService {
       throw new VideoUnderstandingError();
     } finally {
       if (uploaded) {
-        try {
-          const deleted = await this.transport.deleteFile(model.apiKey, uploaded.name);
-          if (deleted === false) {
-            this.warnSafely(
-              { sceneId: input.sceneId, errorName: 'CleanupRejected' },
-              'Gemini video cleanup failed',
-            );
-          }
-        } catch (error) {
-          this.warnSafely(
-            { sceneId: input.sceneId, errorName: videoUnderstandingErrorClass(error) },
-            'Gemini video cleanup failed',
-          );
-        }
+        await this.cleanupRemoteFile(input.sceneId, model.apiKey, uploaded.name);
       }
+    }
+  }
+
+  private async cleanupRemoteFile(sceneId: string, apiKey: string, fileName: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<{ status: 'timeout' }>((resolve) => {
+      timer = setTimeout(() => resolve({ status: 'timeout' }), this.cleanupTimeoutMs);
+      timer.unref?.();
+    });
+    const cleanup = Promise.resolve()
+      .then(() => this.transport.deleteFile(apiKey, fileName))
+      .then(
+        (deleted) => ({ status: 'settled' as const, deleted }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+    const result = await Promise.race([cleanup, timeout]);
+    if (timer) clearTimeout(timer);
+
+    if (result.status === 'timeout') {
+      this.warnSafely(
+        { sceneId, errorName: 'CleanupTimedOut' },
+        'Gemini video cleanup failed',
+      );
+    } else if (result.status === 'rejected') {
+      this.warnSafely(
+        { sceneId, errorName: videoUnderstandingErrorClass(result.error) },
+        'Gemini video cleanup failed',
+      );
+    } else if (result.deleted === false) {
+      this.warnSafely(
+        { sceneId, errorName: 'CleanupRejected' },
+        'Gemini video cleanup failed',
+      );
     }
   }
 }

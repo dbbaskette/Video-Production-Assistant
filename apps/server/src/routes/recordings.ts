@@ -3,9 +3,15 @@ import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, rename, rm, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
 import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
-import { probeVideo, type VideoMetadata } from '../services/recording/metadata.js';
+import { probeVideo, sha256File, type VideoMetadata } from '../services/recording/metadata.js';
+import {
+  loadSceneAtRecordingVersion,
+  loadVersionedSceneRecording,
+  RecordingVersionConflictError,
+} from '../services/recording/version.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
 import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '../services/storyboard/index.js';
 import { analyzeRecording, proposeSceneMetadataFromBrief } from '../services/video-analysis/index.js';
@@ -37,6 +43,7 @@ import {
   stageUploadStream,
   type StagedUpload,
 } from '../services/recording/staged-upload.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
 
 interface Deps {
   store: ProjectStore;
@@ -52,7 +59,15 @@ interface Deps {
     'recoverAttachment' | 'withManualUploadReservation'
   >;
   bulkUploadLimits?: { fileSizeBytes: number; fileCount: number };
+  fingerprintRecording?: (filePath: string) => Promise<string>;
 }
+
+const AnalyzeBodySchema = z.object({
+  groundInVideo: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+}).strict();
+
+const RECORDING_VERSION_PATTERN = /^[0-9a-f]{64}$/;
 
 type RecordingAnalysisResult =
   | {
@@ -72,7 +87,7 @@ const VIDEO_ANALYSIS_FAILED_MESSAGE =
 function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<string, unknown> {
   if (error instanceof ModelRoutingError) {
     return {
-      sceneId,
+      ...safeSceneDiagnosticFields(sceneId),
       errorName: 'ModelRoutingError',
       code: error.code,
       role: error.role,
@@ -80,7 +95,7 @@ function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<stri
     };
   }
   return {
-    sceneId,
+    ...safeSceneDiagnosticFields(sceneId),
     errorName: videoUnderstandingErrorClass(error),
   };
 }
@@ -176,6 +191,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   const { store, workspaceRoot, router, videoUnderstanding } = deps;
   const probe = deps.probe ?? probeVideo;
   const ingest = deps.ingest ?? ingestRecording;
+  const fingerprintRecording = deps.fingerprintRecording ?? sha256File;
   const bulkUploadLimits = deps.bulkUploadLimits ?? {
     fileSizeBytes: BULK_UPLOAD_MAX_FILE_BYTES,
     fileCount: BULK_UPLOAD_MAX_FILES,
@@ -206,7 +222,10 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       };
       const status = await videoUnderstanding.readBriefStatus(input, videoModel);
       await videoUnderstanding.ensureBrief(input, videoModel, (phase) => {
-        app.log.info({ sceneId: scene.id, phase }, 'video understanding phase');
+        app.log.info(
+          { ...safeSceneDiagnosticFields(scene.id), phase },
+          'video understanding phase',
+        );
       });
       return {
         status: 'ready',
@@ -746,7 +765,14 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // failures never fall back to metadata-only analysis.
   app.post('/api/projects/:id/scenes/:sceneId/analyze', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean; dryRun?: boolean };
+    const parsedBody = AnalyzeBodySchema.safeParse(req.body === undefined ? {} : req.body);
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: 'groundInVideo and dryRun must be booleans when provided.',
+        code: 'invalid_request',
+      });
+    }
+    const body = parsedBody.data;
 
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -764,56 +790,123 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
-    let proposal: Pick<Scene, 'name' | 'description' | 'type'>;
-    let mode: 'text' | 'video' = 'text';
+    const mode: 'text' | 'video' = body.groundInVideo === true ? 'video' : 'text';
     try {
       const project = await store.readProject(entry.id);
-      const analysisInput = {
-        filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
-        duration_sec: scene.recording.duration_sec ?? 0,
-        width: 0,
-        height: 0,
-        sceneIndex: sb.scenes.findIndex((candidate) => candidate.id === sceneId),
-        totalScenes: sb.scenes.length,
-        projectObjective: project.objective,
-        projectAudience: project.audience,
-        projectPath: entry.path,
-      };
-      try {
-        const meta = await probe(path.join(entry.path, scene.recording.source));
-        analysisInput.width = meta.width;
-        analysisInput.height = meta.height;
-      } catch {
-        // Probe failure is non-fatal; text analysis can proceed with 0x0 and
-        // grounded analysis obtains authoritative dimensions from its brief.
-      }
+      const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
+      const generalModel = mode === 'text' ? await router.resolveText('general', project) : undefined;
 
-      let analysis;
-      if (body.groundInVideo === true) {
-        mode = 'video';
-        const videoModel = await router.resolveVideo(project);
-        const brief = await videoUnderstanding.ensureBrief({
-          projectPath: entry.path,
-          sceneId,
-          sceneName: scene.name,
-          videoPath: path.join(entry.path, scene.recording.source),
-          videoMimeType: 'video/mp4',
-        }, videoModel, (phase) => {
-          app.log.info({ sceneId, phase }, 'video-grounded analysis phase');
-        });
-        analysis = proposeSceneMetadataFromBrief(scene, brief);
-      } else {
-        const generalModel = await router.resolveText('general', project);
-        analysis = await analyzeRecording(analysisInput, generalModel.client, workspaceRoot);
-      }
-      const validatedScene = SceneSchema.parse({ ...scene, ...analysis });
-      proposal = {
-        name: validatedScene.name,
-        description: validatedScene.description,
-        type: validatedScene.type,
-      };
+      return await deps.agentRecordingCoordinator.withManualUploadReservation(
+        id,
+        [sceneId],
+        async () => {
+          const started = await loadVersionedSceneRecording(
+            entry.path,
+            sceneId,
+            fingerprintRecording,
+          );
+          const operationScene = started.scene;
+          const analysisInput = {
+            filename: operationScene.recording!.source.split('/').pop()
+              ?? operationScene.recording!.source,
+            duration_sec: operationScene.recording!.duration_sec ?? 0,
+            width: 0,
+            height: 0,
+            sceneIndex: started.storyboard.scenes.findIndex(
+              (candidate) => candidate.id === sceneId,
+            ),
+            totalScenes: started.storyboard.scenes.length,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: entry.path,
+          };
+          try {
+            const meta = await probe(started.version.path);
+            analysisInput.width = meta.width;
+            analysisInput.height = meta.height;
+          } catch {
+            // Probe failure is non-fatal; text analysis can proceed with 0x0 and
+            // grounded analysis obtains authoritative dimensions from its brief.
+          }
+
+          let analysis;
+          let expectedVersion = started.version;
+          if (mode === 'video' && videoModel) {
+            const brief = await videoUnderstanding.ensureBrief({
+              projectPath: entry.path,
+              sceneId,
+              sceneName: operationScene.name,
+              videoPath: started.version.path,
+              videoMimeType: 'video/mp4',
+            }, videoModel, (phase) => {
+              app.log.info(
+                { ...safeSceneDiagnosticFields(sceneId), phase },
+                'video-grounded analysis phase',
+              );
+            });
+            expectedVersion = { path: brief.source.path, sha256: brief.source.sha256 };
+            if (
+              expectedVersion.path !== started.version.path
+              || expectedVersion.sha256 !== started.version.sha256
+            ) {
+              throw new RecordingVersionConflictError();
+            }
+            analysis = proposeSceneMetadataFromBrief(operationScene, brief);
+          } else if (generalModel) {
+            analysis = await analyzeRecording(analysisInput, generalModel.client, workspaceRoot);
+          } else {
+            throw new Error('No analysis model was resolved.');
+          }
+          const validatedScene = SceneSchema.parse({ ...operationScene, ...analysis });
+          const proposal: Pick<Scene, 'name' | 'description' | 'type'> = {
+            name: validatedScene.name,
+            description: validatedScene.description,
+            type: validatedScene.type,
+          };
+
+          const latest = await loadSceneAtRecordingVersion(
+            entry.path,
+            sceneId,
+            expectedVersion,
+            fingerprintRecording,
+          );
+
+          if (body.dryRun) {
+            return {
+              sceneId,
+              dryRun: true,
+              proposed: proposal,
+              current: {
+                name: operationScene.name,
+                description: operationScene.description,
+                type: operationScene.type,
+              },
+              mode,
+              recordingVersion: latest.version.sha256,
+            };
+          }
+
+          await saveStoryboard(
+            entry.path,
+            updateScene(latest.storyboard, sceneId, proposal),
+          );
+
+          return {
+            sceneId,
+            ...proposal,
+            mode,
+            recordingVersion: latest.version.sha256,
+          };
+        },
+      );
     } catch (error) {
       warnAnalysisFailure(error, sceneId, 'Scene re-analysis failed');
+      if (error instanceof RecordingVersionConflictError) {
+        return reply.status(409).send({
+          error: 'The recording changed during analysis. Run Re-analyze again.',
+          code: error.code,
+        });
+      }
       if (error instanceof ModelRoutingError) {
         return reply.status(error.statusCode).send({
           error: error.message,
@@ -827,34 +920,6 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
-    // dryRun: return proposed values + a snapshot of the current scene's
-    // values so the UI can show a diff and require explicit Apply.
-    if (body.dryRun) {
-      return {
-        sceneId,
-        dryRun: true,
-        proposed: proposal,
-        current: {
-          name: scene.name,
-          description: scene.description,
-          type: scene.type,
-        },
-        mode,
-      };
-    }
-
-    // Persist the new name/description/type. Don't touch other scene
-    // fields (recording, narration, lower_thirds, overlay_render, etc.).
-    const updated = updateScene(sb, sceneId, {
-      ...proposal,
-    });
-    await saveStoryboard(entry.path, updated);
-
-    return {
-      sceneId,
-      ...proposal,
-      mode,
-    };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/metadata — apply a proposed
@@ -876,6 +941,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       //   • undefined / missing (leave the existing value alone)
       frame_style?: string | null;
       frame_background?: string | null;
+      recordingVersion?: string;
     };
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -887,78 +953,121 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
     }
 
-    // Only update fields actually provided. Empty strings are honoured
-    // for description (user might want to clear it); name has a min(1)
-    // validation in SceneSchema so reject empty.
-    const patch: Partial<typeof scene> = {};
-    if (typeof body.name === 'string') {
-      if (body.name.trim().length === 0) {
-        return reply.status(400).send({ error: 'name cannot be empty', code: 'invalid_request' });
-      }
-      patch.name = body.name.trim();
-    }
-    if (typeof body.description === 'string') patch.description = body.description;
-    if (body.type) patch.type = body.type;
-
-    // Transition fields — `null` clears the value, undefined leaves it alone.
-    if (body.transition !== undefined) {
-      if (body.transition === null || body.transition === 'cut') {
-        patch.transition = undefined;
-        patch.transition_duration_sec = undefined;
-      } else {
-        const parsed = SceneTransitionSchema.safeParse(body.transition);
-        if (!parsed.success) {
-          return reply.status(400).send({ error: `invalid transition: ${body.transition}`, code: 'invalid_request' });
+    const persistMetadata = async (currentStoryboard: typeof sb) => {
+      // Only update fields actually provided. Empty strings are honoured
+      // for description (user might want to clear it); name has a min(1)
+      // validation in SceneSchema so reject empty.
+      const patch: Partial<Scene> = {};
+      if (typeof body.name === 'string') {
+        if (body.name.trim().length === 0) {
+          return reply.status(400).send({ error: 'name cannot be empty', code: 'invalid_request' });
         }
-        patch.transition = parsed.data;
+        patch.name = body.name.trim();
       }
+      if (typeof body.description === 'string') patch.description = body.description;
+      if (body.type) patch.type = body.type;
+
+      // Transition fields — `null` clears the value, undefined leaves it alone.
+      if (body.transition !== undefined) {
+        if (body.transition === null || body.transition === 'cut') {
+          patch.transition = undefined;
+          patch.transition_duration_sec = undefined;
+        } else {
+          const parsed = SceneTransitionSchema.safeParse(body.transition);
+          if (!parsed.success) {
+            return reply.status(400).send({ error: `invalid transition: ${body.transition}`, code: 'invalid_request' });
+          }
+          patch.transition = parsed.data;
+        }
+      }
+      if (body.transition_duration_sec !== undefined) {
+        if (body.transition_duration_sec === null) {
+          patch.transition_duration_sec = undefined;
+        } else if (
+          typeof body.transition_duration_sec !== 'number' ||
+          body.transition_duration_sec < 0.1 ||
+          body.transition_duration_sec > 5
+        ) {
+          return reply.status(400).send({ error: 'transition_duration_sec must be 0.1–5', code: 'invalid_request' });
+        } else {
+          patch.transition_duration_sec = body.transition_duration_sec;
+        }
+      }
+
+      // Frame style / background — `null` clears the per-scene override and
+      // makes the scene fall back to the storyboard default; `undefined` leaves
+      // the existing value alone.
+      if (body.frame_style !== undefined) {
+        patch.frame_style = body.frame_style === null ? undefined : body.frame_style;
+      }
+      if (body.frame_background !== undefined) {
+        const bg = body.frame_background;
+        if (bg === null) {
+          patch.frame_background = undefined;
+        } else if (bg === 'brand' || bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(bg)) {
+          patch.frame_background = bg as 'brand' | 'transparent' | `#${string}`;
+        } else {
+          return reply.status(400).send({
+            error: 'frame_background must be "brand", "transparent", or a #RRGGBB hex',
+            code: 'invalid_request',
+          });
+        }
+      }
+
+      const updated = updateScene(currentStoryboard, sceneId, patch);
+      await saveStoryboard(entry.path, updated);
+      const next = updated.scenes.find((candidate) => candidate.id === sceneId);
+      return {
+        sceneId,
+        name: next?.name,
+        description: next?.description,
+        type: next?.type,
+        transition: next?.transition,
+        transition_duration_sec: next?.transition_duration_sec,
+        frame_style: next?.frame_style,
+        frame_background: next?.frame_background,
+      };
+    };
+
+    const appliesAnalyzedMetadata = ['name', 'description', 'type'].some((field) =>
+      Object.prototype.hasOwnProperty.call(body, field));
+    if (!scene.recording?.source || !appliesAnalyzedMetadata) {
+      return persistMetadata(sb);
     }
-    if (body.transition_duration_sec !== undefined) {
-      if (body.transition_duration_sec === null) {
-        patch.transition_duration_sec = undefined;
-      } else if (
-        typeof body.transition_duration_sec !== 'number' ||
-        body.transition_duration_sec < 0.1 ||
-        body.transition_duration_sec > 5
-      ) {
-        return reply.status(400).send({ error: 'transition_duration_sec must be 0.1–5', code: 'invalid_request' });
-      } else {
-        patch.transition_duration_sec = body.transition_duration_sec;
-      }
+    if (
+      typeof body.recordingVersion !== 'string'
+      || !RECORDING_VERSION_PATTERN.test(body.recordingVersion)
+    ) {
+      return reply.status(409).send({
+        error: 'Run Re-analyze again before applying scene metadata.',
+        code: 'recording_version_required',
+      });
     }
 
-    // Frame style / background — `null` clears the per-scene override and
-    // makes the scene fall back to the storyboard default; `undefined` leaves
-    // the existing value alone.
-    if (body.frame_style !== undefined) {
-      patch.frame_style = body.frame_style === null ? undefined : body.frame_style;
-    }
-    if (body.frame_background !== undefined) {
-      const bg = body.frame_background;
-      if (bg === null) {
-        patch.frame_background = undefined;
-      } else if (bg === 'brand' || bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(bg)) {
-        patch.frame_background = bg as 'brand' | 'transparent' | `#${string}`;
-      } else {
-        return reply.status(400).send({
-          error: 'frame_background must be "brand", "transparent", or a #RRGGBB hex',
-          code: 'invalid_request',
+    try {
+      return await deps.agentRecordingCoordinator.withManualUploadReservation(
+        id,
+        [sceneId],
+        async () => {
+          const current = await loadVersionedSceneRecording(
+            entry.path,
+            sceneId,
+            fingerprintRecording,
+          );
+          if (current.version.sha256 !== body.recordingVersion) {
+            throw new RecordingVersionConflictError();
+          }
+          return persistMetadata(current.storyboard);
+        },
+      );
+    } catch (error) {
+      if (error instanceof RecordingVersionConflictError) {
+        return reply.status(409).send({
+          error: 'The recording changed since this proposal was created. Run Re-analyze again.',
+          code: error.code,
         });
       }
+      throw error;
     }
-
-    const updated = updateScene(sb, sceneId, patch);
-    await saveStoryboard(entry.path, updated);
-    const next = updated.scenes.find((s) => s.id === sceneId);
-    return {
-      sceneId,
-      name: next?.name,
-      description: next?.description,
-      type: next?.type,
-      transition: next?.transition,
-      transition_duration_sec: next?.transition_duration_sec,
-      frame_style: next?.frame_style,
-      frame_background: next?.frame_background,
-    };
   });
 }

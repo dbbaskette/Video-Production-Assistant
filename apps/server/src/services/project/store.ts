@@ -15,6 +15,8 @@ import { projectFiles, resolveProjectRoot, trackerPath } from './paths.js';
 export interface ProjectStoreOptions {
   vpaHome: string;
   projectsDefault: string;
+  /** Test seam for deterministic persistence failures. */
+  persist?: typeof atomicWriteFile;
 }
 
 export interface CreateProjectInput {
@@ -26,7 +28,12 @@ export interface CreateProjectInput {
 }
 
 export class ProjectStore {
-  constructor(private readonly opts: ProjectStoreOptions) {}
+  private readonly persist: typeof atomicWriteFile;
+  private readonly routingMutationQueues = new Map<string, Promise<void>>();
+
+  constructor(private readonly opts: ProjectStoreOptions) {
+    this.persist = opts.persist ?? atomicWriteFile;
+  }
 
   async readTracker(): Promise<ProjectTracker> {
     const p = trackerPath(this.opts.vpaHome);
@@ -44,7 +51,7 @@ export class ProjectStore {
 
   private async writeTracker(tracker: ProjectTracker): Promise<void> {
     const p = trackerPath(this.opts.vpaHome);
-    await atomicWriteFile(p, JSON.stringify(tracker, null, 2));
+    await this.persist(p, JSON.stringify(tracker, null, 2));
   }
 
   async create(input: CreateProjectInput): Promise<Project> {
@@ -80,7 +87,7 @@ export class ProjectStore {
     });
 
     const files = projectFiles(root);
-    await atomicWriteFile(files.metadata, dumpYaml(project));
+    await this.persist(files.metadata, dumpYaml(project));
 
     const entry: ProjectTrackerEntry = {
       id: project.id,
@@ -122,7 +129,7 @@ export class ProjectStore {
 
     if (project.path !== projectRoot) {
       const corrected: Project = { ...project, path: projectRoot };
-      await atomicWriteFile(files.metadata, dumpYaml(corrected));
+      await this.persist(files.metadata, dumpYaml(corrected));
       return corrected;
     }
     return project;
@@ -217,7 +224,7 @@ export class ProjectStore {
     const text = await readFile(files.metadata, 'utf8');
     const current = loadYaml(text, ProjectSchema);
     const updated: Project = ProjectSchema.parse({ ...current, brand });
-    await atomicWriteFile(files.metadata, dumpYaml(updated));
+    await this.persist(files.metadata, dumpYaml(updated));
     return updated;
   }
 
@@ -226,29 +233,42 @@ export class ProjectStore {
     id: string,
     patch: Partial<Record<ModelTaskRole, string | null>>,
   ): Promise<Project> {
-    const tracker = await this.readTracker();
-    const entry = tracker.projects.find((project) => project.id === id);
-    if (!entry) throw new Error(`Project not found: ${id}`);
+    return this.serializeRoutingMutation(id, async () => {
+      const tracker = await this.readTracker();
+      const entry = tracker.projects.find((project) => project.id === id);
+      if (!entry) throw new Error(`Project not found: ${id}`);
 
-    const files = projectFiles(entry.path);
-    const current = loadYaml(await readFile(files.metadata, 'utf8'), ProjectSchema);
-    const modelRouting = { ...current.model_routing };
-    const fieldByRole = {
-      'video-understanding': 'video_understanding',
-      writing: 'writing',
-      general: 'general',
-    } as const;
+      const files = projectFiles(entry.path);
+      const current = loadYaml(await readFile(files.metadata, 'utf8'), ProjectSchema);
+      const modelRouting = { ...current.model_routing };
+      const fieldByRole = {
+        'video-understanding': 'video_understanding',
+        writing: 'writing',
+        general: 'general',
+      } as const;
 
-    for (const [role, modelId] of Object.entries(patch) as Array<
-      [ModelTaskRole, string | null | undefined]
-    >) {
-      const field = fieldByRole[role];
-      if (modelId === null) delete modelRouting[field];
-      else if (modelId !== undefined) modelRouting[field] = modelId;
-    }
+      for (const [role, modelId] of Object.entries(patch) as Array<
+        [ModelTaskRole, string | null | undefined]
+      >) {
+        const field = fieldByRole[role];
+        if (modelId === null) delete modelRouting[field];
+        else if (modelId !== undefined) modelRouting[field] = modelId;
+      }
 
-    const updated = ProjectSchema.parse({ ...current, model_routing: modelRouting });
-    await atomicWriteFile(files.metadata, dumpYaml(updated));
-    return updated;
+      const updated = ProjectSchema.parse({ ...current, model_routing: modelRouting });
+      await this.persist(files.metadata, dumpYaml(updated));
+      return updated;
+    });
+  }
+
+  private serializeRoutingMutation<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.routingMutationQueues.get(id) ?? Promise.resolve();
+    const current = previous.then(operation, operation);
+    const tail = current.then(() => undefined, () => undefined);
+    this.routingMutationQueues.set(id, tail);
+    void tail.then(() => {
+      if (this.routingMutationQueues.get(id) === tail) this.routingMutationQueues.delete(id);
+    });
+    return current;
   }
 }

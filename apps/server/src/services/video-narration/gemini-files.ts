@@ -52,6 +52,7 @@ export interface GeminiFilesDependencies {
   stat?: typeof stat;
   now?: () => number;
   sleep?: (durationMs: number) => Promise<void>;
+  cleanupTimeoutMs?: number;
 }
 
 export interface WaitForFileOptions {
@@ -90,6 +91,7 @@ export function createGeminiFilesTransport(
   const now = dependencies.now ?? Date.now;
   const sleep = dependencies.sleep ?? ((durationMs: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
+  const cleanupTimeoutMs = dependencies.cleanupTimeoutMs ?? 5_000;
 
   const upload: GeminiFilesTransport['uploadVideo'] = async (
     apiKey,
@@ -181,6 +183,7 @@ export function createGeminiFilesTransport(
     try {
       const response = await fetchRequest(`${API_BASE}/${fileName}?key=${apiKey}`, {
         method: 'DELETE',
+        signal: AbortSignal.timeout(cleanupTimeoutMs),
       });
       return response.ok;
     } catch {

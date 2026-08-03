@@ -35,6 +35,7 @@ import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
 import { createLlmFromEntry } from './services/llm/factory.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
+import { ModelRoutingCoordinator } from './services/llm/model-routing-coordinator.js';
 import {
   ModelRouter,
   type CliReadinessProbe,
@@ -131,6 +132,11 @@ export async function buildServer(options: BuildServerOptions = {}) {
     checkCliReady: options.cliReadinessProbe ?? checkCliReady,
     warn: (fields, message) => app.log.warn(fields, message),
   });
+  const modelRoutingCoordinator = new ModelRoutingCoordinator({
+    registry: modelRegistry,
+    store,
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
 
   const ideationManager = new IdeationManager();
   const shotPlanManager = new ShotPlanManager();
@@ -206,8 +212,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
   await app.register(async (instance) => projectsRoutes(instance, {
     store,
     config,
-    registry: modelRegistry,
     router: modelRouter,
+    coordinator: modelRoutingCoordinator,
   }));
   await registerJobRoutes(app);
   await registerBrandRoutes(app, {
@@ -242,6 +248,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       workspaceRoot: wsRoot,
       router: modelRouter,
       videoUnderstanding,
+      agentRecordingCoordinator,
     }),
   );
   await app.register(async (instance) =>
@@ -320,6 +327,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registry: modelRegistry,
     router: modelRouter,
     store,
+    coordinator: modelRoutingCoordinator,
   });
 
   try {

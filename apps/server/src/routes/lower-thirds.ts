@@ -9,6 +9,8 @@ import { recommendLowerThirds } from '../services/lower-thirds/index.js';
 import { recommendLowerThirdsFromBrief } from '../services/lower-thirds/video-grounded.js';
 import { VideoUnderstandingService } from '../services/video-understanding/index.js';
 import { sha256File } from '../services/recording/metadata.js';
+import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
 import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import {
@@ -37,7 +39,7 @@ function privateRecommendationDiagnostic(
 ): Record<string, unknown> {
   if (error instanceof ModelRoutingError) {
     return {
-      sceneId,
+      ...safeSceneDiagnosticFields(sceneId),
       stage,
       errorName: 'ModelRoutingError',
       code: error.code,
@@ -45,7 +47,7 @@ function privateRecommendationDiagnostic(
       scope: error.scope,
     };
   }
-  return { sceneId, stage, errorName: 'RecommendationError' };
+  return { ...safeSceneDiagnosticFields(sceneId), stage, errorName: 'RecommendationError' };
 }
 
 function modelOperationFields(
@@ -55,7 +57,7 @@ function modelOperationFields(
   briefFreshness?: 'generated' | 'reused',
 ): Record<string, unknown> {
   return {
-    sceneId,
+    ...safeSceneDiagnosticFields(sceneId),
     operation: 'lower-third-recommendation',
     phase,
     role: summary.role,
@@ -267,22 +269,18 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
         // Re-read immediately before the single persistence operation so scene
         // edits made during model calls are retained.
         operationState.stage = 'persistence';
-        const latest = await loadStoryboard(project.path);
-        const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
+        const latestVersion = mode === 'video' && groundedBriefSource
+          ? await loadSceneAtRecordingVersion(
+              project.path,
+              sceneId,
+              groundedBriefSource,
+              fingerprintRecording,
+            )
+          : undefined;
+        const latest = latestVersion?.storyboard ?? await loadStoryboard(project.path);
+        const latestScene = latestVersion?.scene
+          ?? latest?.scenes.find((candidate) => candidate.id === sceneId);
         if (!latest || !latestScene) throw new Error('Scene changed during lower-third recommendation.');
-        if (mode === 'video') {
-          if (!groundedBriefSource || !latestScene.recording?.source) {
-            throw new Error('Recording changed during lower-third recommendation.');
-          }
-          const latestRecordingPath = join(project.path, latestScene.recording.source);
-          const latestFingerprint = await fingerprintRecording(latestRecordingPath);
-          if (
-            latestRecordingPath !== groundedBriefSource.path
-            || latestFingerprint !== groundedBriefSource.sha256
-          ) {
-            throw new Error('Recording changed during lower-third recommendation.');
-          }
-        }
         const updated = updateLowerThirds(latest, latestScene, lowerThirds);
         await persistStoryboard(project.path, updated);
         await cleanupLowerThirdArtifacts(project.path, latestScene, removeArtifact);

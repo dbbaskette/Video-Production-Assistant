@@ -45,8 +45,9 @@ export function createLlm(config: LlmConfig): LlmClient {
         apiKey: config.apiKey,
       });
     case 'fake':
-    default:
       return createFakeLlm();
+    default:
+      throw new Error(`Unsupported LLM provider: ${String(config.provider)}`);
   }
 }
 
@@ -71,7 +72,8 @@ export function createLlmFromEntry(entry: ModelEntry): LlmClient {
         apiKey: entry.apiKey,
       });
     case 'fake':
-    default:
       return createFakeLlm();
+    default:
+      throw new Error(`Unsupported LLM provider: ${String(entry.provider)}`);
   }
 }

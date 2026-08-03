@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
 import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
@@ -15,12 +16,22 @@ import {
   sourceDocsNeedSummarization,
 } from '../services/project-source-docs/context.js';
 import type { ResolvedModelSummary } from '@vpa/shared';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+import { sha256File } from '../services/recording/metadata.js';
+import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
+
+const GenerateBodySchema = z.object({
+  groundInVideo: z.boolean().optional(),
+}).strict();
 
 interface Deps {
   store: ProjectStore;
   workspaceRoot: string;
   router: ModelRouter;
   videoUnderstanding: VideoUnderstandingService;
+  agentRecordingCoordinator: Pick<AgentRecordingCoordinator, 'withManualUploadReservation'>;
+  fingerprintRecording?: (filePath: string) => Promise<string>;
 }
 
 type GenerationStage =
@@ -44,7 +55,7 @@ function privateGenerationDiagnostic(
 ): Record<string, unknown> {
   if (error instanceof ModelRoutingError) {
     return {
-      sceneId,
+      ...safeSceneDiagnosticFields(sceneId),
       stage,
       errorName: 'ModelRoutingError',
       code: error.code,
@@ -52,7 +63,7 @@ function privateGenerationDiagnostic(
       scope: error.scope,
     };
   }
-  return { sceneId, stage, errorName: 'GenerationError' };
+  return { ...safeSceneDiagnosticFields(sceneId), stage, errorName: 'GenerationError' };
 }
 
 function assertGeneratedScript(value: string, kind: 'script' | 'dialog'): void {
@@ -69,7 +80,7 @@ function modelOperationFields(
   briefFreshness?: 'generated' | 'reused',
 ): Record<string, unknown> {
   return {
-    sceneId,
+    ...safeSceneDiagnosticFields(sceneId),
     operation: 'script-generation',
     phase,
     role: summary.role,
@@ -96,7 +107,14 @@ async function resolveProject(store: ProjectStore, projectId: string) {
 }
 
 export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, workspaceRoot, router, videoUnderstanding } = deps;
+  const {
+    store,
+    workspaceRoot,
+    router,
+    videoUnderstanding,
+    agentRecordingCoordinator,
+    fingerprintRecording = sha256File,
+  } = deps;
 
   // GET /api/projects/:id/scenes/:sceneId/script — get current script
   app.get('/api/projects/:id/scenes/:sceneId/script', async (req, reply) => {
@@ -124,7 +142,14 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
   //       a script grounded in what's actually on screen
   app.post('/api/projects/:id/scenes/:sceneId/script/generate', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean };
+    const parsedBody = GenerateBodySchema.safeParse(req.body === undefined ? {} : req.body);
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: 'groundInVideo must be a boolean when provided.',
+        code: 'invalid_request',
+      });
+    }
+    const body = parsedBody.data;
     const project = await resolveProject(store, id);
     const projectPath = project.path;
 
@@ -142,11 +167,11 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       });
     }
     const mode: 'text' | 'video' = videoRequested ? 'video' : 'text';
-    let stage: GenerationStage = 'preparing';
+    const operationState: { stage: GenerationStage } = { stage: 'preparing' };
     try {
       const needsGeneral = await sourceDocsNeedSummarization(project.path);
 
-      stage = 'routing';
+      operationState.stage = 'routing';
       const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
       const writer = await router.resolveText('writing', project);
       const general = needsGeneral
@@ -161,124 +186,155 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         }
       }
 
-      let briefFreshness: 'generated' | 'reused' | undefined;
-      let script: string;
-      if (mode === 'video' && videoModel && scene.recording) {
-        const briefInput = {
-          projectPath: project.path,
-          sceneId,
-          sceneName: scene.name,
-          videoPath: join(project.path, scene.recording.source),
-          videoMimeType: 'video/mp4',
+      const generateAndPersist = async () => {
+        let operationScene = scene;
+        if (mode === 'video') {
+          const current = await loadStoryboard(project.path);
+          const currentScene = current?.scenes.find((candidate) => candidate.id === sceneId);
+          if (!currentScene?.recording?.source) {
+            throw new Error('Scene recording changed before script generation.');
+          }
+          operationScene = currentScene;
+        }
+
+        let briefFreshness: 'generated' | 'reused' | undefined;
+        let groundedBriefSource: { path: string; sha256: string } | undefined;
+        let script: string;
+        if (mode === 'video' && videoModel && operationScene.recording) {
+          const briefInput = {
+            projectPath: project.path,
+            sceneId,
+            sceneName: operationScene.name,
+            videoPath: join(project.path, operationScene.recording.source),
+            videoMimeType: 'video/mp4',
+          };
+          operationState.stage = 'video-understanding';
+          const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
+          briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
+          const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
+            app.log.info(
+              modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
+              'Video-grounded script phase',
+            );
+          });
+          groundedBriefSource = { path: brief.source.path, sha256: brief.source.sha256 };
+
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
+          if (general) {
+            app.log.info(
+              modelOperationFields(sceneId, general.summary, 'source-summarization'),
+              'Script source summarization phase',
+            );
+          }
+          const sourceContext = await loadProjectSourceContext(project.path, general?.client);
+          operationState.stage = 'writing';
+          app.log.info(
+            modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
+            'Script writing phase',
+          );
+          script = await generateScriptFromVideoBrief({
+            sceneName: operationScene.name,
+            sceneDescription: operationScene.description,
+            sceneIntent: operationScene.intent,
+            durationSec: operationScene.recording.duration_sec ?? brief.source.duration_sec,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            sourceContext,
+            brief,
+          }, writer.client, workspaceRoot);
+        } else {
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
+          if (general) {
+            app.log.info(
+              modelOperationFields(sceneId, general.summary, 'source-summarization'),
+              'Script source summarization phase',
+            );
+          }
+          const sourceContext = await loadProjectSourceContext(project.path, general?.client);
+          operationState.stage = 'writing';
+          app.log.info(
+            modelOperationFields(sceneId, writer.summary, 'writing'),
+            'Script writing phase',
+          );
+          script = await generateScript({
+            sceneName: operationScene.name,
+            sceneDescription: operationScene.description,
+            sceneIntent: operationScene.intent,
+            sceneType: operationScene.type,
+            durationSec: operationScene.recording?.duration_sec,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            sourceContext,
+          }, writer.client, workspaceRoot);
+        }
+        assertGeneratedScript(script, 'script');
+
+        operationState.stage = 'dialog';
+        app.log.info(
+          modelOperationFields(sceneId, writer.summary, 'dialog', briefFreshness),
+          'Script dialog phase',
+        );
+        const dialog = await convertToDialog(script, writer.client, workspaceRoot);
+        assertGeneratedScript(dialog.dialogScript, 'dialog');
+
+        // All generated values remain in memory until both variants validate.
+        // Re-read once before the single persistence operation so unrelated scene
+        // edits made during model calls are retained.
+        operationState.stage = 'persistence';
+        const latestVersion = mode === 'video' && groundedBriefSource
+          ? await loadSceneAtRecordingVersion(
+              project.path,
+              sceneId,
+              groundedBriefSource,
+              fingerprintRecording,
+            )
+          : undefined;
+        const latest = latestVersion?.storyboard ?? await loadStoryboard(project.path);
+        const latestScene = latestVersion?.scene
+          ?? latest?.scenes.find((candidate) => candidate.id === sceneId);
+        if (!latest || !latestScene) throw new Error('Scene changed during script generation.');
+        const narration = {
+          ...(latestScene.narration ?? {}),
+          script,
+          monologueScript: script,
+          dialogScript: dialog.dialogScript,
+          chunks: undefined,
+          audio: undefined,
+          subtitles: undefined,
+          timings: undefined,
         };
-        stage = 'video-understanding';
-        const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
-        briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
-        const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
-          app.log.info(
-            modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
-            'Video-grounded script phase',
-          );
-        });
-
-        stage = needsGeneral ? 'source-summarization' : 'writing';
-        if (general) {
-          app.log.info(
-            modelOperationFields(sceneId, general.summary, 'source-summarization'),
-            'Script source summarization phase',
-          );
-        }
-        const sourceContext = await loadProjectSourceContext(project.path, general?.client);
-        stage = 'writing';
-        app.log.info(
-          modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
-          'Script writing phase',
+        await saveStoryboard(
+          project.path,
+          updateScene(latest, sceneId, { narration }),
         );
-        script = await generateScriptFromVideoBrief({
-          sceneName: scene.name,
-          sceneDescription: scene.description,
-          sceneIntent: scene.intent,
-          durationSec: scene.recording.duration_sec ?? brief.source.duration_sec,
-          projectObjective: project.objective,
-          projectAudience: project.audience,
-          sourceContext,
-          brief,
-        }, writer.client, workspaceRoot);
-      } else {
-        stage = needsGeneral ? 'source-summarization' : 'writing';
-        if (general) {
-          app.log.info(
-            modelOperationFields(sceneId, general.summary, 'source-summarization'),
-            'Script source summarization phase',
-          );
-        }
-        const sourceContext = await loadProjectSourceContext(project.path, general?.client);
-        stage = 'writing';
-        app.log.info(
-          modelOperationFields(sceneId, writer.summary, 'writing'),
-          'Script writing phase',
-        );
-        script = await generateScript({
-          sceneName: scene.name,
-          sceneDescription: scene.description,
-          sceneIntent: scene.intent,
-          sceneType: scene.type,
-          durationSec: scene.recording?.duration_sec,
-          projectObjective: project.objective,
-          projectAudience: project.audience,
-          sourceContext,
-        }, writer.client, workspaceRoot);
-      }
-      assertGeneratedScript(script, 'script');
 
-      stage = 'dialog';
-      app.log.info(
-        modelOperationFields(sceneId, writer.summary, 'dialog', briefFreshness),
-        'Script dialog phase',
-      );
-      const dialog = await convertToDialog(script, writer.client, workspaceRoot);
-      assertGeneratedScript(dialog.dialogScript, 'dialog');
-
-      // All generated values remain in memory until both variants validate.
-      // Re-read once before the single persistence operation so unrelated scene
-      // edits made during model calls are retained.
-      stage = 'persistence';
-      const latest = await loadStoryboard(project.path);
-      const latestScene = latest?.scenes.find((candidate) => candidate.id === sceneId);
-      if (!latest || !latestScene) throw new Error('Scene changed during script generation.');
-      const narration = {
-        ...(latestScene.narration ?? {}),
-        script,
-        monologueScript: script,
-        dialogScript: dialog.dialogScript,
-        chunks: undefined,
-        audio: undefined,
-        subtitles: undefined,
-        timings: undefined,
+        return {
+          sceneId,
+          mode,
+          routing: {
+            ...(videoModel ? { videoUnderstanding: videoModel.summary } : {}),
+            writing: writer.summary,
+            ...(general ? { general: general.summary } : {}),
+          },
+          ...(briefFreshness ? { briefFreshness } : {}),
+          script,
+          dialog: dialog.dialogScript,
+          // Compatibility for the current web client while it migrates to `dialog`.
+          dialogScript: dialog.dialogScript,
+        };
       };
-      await saveStoryboard(
-        project.path,
-        updateScene(latest, sceneId, { narration }),
-      );
 
-      return {
-        sceneId,
-        mode,
-        routing: {
-          ...(videoModel ? { videoUnderstanding: videoModel.summary } : {}),
-          writing: writer.summary,
-          ...(general ? { general: general.summary } : {}),
-        },
-        ...(briefFreshness ? { briefFreshness } : {}),
-        script,
-        dialog: dialog.dialogScript,
-        // Compatibility for the current web client while it migrates to `dialog`.
-        dialogScript: dialog.dialogScript,
-      };
+      return mode === 'video'
+        ? await agentRecordingCoordinator.withManualUploadReservation(
+            id,
+            [sceneId],
+            generateAndPersist,
+          )
+        : await generateAndPersist();
     } catch (error) {
       try {
         app.log.error(
-          privateGenerationDiagnostic(error, sceneId, stage),
+          privateGenerationDiagnostic(error, sceneId, operationState.stage),
           'Script generation failed',
         );
       } catch {
@@ -292,10 +348,10 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
         });
       }
       return reply.status(500).send({
-        error: mode === 'video' && stage === 'video-understanding'
+        error: mode === 'video' && operationState.stage === 'video-understanding'
           ? VIDEO_SCRIPT_FAILED_MESSAGE
           : SCRIPT_FAILED_MESSAGE,
-        code: mode === 'video' && stage === 'video-understanding'
+        code: mode === 'video' && operationState.stage === 'video-understanding'
           ? 'video_script_failed'
           : 'script_generation_failed',
       });
@@ -441,7 +497,10 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
           role: error.role,
         });
       }
-      app.log.error({ sceneId, errorName: 'TightenError' }, 'Script tighten failed');
+      app.log.error(
+        { ...safeSceneDiagnosticFields(sceneId), errorName: 'TightenError' },
+        'Script tighten failed',
+      );
       return reply.status(500).send({
         error: 'Script tighten failed. Your existing script was not changed.',
         code: 'tighten_failed',
@@ -527,7 +586,10 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
           role: error.role,
         });
       }
-      app.log.error({ sceneId, errorName: 'PolishError' }, 'Script polish failed');
+      app.log.error(
+        { ...safeSceneDiagnosticFields(sceneId), errorName: 'PolishError' },
+        'Script polish failed',
+      );
       return reply.status(500).send({
         error: 'Script polish failed. Your existing script was not changed.',
         code: 'polish_failed',
