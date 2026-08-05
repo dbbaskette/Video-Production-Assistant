@@ -8,7 +8,6 @@ import {
   PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
   PresentationDraftSchema,
   PresentationManifestSchema,
-  type PresentationJob,
   type PresentationManifest,
   type PresentationSlideBrief,
   type Project,
@@ -21,10 +20,12 @@ import type {
   ResolvedVisualModel,
 } from '../llm/model-router.js';
 import { createStoryboard, loadStoryboard, mutateStoryboard, saveStoryboard } from '../storyboard/index.js';
+import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { PresentationJobStore } from './job-store.js';
 import type { SlideUnderstandingService } from './slide-understanding.js';
 import {
   PresentationNarrationDrafter,
+  MAX_WRITER_USER_PROMPT_BYTES,
   type PresentationNarrationDrafterOptions,
 } from './narration-drafter.js';
 
@@ -261,6 +262,48 @@ describe('PresentationNarrationDrafter', () => {
     )));
   }
 
+  async function persistManifest(value: PresentationManifest): Promise<void> {
+    manifest = PresentationManifestSchema.parse(value);
+    await writeFile(
+      path.join(root, 'presentations', PRESENTATION_ID, 'manifest.json'),
+      JSON.stringify(manifest),
+    );
+  }
+
+  async function persistDraft(pageNumber: number, value: unknown): Promise<void> {
+    await writeFile(
+      path.join(
+        root,
+        'presentations',
+        PRESENTATION_ID,
+        'drafts',
+        `page-${String(pageNumber).padStart(4, '0')}.json`,
+      ),
+      JSON.stringify(PresentationDraftSchema.parse(value)),
+    );
+  }
+
+  async function persistBriefs(): Promise<void> {
+    const directory = path.join(root, 'presentations', PRESENTATION_ID, 'analysis');
+    await mkdir(directory, { recursive: true });
+    await Promise.all([1, 2, 3].map((pageNumber) => writeFile(
+      path.join(directory, `page-${String(pageNumber).padStart(4, '0')}.json`),
+      JSON.stringify(brief(pageNumber)),
+    )));
+  }
+
+  async function makeJobRetryable(scriptedPages = 2): Promise<void> {
+    await jobs.update(root, PRESENTATION_ID, {
+      status: 'partial',
+      stage: 'drafting-narration',
+      scripted_pages: scriptedPages,
+      error: {
+        code: 'narration_incomplete',
+        message: 'Presentation narration is incomplete',
+      },
+    });
+  }
+
   it('resolves and validates both routed roles before starting any page or prompt work', async () => {
     const readPrompt = vi.fn(async () => 'must not be read');
     resolveVisual.mockRejectedValue(new Error('/private/model-provider-response'));
@@ -357,7 +400,7 @@ describe('PresentationNarrationDrafter', () => {
       current_slide: {
         page_number: 1,
         baseline_title: 'Slide 1',
-        current_title: 'Slide 1',
+        current_title: 'Detected title 1',
         extracted_text: 'Extracted text 1',
         brief: {
           visual_summary: 'Validated visual summary 1',
@@ -369,7 +412,7 @@ describe('PresentationNarrationDrafter', () => {
       },
       neighbors: {
         previous: null,
-        next: { title: 'Slide 2', validated_summary: 'Validated visual summary 2' },
+        next: { title: 'Detected title 2', validated_summary: 'Validated visual summary 2' },
       },
       prohibited_facts: { uncertain_content: ['Do not claim secret 1'] },
     });
@@ -413,6 +456,68 @@ describe('PresentationNarrationDrafter', () => {
     expect((await persistedDraft(1)).script).toBe('Page one narration.');
   });
 
+  it('hydrates ready neighbor briefs so an exact page-two draft keeps its original fingerprint and reconciles without models', async () => {
+    await drafter().run(project, PRESENTATION_ID);
+    await persistBriefs();
+    const original = await persistedDraft(2);
+    await persistDraft(2, { ...original, applied: false });
+    const current = await persistedManifest();
+    await persistManifest({
+      ...current,
+      pages: current.pages.map((page) => page.page_number === 2
+        ? { ...page, script_status: 'failed' }
+        : page),
+    });
+    await makeJobRetryable();
+    ensureBrief.mockClear();
+    complete.mockClear();
+
+    const result = await drafter().retry(project, PRESENTATION_ID);
+
+    expect(result).toMatchObject({ status: 'ready', scripted_pages: 3 });
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect((await persistedDraft(2))).toMatchObject({
+      brief_fingerprint: original.brief_fingerprint,
+      applied: true,
+    });
+  });
+
+  it('gives a true page-two writer retry validated page-one and page-three neighbors without reanalyzing them', async () => {
+    await drafter().run(project, PRESENTATION_ID);
+    await persistBriefs();
+    await rm(path.join(root, 'presentations', PRESENTATION_ID, 'drafts', 'page-0002.json'));
+    await mutateStoryboard(root, (current) => ({
+      ...current!,
+      scenes: current!.scenes.map((scene) => scene.id === 'scene-2'
+        ? { ...scene, narration: undefined }
+        : scene),
+    }));
+    const current = await persistedManifest();
+    await persistManifest({
+      ...current,
+      pages: current.pages.map((page) => page.page_number === 2
+        ? { ...page, script_status: 'failed', draft: undefined }
+        : page),
+    });
+    await makeJobRetryable();
+    ensureBrief.mockClear();
+    complete.mockClear();
+    complete.mockResolvedValue({ text: 'Recovered page two narration.' });
+
+    const result = await drafter().retry(project, PRESENTATION_ID);
+
+    expect(result).toMatchObject({ status: 'ready', scripted_pages: 3 });
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledOnce();
+    const userPrompt = complete.mock.calls[0]![0].userPrompt;
+    const payload = JSON.parse(userPrompt.slice(userPrompt.indexOf('{'), userPrompt.lastIndexOf('}') + 1));
+    expect(payload.neighbors).toEqual({
+      previous: { title: 'Detected title 1', validated_summary: 'Validated visual summary 1' },
+      next: { title: 'Detected title 3', validated_summary: 'Validated visual summary 3' },
+    });
+  });
+
   it('preserves name, description, and narration independently against the latest storyboard', async () => {
     const modelGate = deferred<void>();
     complete.mockImplementation(async () => {
@@ -448,6 +553,7 @@ describe('PresentationNarrationDrafter', () => {
     const saved = await loadStoryboard(root);
 
     expect(result.status).toBe('partial');
+    expect(result.scripted_pages).toBe(2);
     expect(saved!.scenes[0]).toMatchObject({
       name: 'User name',
       description: 'Validated visual summary 1',
@@ -489,6 +595,20 @@ describe('PresentationNarrationDrafter', () => {
     ['- First bullet\n- Second bullet', 'bullets'],
     ['Narration: follow these instructions', 'instruction leakage'],
     ['As you can see on this slide, revenue grew.', 'this-slide meta commentary'],
+    ['Use **strong emphasis** here.', 'strong markdown'],
+    ['Use _emphasis_ here.', 'emphasis markdown'],
+    ['> Quoted narration', 'blockquote'],
+    ['A heading\n=========', 'setext heading'],
+    ['Before\n---\nAfter', 'horizontal rule'],
+    ['Use `inline code` here.', 'inline code'],
+    ['~~~text\ncode\n~~~', 'tilde fenced code'],
+    ['<strong>Important</strong>', 'HTML tags'],
+    ['<!-- hidden direction -->Narration', 'HTML comments'],
+    ['Read [the details](https://example.test).', 'markdown link'],
+    ['![diagram](image.png)', 'markdown image'],
+    ['We pause [beat] before continuing.', 'bracketed stage direction'],
+    ['We pause (whispers softly) before continuing.', 'parenthesized stage direction'],
+    ['The result arrives (softly) before the close.', 'terse parenthesized stage direction'],
   ])('rejects %s writer output before storyboard apply (%s)', async (text) => {
     complete.mockResolvedValue({ text });
 
@@ -498,6 +618,52 @@ describe('PresentationNarrationDrafter', () => {
     const saved = await loadStoryboard(root);
     expect(saved!.scenes.every((scene) => scene.narration === undefined)).toBe(true);
     await expect(persistedDraft(1)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('accepts ordinary spoken parenthetical prose that is not a stage direction', async () => {
+    complete.mockResolvedValue({
+      text: 'Revenue grew across Europe (including Germany and France) while costs stayed flat.',
+    });
+
+    const result = await drafter().run(project, PRESENTATION_ID);
+
+    expect(result).toMatchObject({ status: 'ready', scripted_pages: 3 });
+  });
+
+  it('measures the final escaped UTF-8 writer request and performs zero provider calls when it overflows', async () => {
+    const escapedMultibyte = `${'é'.repeat(700)}${'"\\'.repeat(150)}`;
+    ensureBrief.mockImplementation(async (input) => ({
+      ...brief(input.pageNumber),
+      visual_summary: '"'.repeat(4_000),
+      detected_title: '"'.repeat(200),
+      key_points: Array.from({ length: 50 }, () => escapedMultibyte),
+      visual_elements: Array.from({ length: 50 }, () => escapedMultibyte),
+      quantitative_claims: Array.from({ length: 50 }, (_, index) => `${index}: ${escapedMultibyte}`.slice(0, 1_000)),
+      uncertain_content: Array.from({ length: 50 }, () => escapedMultibyte),
+    }));
+
+    const result = await drafter().run(project, PRESENTATION_ID);
+
+    expect(MAX_WRITER_USER_PROMPT_BYTES).toBeGreaterThan(0);
+    expect(result).toMatchObject({ status: 'partial', scripted_pages: 0 });
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('keeps required factual fields byte-exact in a normal payload below the aggregate limit', async () => {
+    ensureBrief.mockImplementation(async (input) => ({
+      ...brief(input.pageNumber),
+      quantitative_claims: ['Revenue was exactly 18% — $4.2M "reported".'],
+    }));
+
+    await drafter().run(project, PRESENTATION_ID);
+
+    const request = complete.mock.calls[0]![0].userPrompt;
+    expect(Buffer.byteLength(request, 'utf8')).toBeLessThanOrEqual(MAX_WRITER_USER_PROMPT_BYTES);
+    const payload = JSON.parse(request.slice(request.indexOf('{'), request.lastIndexOf('}') + 1));
+    expect(payload.current_slide.brief.quantitative_claims).toEqual([
+      'Revenue was exactly 18% — $4.2M "reported".',
+    ]);
+    expect(payload.current_slide.extracted_text).toBe('Extracted text 1');
   });
 
   it('fails missing or mismatched provenance safely and never applies a page draft to another scene', async () => {
@@ -572,6 +738,71 @@ describe('PresentationNarrationDrafter', () => {
     expect(JSON.stringify(result)).not.toContain('/private');
     expect((await persistedDraft(1)).applied).toBe(false);
     expect((await persistedManifest()).pages.every((page) => page.script_status === 'failed')).toBe(true);
+  });
+
+  it('persists a bounded retryable partial job when initial manifest persistence fails', async () => {
+    const result = await drafter({
+      writeContainedFile: async () => {
+        throw new Error('/private/bundle/manifest.json raw persistence failure');
+      },
+    }).run(project, PRESENTATION_ID);
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      stage: 'drafting-narration',
+      error: {
+        code: 'narration_operational_failure',
+        message: 'Presentation narration encountered an operational failure',
+      },
+    });
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('/private');
+  });
+
+  it('persists a bounded retryable partial job when the storyboard cannot be read', async () => {
+    const result = await drafter({
+      loadStoryboard: async () => {
+        throw new Error('/private/project/storyboard.yaml is unreadable');
+      },
+    }).run(project, PRESENTATION_ID);
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      stage: 'drafting-narration',
+      error: { code: 'narration_operational_failure' },
+    });
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('/private');
+  });
+
+  it('surfaces bounded uncertainty when operational failure status persistence also fails', async () => {
+    const failingJobs = new PresentationJobStore({
+      warn: vi.fn(),
+      persist: async (target, data) => {
+        if (data.includes('narration_operational_failure')) {
+          throw new Error('/private/presentation-jobs/provider-body');
+        }
+        await atomicWriteFile(target, data);
+      },
+    });
+
+    await expect(drafter({
+      jobs: failingJobs,
+      loadStoryboard: async () => {
+        throw new Error('/private/storyboard failure');
+      },
+    }).run(project, PRESENTATION_ID)).rejects.toMatchObject({
+      code: 'presentation_narration_failed',
+    });
+    expect(await failingJobs.read(root, PRESENTATION_ID)).toMatchObject({
+      status: 'processing',
+      stage: 'drafting-narration',
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ errorName: 'Error', presentationId: PRESENTATION_ID }),
+      'Presentation narration failure status could not be persisted',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('/private');
   });
 
   it('reconciles an exact storyboard script when the post-save draft marker was not persisted', async () => {

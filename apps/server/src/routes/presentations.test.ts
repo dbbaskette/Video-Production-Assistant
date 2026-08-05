@@ -3,13 +3,15 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import FormData from 'form-data';
 import { constants } from 'node:fs';
-import { mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { PresentationJob, PresentationManifest, Project } from '@vpa/shared';
+import type { PresentationJob, PresentationManifest, Project, Scene } from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
-import type { PresentationImportService } from '../services/presentation/import-service.js';
-import type { PresentationNarrationDrafter } from '../services/presentation/narration-drafter.js';
+import { PresentationImportService } from '../services/presentation/import-service.js';
+import { PresentationNarrationDrafter } from '../services/presentation/narration-drafter.js';
+import { PresentationJobStore } from '../services/presentation/job-store.js';
+import { createStoryboard, loadStoryboard, saveStoryboard } from '../services/storyboard/index.js';
 import { projectFiles } from '../services/project/paths.js';
 import { registerPresentationRoutes } from './presentations.js';
 
@@ -55,6 +57,67 @@ function multipartPayload(parts: Array<
   return { payload: form.getBuffer(), headers: form.getHeaders() };
 }
 
+function committedManifest(targetProject: Project, presentationId: string): PresentationManifest {
+  return {
+    schema_version: 1,
+    id: presentationId,
+    project_id: targetProject.id,
+    display_name: 'Slides.pdf',
+    source_sha256: 'a'.repeat(64),
+    size_bytes: 7,
+    page_count: 1,
+    created_at: NOW,
+    updated_at: NOW,
+    generate_narration: true,
+    pages: [{
+      page_number: 1,
+      scene_id: 'scene-slide',
+      image: `presentations/${presentationId}/pages/page-0001.png`,
+      clip: `presentations/${presentationId}/clips/page-0001.mp4`,
+      extracted_text: 'Visible slide text',
+      baseline: { name: 'Slide 1', description: 'Baseline', narration_script: null },
+      analysis_status: 'pending',
+      script_status: 'pending',
+    }],
+  };
+}
+
+function committedScene(presentationId: string): Scene {
+  return {
+    id: 'scene-slide',
+    name: 'Slide 1',
+    description: 'Baseline',
+    type: 'slide',
+    recording: {
+      source: `presentations/${presentationId}/clips/page-0001.mp4`,
+      source_kind: 'presentation',
+      duration_sec: 1,
+    },
+    presentation_source: {
+      presentation_id: presentationId,
+      page_number: 1,
+      page_count: 1,
+      image: `presentations/${presentationId}/pages/page-0001.png`,
+      hold_duration_sec: 5,
+    },
+  };
+}
+
+async function persistCommittedBundle(targetProject: Project, presentationId: string): Promise<void> {
+  const bundle = path.join(projectFiles(targetProject.path).presentationsDir, presentationId);
+  await mkdir(path.join(bundle, 'pages'), { recursive: true });
+  await mkdir(path.join(bundle, 'clips'), { recursive: true });
+  await writeFile(path.join(bundle, 'pages', 'page-0001.png'), 'image');
+  await writeFile(path.join(bundle, 'clips', 'page-0001.mp4'), 'clip');
+  await writeFile(path.join(bundle, 'manifest.json'), JSON.stringify(
+    committedManifest(targetProject, presentationId),
+  ));
+  await saveStoryboard(targetProject.path, createStoryboard(
+    targetProject,
+    [committedScene(presentationId)],
+  ));
+}
+
 describe('presentation routes', () => {
   let root: string;
   let app: FastifyInstance;
@@ -75,7 +138,7 @@ describe('presentation routes', () => {
   };
 
   beforeEach(async () => {
-    root = await mkdtemp(path.join(tmpdir(), 'vpa-presentation-routes-'));
+    root = await realpath(await mkdtemp(path.join(tmpdir(), 'vpa-presentation-routes-')));
     store = new ProjectStore({
       vpaHome: path.join(root, 'home'),
       projectsDefault: path.join(root, 'projects'),
@@ -182,6 +245,226 @@ describe('presentation routes', () => {
     expect(response.statusCode).toBe(202);
     const presentationId = response.json().presentation_id as string;
     await vi.waitFor(() => expect(drafter.run).toHaveBeenCalledWith(project, presentationId));
+  });
+
+  it('makes a detached narration persistence failure visible through the real job store', async () => {
+    const realJobs = new PresentationJobStore({ warn: vi.fn() });
+    const complete = vi.fn(async () => ({ text: 'Narration that must never be requested.' }));
+    const realDrafter = new PresentationNarrationDrafter({
+      workspaceRoot: root,
+      jobs: realJobs,
+      warn: vi.fn(),
+      readPrompt: async () => 'Narration prompt.',
+      router: {
+        resolveVisual: async () => ({
+          apiKey: 'private',
+          model: 'gemini-2.5-pro',
+          summary: {
+            role: 'video-understanding',
+            scope: 'global',
+            entry_id: 'visual-entry',
+            provider: 'gemini',
+            model: 'gemini-2.5-pro',
+            name: 'Visual',
+            capabilities: { text: true, image: true, video: true },
+            ready: true,
+          },
+        }),
+        resolveText: async () => ({
+          client: { complete },
+          summary: {
+            role: 'writing',
+            scope: 'global',
+            entry_id: 'writer-entry',
+            provider: 'fake',
+            model: 'writer-v1',
+            name: 'Writer',
+            capabilities: { text: true, image: false, video: false },
+            ready: true,
+          },
+        }),
+      } as never,
+      slideUnderstanding: { ensureBrief: vi.fn() } as never,
+      writeContainedFile: async () => {
+        throw new Error('injected manifest persistence failure');
+      },
+    });
+    const realService = {
+      registerUpload: async (input: Parameters<PresentationImportService['registerUpload']>[0]) => (
+        realJobs.create(input.project.path, job({
+          id: input.id,
+          project_id: input.project.id,
+          filename: input.filename,
+          generate_narration: input.generateNarration,
+        }))
+      ),
+      process: async (targetProject: Project, presentationId: string) => {
+        await persistCommittedBundle(targetProject, presentationId);
+        return realJobs.update(targetProject.path, presentationId, {
+          status: 'processing',
+          stage: 'drafting-narration',
+          deterministic_commit: 'committed',
+          page_count: 1,
+          processed_pages: 1,
+          remaining_scene_count: 1,
+        });
+      },
+      list: (projectPath: string) => realJobs.list(projectPath),
+      get: (projectPath: string, presentationId: string) => realJobs.read(projectPath, presentationId),
+      retryImport: vi.fn(),
+      retryNarration: vi.fn(),
+      remove: vi.fn(),
+    };
+    const detachedApp = Fastify({ logger: false });
+    await detachedApp.register(multipart);
+    await registerPresentationRoutes(detachedApp, {
+      store,
+      service: realService as unknown as PresentationImportService,
+      maxBytes: 32,
+      drafter: realDrafter,
+    });
+
+    try {
+      const response = await detachedApp.inject({
+        method: 'POST',
+        url: `/api/projects/${project.id}/presentations`,
+        ...multipartPayload([{ kind: 'file', bytes: Buffer.from('%PDF route bytes') }]),
+      });
+      expect(response.statusCode).toBe(202);
+      const presentationId = response.json().presentation_id as string;
+      await vi.waitFor(async () => {
+        expect(await realJobs.read(project.path, presentationId)).toMatchObject({
+          status: 'partial',
+          stage: 'drafting-narration',
+          error: {
+            code: 'narration_operational_failure',
+            message: 'Presentation narration encountered an operational failure',
+          },
+        });
+      });
+      const visible = await detachedApp.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/presentations/${presentationId}`,
+      });
+      expect(visible.statusCode).toBe(200);
+      expect(visible.json()).toMatchObject({ status: 'partial', stage: 'drafting-narration' });
+      expect(complete).not.toHaveBeenCalled();
+    } finally {
+      await detachedApp.close();
+    }
+  });
+
+  it('does not resurrect a deleted presentation when narration is released from a running model call', async () => {
+    const realJobs = new PresentationJobStore({ warn: vi.fn() });
+    await realJobs.create(project.path, job({
+      project_id: project.id,
+      status: 'partial',
+      stage: 'drafting-narration',
+      page_count: 1,
+      processed_pages: 1,
+      remaining_scene_count: 1,
+      deterministic_commit: 'committed',
+    }));
+    await persistCommittedBundle(project, PRESENTATION_ID);
+    let signalStarted!: () => void;
+    let releaseModel!: () => void;
+    const modelStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const modelRelease = new Promise<void>((resolve) => { releaseModel = resolve; });
+    const complete = vi.fn(async () => ({ text: 'Narration that must never be requested.' }));
+    const realDrafter = new PresentationNarrationDrafter({
+      workspaceRoot: root,
+      jobs: realJobs,
+      warn: vi.fn(),
+      readPrompt: async () => 'Narration prompt.',
+      router: {
+        resolveVisual: async () => ({
+          apiKey: 'private',
+          model: 'gemini-2.5-pro',
+          summary: {
+            role: 'video-understanding',
+            scope: 'global',
+            entry_id: 'visual-entry',
+            provider: 'gemini',
+            model: 'gemini-2.5-pro',
+            name: 'Visual',
+            capabilities: { text: true, image: true, video: true },
+            ready: true,
+          },
+        }),
+        resolveText: async () => ({
+          client: { complete },
+          summary: {
+            role: 'writing',
+            scope: 'global',
+            entry_id: 'writer-entry',
+            provider: 'fake',
+            model: 'writer-v1',
+            name: 'Writer',
+            capabilities: { text: true, image: false, video: false },
+            ready: true,
+          },
+        }),
+      } as never,
+      slideUnderstanding: {
+        ensureBrief: async () => {
+          signalStarted();
+          await modelRelease;
+          throw new Error('model stopped after deletion');
+        },
+      } as never,
+    });
+    const realService = new PresentationImportService({
+      jobs: realJobs,
+      maxPages: 200,
+      warn: vi.fn(),
+    });
+    const raceApp = Fastify({ logger: false });
+    await raceApp.register(multipart);
+    await registerPresentationRoutes(raceApp, {
+      store,
+      service: realService,
+      maxBytes: 32,
+      drafter: realDrafter,
+    });
+
+    try {
+      const retry = raceApp.inject({
+        method: 'POST',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
+      }).then((response) => response);
+      const firstPhase = await Promise.race([
+        modelStarted.then(() => ({ kind: 'model' as const })),
+        retry.then((response) => ({
+          kind: 'response' as const,
+          statusCode: response.statusCode,
+          body: response.body,
+        })),
+      ]);
+      expect(firstPhase).toEqual({ kind: 'model' });
+      const deletion = await raceApp.inject({
+        method: 'DELETE',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}?confirmed=true`,
+      });
+      expect(deletion.statusCode).toBe(204);
+      releaseModel();
+      expect((await retry).statusCode).toBe(500);
+
+      expect(await realJobs.read(project.path, PRESENTATION_ID)).toBeNull();
+      const publicLookup = await raceApp.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}`,
+      });
+      expect(publicLookup.statusCode).toBe(404);
+      await expect(stat(path.join(
+        projectFiles(project.path).presentationsDir,
+        PRESENTATION_ID,
+      ))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await loadStoryboard(project.path))?.scenes).toEqual([]);
+      expect(complete).not.toHaveBeenCalled();
+    } finally {
+      releaseModel();
+      await raceApp.close();
+    }
   });
 
   it.each([
