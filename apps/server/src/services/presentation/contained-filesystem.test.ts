@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -232,6 +234,300 @@ describe('contained filesystem helper', () => {
     await expect(
       readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
     ).resolves.toEqual(Buffer.from('previous valid cache'));
+  });
+
+  it('lets a trusted write supersede an active quarantine without deleting foreign evidence', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+    let activeQuarantinePath = '';
+    const onEvent = async (event: ContainedOperationEvent) => {
+      if (event.stage !== 'installed') return;
+      activeQuarantinePath = event.namespacePath!;
+      await rename(targetPath, path.join(directoryPath, 'attacker-moved-installed'));
+      await writeFile(targetPath, 'foreign cache evidence', { mode: 0o600 });
+    };
+
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('interrupted cache'), 1_024, {
+        onEvent,
+      }),
+    ).rejects.toThrow();
+    await expect(readFile(targetPath, 'utf8')).resolves.toBe('previous valid cache');
+
+    await atomicWriteContainedFile(directory, 'cache.json', Buffer.from('trusted cache'), 1_024);
+
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('trusted cache'));
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('trusted cache'));
+    const detachedQuarantines = (await readdir(directoryPath)).filter((entry) =>
+      entry.startsWith('.slide-cache-quarantine-'),
+    );
+    expect(detachedQuarantines).toHaveLength(1);
+    expect(detachedQuarantines).not.toContain(path.basename(activeQuarantinePath));
+    await expect(
+      readFile(path.join(directoryPath, detachedQuarantines[0]!, 'foreign'), 'utf8'),
+    ).resolves.toBe('foreign cache evidence');
+  });
+
+  it('rolls back a killed trusted replacement before evaluating an older quarantine binding', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+    await expect(
+      atomicWriteContainedFile(
+        directory,
+        'cache.json',
+        Buffer.from('first interrupted cache'),
+        1_024,
+        {
+          onEvent: async (event) => {
+            if (event.stage !== 'installed') return;
+            await rename(targetPath, path.join(directoryPath, 'attacker-moved-installed'));
+            await writeFile(targetPath, 'foreign cache evidence', { mode: 0o600 });
+          },
+        },
+      ),
+    ).rejects.toThrow();
+
+    let reachedInstalled = false;
+    let installingNamespacePath = '';
+    await expect(
+      atomicWriteContainedFile(
+        directory,
+        'cache.json',
+        Buffer.from('second interrupted cache'),
+        1_024,
+        {
+          timeoutMs: 500,
+          terminationGraceMs: 40,
+          childBehavior: { ignoreSigterm: true },
+          onEvent: (event) => {
+            if (event.stage !== 'installed') return;
+            reachedInstalled = true;
+            installingNamespacePath = event.namespacePath!;
+            return new Promise<void>(() => undefined);
+          },
+        },
+      ),
+    ).rejects.toThrow();
+
+    expect(reachedInstalled).toBe(true);
+    const activeNamespaces = (await readdir(directoryPath))
+      .filter((entry) => entry.startsWith('.slide-cache-') && !entry.includes('-quarantine-'))
+      .map((entry) => path.join(directoryPath, entry));
+    const quarantineNamespacePath = activeNamespaces.find(
+      (entry) => entry !== installingNamespacePath,
+    )!;
+    const heldQuarantine = path.join(directoryPath, '.held-quarantine');
+    const heldInstalling = path.join(directoryPath, '.held-installing');
+    const transactionPrefix = `.slide-cache-${createHash('sha256')
+      .update('cache.json')
+      .digest('hex')
+      .slice(0, 16)}-`;
+    const orderedQuarantine = path.join(directoryPath, `${transactionPrefix}00000000`);
+    const orderedInstalling = path.join(directoryPath, `${transactionPrefix}zzzzzzzz`);
+    await rename(quarantineNamespacePath, heldQuarantine);
+    await rename(installingNamespacePath, heldInstalling);
+    await rename(heldQuarantine, orderedQuarantine);
+    await rename(heldInstalling, orderedInstalling);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+
+    await atomicWriteContainedFile(directory, 'cache.json', Buffer.from('trusted cache'), 1_024);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('trusted cache'));
+  });
+
+  it.each([
+    'journal-marker-created',
+    'journal-marker-written',
+    'journal-marker-synced',
+    'journal-marker-renamed',
+  ] as const)(
+    'recovers when killed at the journal-created %s publication boundary',
+    async (killStage) => {
+      const targetPath = path.join(directoryPath, 'cache.json');
+      await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+      let reachedBoundary = false;
+
+      await expect(
+        atomicWriteContainedFile(directory, 'cache.json', Buffer.from('new cache'), 1_024, {
+          timeoutMs: 500,
+          terminationGraceMs: 40,
+          childBehavior: { ignoreSigterm: true },
+          onEvent: async (event) => {
+            if (event.stage !== killStage || event.markerName !== 'journal-created') {
+              return;
+            }
+            reachedBoundary = true;
+            const publishedPath = path.join(event.namespacePath!, 'journal-created');
+            if (killStage === 'journal-marker-renamed') {
+              await expect(readFile(publishedPath, 'utf8')).resolves.toContain('"version":1');
+            } else {
+              await expect(access(publishedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+            }
+            if (killStage === 'journal-marker-created') {
+              await writeFile(event.temporaryPath!, '{"version":');
+            }
+            return new Promise<void>(() => undefined);
+          },
+        }),
+      ).rejects.toThrow();
+
+      expect(reachedBoundary).toBe(true);
+      await expect(
+        readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+      ).resolves.toEqual(Buffer.from('previous valid cache'));
+      await expect(
+        readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+      ).resolves.toEqual(Buffer.from('previous valid cache'));
+      expect(
+        (await readdir(directoryPath)).filter((entry) =>
+          entry.startsWith(
+            `.slide-cache-${createHash('sha256').update('cache.json').digest('hex').slice(0, 16)}-`,
+          ),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['journal-created', 'previous valid cache'],
+    ['journal-candidate', 'previous valid cache'],
+    ['journal-installing', 'previous valid cache'],
+    ['journal-committed', 'new cache'],
+  ] as const)('recovers when killed after atomically renaming %s', async (markerName, expected) => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+    let reachedBoundary = false;
+
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('new cache'), 1_024, {
+        timeoutMs: 500,
+        terminationGraceMs: 40,
+        childBehavior: { ignoreSigterm: true },
+        onEvent: (event) => {
+          if (event.stage !== 'journal-marker-renamed' || event.markerName !== markerName) return;
+          reachedBoundary = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(reachedBoundary).toBe(true);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from(expected));
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from(expected));
+  });
+
+  it('publishes the quarantine marker through the same durable marker boundaries', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+    const quarantineStages: string[] = [];
+
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('new cache'), 1_024, {
+        onEvent: async (event) => {
+          if (event.stage === 'installed') {
+            await rename(targetPath, path.join(directoryPath, 'attacker-moved-installed'));
+            await writeFile(targetPath, 'foreign cache evidence', { mode: 0o600 });
+          }
+          if (event.markerName === 'journal-quarantined') quarantineStages.push(event.stage);
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(quarantineStages).toEqual([
+      'journal-marker-created',
+      'journal-marker-written',
+      'journal-marker-synced',
+      'journal-marker-renamed',
+      'journal-marker-durable',
+    ]);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+  });
+
+  it('recovers an owned namespace killed after durable creation and before moving prior cache', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+    let reachedDurableNamespace = false;
+
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('new cache'), 1_024, {
+        timeoutMs: 500,
+        terminationGraceMs: 40,
+        childBehavior: { ignoreSigterm: true },
+        onEvent: (event) => {
+          if (event.stage !== 'namespace-durable') return;
+          reachedDurableNamespace = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(reachedDurableNamespace).toBe(true);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+  });
+
+  it('fails closed on a malformed final journal but a trusted write can replace the cache safely', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'possibly contaminated cache', { mode: 0o600 });
+    const targetHash = createHash('sha256').update('cache.json').digest('hex').slice(0, 16);
+    const corruptNamespace = path.join(directoryPath, `.slide-cache-${targetHash}-legacy`);
+    await mkdir(corruptNamespace, { mode: 0o700 });
+    await writeFile(path.join(corruptNamespace, 'journal-created'), '{"version":', {
+      mode: 0o600,
+    });
+    await writeFile(path.join(corruptNamespace, 'foreign-evidence'), 'preserve me', {
+      mode: 0o600,
+    });
+
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).rejects.toThrow();
+
+    await atomicWriteContainedFile(directory, 'cache.json', Buffer.from('trusted cache'), 1_024);
+
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('trusted cache'));
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('trusted cache'));
+    const detached = (await readdir(directoryPath)).filter((entry) =>
+      entry.startsWith(`.slide-cache-quarantine-${targetHash}-`),
+    );
+    expect(detached).toHaveLength(1);
+    await expect(
+      readFile(path.join(directoryPath, detached[0]!, 'journal-created'), 'utf8'),
+    ).resolves.toBe('{"version":');
+    await expect(
+      readFile(path.join(directoryPath, detached[0]!, 'foreign-evidence'), 'utf8'),
+    ).resolves.toBe('preserve me');
+    const preservedTargets = (await readdir(path.join(directoryPath, detached[0]!))).filter(
+      (entry) => entry.startsWith('contaminated-target-'),
+    );
+    expect(preservedTargets).toHaveLength(1);
+    await expect(
+      readFile(path.join(directoryPath, detached[0]!, preservedTargets[0]!), 'utf8'),
+    ).resolves.toBe('possibly contaminated cache');
   });
 
   it('recovers a killed prepared transaction before the next cache read without residue', async () => {

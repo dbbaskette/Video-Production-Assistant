@@ -10,7 +10,18 @@ export interface ContainedDirectoryIdentity {
 }
 
 export type ContainedOperation = 'source-read' | 'cache-read' | 'cache-write' | 'ensure-directory';
-export type ContainedOperationStage = 'ready' | 'prepared' | 'installed' | 'before-cleanup';
+export type ContainedOperationStage =
+  | 'ready'
+  | 'namespace-created'
+  | 'namespace-durable'
+  | 'journal-marker-created'
+  | 'journal-marker-written'
+  | 'journal-marker-synced'
+  | 'journal-marker-renamed'
+  | 'journal-marker-durable'
+  | 'prepared'
+  | 'installed'
+  | 'before-cleanup';
 
 export interface ContainedOperationEvent {
   operation: ContainedOperation;
@@ -19,6 +30,7 @@ export interface ContainedOperationEvent {
   namespacePath?: string;
   temporaryPath?: string;
   targetPath?: string;
+  markerName?: string;
 }
 
 export interface ContainedRuntimeOptions {
@@ -116,7 +128,7 @@ export function resetContainedFilesystemMetricsForTests(): void {
 // Cache finalization uses synchronous syscalls so test hooks are the only
 // deliberate yield points inside the private namespace/install transaction.
 const CONTAINED_FILESYSTEM_CHILD = String.raw`
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants,
@@ -200,8 +212,21 @@ const TRANSACTION_PREFIX = '.slide-cache-';
 const transactionPrefixFor = (targetName) => TRANSACTION_PREFIX
   + createHash('sha256').update(targetName).digest('hex').slice(0, 16)
   + '-';
+const detachedQuarantinePrefixFor = (targetName) => TRANSACTION_PREFIX
+  + 'quarantine-'
+  + createHash('sha256').update(targetName).digest('hex').slice(0, 16)
+  + '-';
 const JOURNAL_VERSION = 1;
 const MAX_JOURNAL_BYTES = 4096;
+const JOURNAL_MARKERS = new Set([
+  'journal-created',
+  'journal-candidate',
+  'journal-installing',
+  'journal-committed',
+  'journal-quarantined',
+]);
+const JOURNAL_TEMP_PREFIX = '.journal-tmp-';
+let testStagesEnabled = false;
 const markerPath = (namespace, marker) => namespace + '/' + marker;
 const recordIdentity = (stat) => ({ dev: stat.dev.toString(), ino: stat.ino.toString() });
 const sameRecord = (stat, identity) => identity
@@ -235,24 +260,74 @@ const readMarker = (namespace, marker) => {
   }
 };
 const writeMarker = (namespaceFd, namespace, marker, value) => {
+  if (!JOURNAL_MARKERS.has(marker)) throw new Error('transaction journal name invalid');
   const target = markerPath(namespace, marker);
+  const temporary = markerPath(
+    namespace,
+    JOURNAL_TEMP_PREFIX + marker + '-' + randomUUID(),
+  );
   const bytes = Buffer.from(JSON.stringify(value));
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_JOURNAL_BYTES) throw new Error('transaction journal too large');
   const fd = openSync(
-    target,
+    temporary,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600,
   );
   try {
     fchmodSync(fd, 0o600);
+    const opened = fstatSync(fd, { bigint: true });
+    const identity = recordIdentity(opened);
+    if (testStagesEnabled) emit({
+      stage: 'journal-marker-created',
+      namespace,
+      temporary,
+      marker,
+    });
     writeAll(fd, bytes);
+    if (testStagesEnabled) emit({
+      stage: 'journal-marker-written',
+      namespace,
+      temporary,
+      marker,
+    });
     fsyncSync(fd);
+    if (testStagesEnabled) emit({
+      stage: 'journal-marker-synced',
+      namespace,
+      temporary,
+      marker,
+    });
     const stat = fstatSync(fd, { bigint: true });
-    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777n) !== 0o600n) {
+    const named = optionalLstat(temporary);
+    if (
+      !stat.isFile()
+      || stat.isSymbolicLink()
+      || (stat.mode & 0o777n) !== 0o600n
+      || stat.size !== BigInt(bytes.byteLength)
+      || !sameRecord(stat, identity)
+      || !named
+      || !sameRecord(named, identity)
+      || optionalLstat(target)
+    ) {
       throw new Error('transaction journal invalid');
     }
+    renameSync(temporary, target);
+    if (testStagesEnabled) emit({
+      stage: 'journal-marker-renamed',
+      namespace,
+      temporary,
+      marker,
+    });
+    const published = optionalLstat(target);
+    if (!published || !sameRecord(published, identity)) throw new Error('transaction journal replaced');
     fsyncSync(namespaceFd);
-    return { value, identity: recordIdentity(stat) };
+    if (testStagesEnabled) emit({
+      stage: 'journal-marker-durable',
+      namespace,
+      temporary,
+      marker,
+    });
+    return { value, identity };
   } finally {
     closeSync(fd);
   }
@@ -270,6 +345,32 @@ const cleanupMarkers = (namespace, markers) => {
   }
   return true;
 };
+const isOwnedMarkerTemp = (namespace, entry) => {
+  if (!entry.startsWith(JOURNAL_TEMP_PREFIX)) return false;
+  const suffix = entry.slice(JOURNAL_TEMP_PREFIX.length);
+  const marker = [...JOURNAL_MARKERS].find((name) => suffix.startsWith(name + '-'));
+  if (!marker) return false;
+  const identifier = suffix.slice(marker.length + 1);
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(identifier)) {
+    return false;
+  }
+  const stat = optionalLstat(markerPath(namespace, entry));
+  return Boolean(
+    stat
+    && stat.isFile()
+    && !stat.isSymbolicLink()
+    && (stat.mode & 0o777n) === 0o600n
+    && stat.size >= 0n
+    && stat.size <= BigInt(MAX_JOURNAL_BYTES),
+  );
+};
+const cleanupOwnedMarkerTemps = (namespace) => {
+  for (const entry of readdirSync(namespace)) {
+    if (!entry.startsWith(JOURNAL_TEMP_PREFIX)) continue;
+    if (!isOwnedMarkerTemp(namespace, entry)) throw new Error('transaction journal temp invalid');
+    unlinkSync(markerPath(namespace, entry));
+  }
+};
 const candidateIsValid = (target, candidate, expectedHash, maxBytes) => {
   const named = optionalLstat(target);
   if (!named || !named.isFile() || named.isSymbolicLink() || !sameRecord(named, candidate)) return false;
@@ -282,11 +383,61 @@ const candidateIsValid = (target, candidate, expectedHash, maxBytes) => {
     closeSync(fd);
   }
 };
+const detachSupersededTransactions = (cwdFd, targetName, currentNamespace) => {
+  const prefix = transactionPrefixFor(targetName);
+  let detached = false;
+  for (const namespace of readdirSync('.').filter((entry) => entry.startsWith(prefix))) {
+    if (namespace === currentNamespace) continue;
+    const destination = detachedQuarantinePrefixFor(targetName) + randomUUID();
+    renameSync(namespace, destination);
+    detached = true;
+  }
+  if (detached) fsyncSync(cwdFd);
+};
+const preserveRecoveryHazardForTrustedWrite = (cwdFd, namespace, targetName) => {
+  const namespaceStat = optionalLstat(namespace);
+  const destination = detachedQuarantinePrefixFor(targetName) + randomUUID();
+  if (namespaceStat?.isDirectory() && !namespaceStat.isSymbolicLink()) {
+    const namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const currentTarget = optionalLstat(targetName);
+      if (currentTarget) {
+        renameSync(targetName, namespace + '/contaminated-target-' + randomUUID());
+        fsyncSync(namespaceFd);
+        fsyncSync(cwdFd);
+      }
+    } finally {
+      closeSync(namespaceFd);
+    }
+    renameSync(namespace, destination);
+    fsyncSync(cwdFd);
+    return;
+  }
+
+  mkdirSync(destination, { mode: 0o700 });
+  const destinationFd = openSync(destination, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(destinationFd);
+    fsyncSync(cwdFd);
+    const currentTarget = optionalLstat(targetName);
+    if (currentTarget) {
+      renameSync(targetName, destination + '/contaminated-target-' + randomUUID());
+      fsyncSync(destinationFd);
+      fsyncSync(cwdFd);
+    }
+    renameSync(namespace, destination + '/invalid-transaction-' + randomUUID());
+    fsyncSync(destinationFd);
+    fsyncSync(cwdFd);
+  } finally {
+    closeSync(destinationFd);
+  }
+};
 const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
   const namespaceStat = lstatSync(namespace, { bigint: true });
   if (!namespaceStat.isDirectory() || namespaceStat.isSymbolicLink() || (namespaceStat.mode & 0o777n) !== 0o700n) {
     throw new Error('transaction namespace invalid');
   }
+  cleanupOwnedMarkerTemps(namespace);
   const entries = readdirSync(namespace);
   if (entries.length === 0) {
     rmdirSync(namespace);
@@ -294,9 +445,9 @@ const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
     return;
   }
   const created = readMarker(namespace, 'journal-created');
+  if (!created) throw new Error('transaction journal missing');
   if (
-    !created
-    || created.value?.version !== JOURNAL_VERSION
+    created.value?.version !== JOURNAL_VERSION
     || created.value?.target !== targetName
     || !sameRecord(namespaceStat, created.value?.namespace)
   ) throw new Error('transaction journal missing');
@@ -323,8 +474,21 @@ const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
   ];
   const candidate = candidateMarker?.value?.candidate;
   const expectedHash = candidateMarker?.value?.expectedHash;
-  if (candidateMarker && (!candidate || !/^[a-f0-9]{64}$/.test(expectedHash))) {
+  if (
+    candidateMarker
+    && (
+      candidateMarker.value?.version !== JOURNAL_VERSION
+      || !candidate
+      || !/^[a-f0-9]{64}$/.test(expectedHash)
+    )
+  ) {
     throw new Error('candidate journal invalid');
+  }
+  if (installing && installing.value?.version !== JOURNAL_VERSION) {
+    throw new Error('installing journal invalid');
+  }
+  if (committed && committed.value?.version !== JOURNAL_VERSION) {
+    throw new Error('committed journal invalid');
   }
   const candidatePath = namespace + '/candidate';
   const backupPath = namespace + '/previous';
@@ -337,11 +501,18 @@ const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
     if (!candidateIsValid(targetName, candidate, expectedHash, maxBytes)) {
       throw new Error('committed cache target invalid');
     }
+    detachSupersededTransactions(cwdFd, targetName, namespace);
     const previous = installing?.value?.previous;
     const backup = optionalLstat(backupPath);
     if (backup) {
       if (!previous || !sameRecord(backup, previous)) throw new Error('cache backup changed');
       unlinkSync(backupPath);
+      const namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try {
+        fsyncSync(namespaceFd);
+      } finally {
+        closeSync(namespaceFd);
+      }
     }
   } else if (installing) {
     const previous = installing.value?.previous;
@@ -398,16 +569,39 @@ const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
     return;
   }
 
+  const namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(namespaceFd);
+    fsyncSync(cwdFd);
+  } finally {
+    closeSync(namespaceFd);
+  }
   if (!cleanupMarkers(namespace, markers)) throw new Error('transaction journal replaced');
   if (readdirSync(namespace).length !== 0) throw new Error('transaction namespace not empty');
   rmdirSync(namespace);
   fsyncSync(cwdFd);
 };
-const recoverTransactions = (cwdFd, targetName, maxBytes) => {
+const recoverTransactions = (cwdFd, targetName, maxBytes, trustedWrite = false) => {
   const prefix = transactionPrefixFor(targetName);
-  const namespaces = readdirSync('.').filter((entry) => entry.startsWith(prefix));
+  const recoveryPriority = (namespace) => {
+    if (optionalLstat(markerPath(namespace, 'journal-committed'))) return 4;
+    if (optionalLstat(markerPath(namespace, 'journal-quarantined'))) return 0;
+    if (optionalLstat(markerPath(namespace, 'journal-installing'))) return 3;
+    if (optionalLstat(markerPath(namespace, 'journal-candidate'))) return 2;
+    return 1;
+  };
+  const namespaces = readdirSync('.')
+    .filter((entry) => entry.startsWith(prefix))
+    .sort((left, right) => recoveryPriority(right) - recoveryPriority(left));
   if (namespaces.length > 64) throw new Error('too many cache transactions');
-  for (const namespace of namespaces) recoverNamespace(cwdFd, namespace, targetName, maxBytes);
+  for (const namespace of namespaces) {
+    try {
+      recoverNamespace(cwdFd, namespace, targetName, maxBytes);
+    } catch (error) {
+      if (!trustedWrite) throw error;
+      preserveRecoveryHazardForTrustedWrite(cwdFd, namespace, targetName);
+    }
+  }
 };
 
 const [
@@ -422,6 +616,7 @@ const [
   hangAfterReady,
   enableTestStages,
 ] = process.argv.slice(1);
+testStagesEnabled = enableTestStages === '1';
 if (ignoreSigterm === '1') process.on('SIGTERM', () => undefined);
 const hang = async () => {
   const interval = setInterval(() => undefined, 1_000);
@@ -475,7 +670,7 @@ try {
     if (!safeName(namespace) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedHash)) {
       fail();
     }
-    recoverTransactions(cwdFd, name, maxBytes);
+    recoverTransactions(cwdFd, name, maxBytes, true);
     emit({ stage: 'ready' });
     if (hangAfterReady === '1') await hang();
     const bytes = readInput(maxBytes);
@@ -496,6 +691,10 @@ try {
       }
       namespaceIdentity = { dev: namespaceStat.dev, ino: namespaceStat.ino };
       namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      if (enableTestStages === '1') emit({ stage: 'namespace-created', namespace });
+      fsyncSync(namespaceFd);
+      fsyncSync(cwdFd);
+      if (enableTestStages === '1') emit({ stage: 'namespace-durable', namespace });
       const baselineTarget = optionalLstat(name);
       writeMarker(namespaceFd, namespace, 'journal-created', {
         version: JOURNAL_VERSION,
@@ -617,6 +816,7 @@ interface ChildEventPayload {
   namespace?: unknown;
   temporary?: unknown;
   target?: unknown;
+  marker?: unknown;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -699,7 +899,21 @@ function mapEvent(
   payload: ChildEventPayload,
 ): ContainedOperationEvent {
   const stage = payload.stage;
-  if (!['ready', 'prepared', 'installed', 'before-cleanup'].includes(String(stage))) {
+  if (
+    ![
+      'ready',
+      'namespace-created',
+      'namespace-durable',
+      'journal-marker-created',
+      'journal-marker-written',
+      'journal-marker-synced',
+      'journal-marker-renamed',
+      'journal-marker-durable',
+      'prepared',
+      'installed',
+      'before-cleanup',
+    ].includes(String(stage))
+  ) {
     throw new Error('contained filesystem child sent an invalid event');
   }
   return {
@@ -716,6 +930,7 @@ function mapEvent(
         : undefined,
     targetPath:
       typeof payload.target === 'string' ? path.join(directory.path, payload.target) : undefined,
+    markerName: typeof payload.marker === 'string' ? payload.marker : undefined,
   };
 }
 

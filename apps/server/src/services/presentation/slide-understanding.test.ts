@@ -968,6 +968,111 @@ describe('SlideUnderstandingService', () => {
     expect(generateWithImage).not.toHaveBeenCalled();
   });
 
+  it('keeps a newer result when an older cross-instance request is blocked before source hashing', async () => {
+    const releaseOlderCapture = deferred<void>();
+    const olderCaptureStarted = deferred<void>();
+    const oldOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Older blocked request',
+    });
+    const newOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Newer completed request',
+    });
+    generateWithImage.mockImplementation(async (request: GenerateWithImageInput) =>
+      request.model === 'gemini-old' ? oldOutput : newOutput,
+    );
+    let shouldBlockOlderCapture = true;
+    const olderService = service({
+      testHooks: {
+        onContainedOperationReady: async (operation) => {
+          if (operation !== 'source-read' || !shouldBlockOlderCapture) return;
+          shouldBlockOlderCapture = false;
+          olderCaptureStarted.resolve();
+          await releaseOlderCapture.promise;
+        },
+      },
+    });
+    const newerService = service();
+
+    const olderCall = olderService.ensureBrief(input, model('old-entry', 'gemini-old'));
+    await olderCaptureStarted.promise;
+    expect(inspectSlideUnderstandingResources(olderService)).toEqual({ inFlight: 0, targets: 1 });
+    const newerCall = newerService.ensureBrief(input, model('new-entry', 'gemini-new'));
+    try {
+      await expect(newerCall).resolves.toMatchObject({
+        detected_title: 'Newer completed request',
+      });
+      releaseOlderCapture.resolve();
+      await expect(olderCall).resolves.toMatchObject({
+        detected_title: 'Older blocked request',
+      });
+    } finally {
+      releaseOlderCapture.resolve();
+      await Promise.allSettled([olderCall, newerCall]);
+    }
+
+    await expect(readFile(artifactPath(), 'utf8')).resolves.toContain(
+      '"detected_title": "Newer completed request"',
+    );
+    expect(inspectSlideUnderstandingResources(olderService)).toEqual({ inFlight: 0, targets: 0 });
+  });
+
+  it('releases a pre-capture target start token when source capture rejects', async () => {
+    await rm(imagePath);
+    const instance = service();
+
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
+
+    expect(generateWithImage).not.toHaveBeenCalled();
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
+  });
+
+  it('lets an older pre-capture request persist after a newer request rejects', async () => {
+    const releaseOlderCapture = deferred<void>();
+    const olderCaptureStarted = deferred<void>();
+    generateWithImage.mockImplementation(async (request: GenerateWithImageInput) => {
+      if (request.model === 'gemini-new') throw new Error('private newer rejection');
+      return JSON.stringify({
+        ...JSON.parse(validModelOutput),
+        detected_title: 'Older surviving request',
+      });
+    });
+    let shouldBlockOlderCapture = true;
+    const olderService = service({
+      testHooks: {
+        onContainedOperationReady: async (operation) => {
+          if (operation !== 'source-read' || !shouldBlockOlderCapture) return;
+          shouldBlockOlderCapture = false;
+          olderCaptureStarted.resolve();
+          await releaseOlderCapture.promise;
+        },
+      },
+    });
+    const newerService = service();
+
+    const olderCall = olderService.ensureBrief(input, model('old-entry', 'gemini-old'));
+    await olderCaptureStarted.promise;
+    const newerCall = newerService.ensureBrief(input, model('new-entry', 'gemini-new'));
+    try {
+      await expect(newerCall).rejects.toEqual(new SlideUnderstandingError());
+      releaseOlderCapture.resolve();
+      await expect(olderCall).resolves.toMatchObject({
+        detected_title: 'Older surviving request',
+      });
+    } finally {
+      releaseOlderCapture.resolve();
+      await Promise.allSettled([olderCall, newerCall]);
+    }
+
+    await expect(readFile(artifactPath(), 'utf8')).resolves.toContain(
+      '"detected_title": "Older surviving request"',
+    );
+    expect(inspectSlideUnderstandingResources(olderService)).toEqual({ inFlight: 0, targets: 0 });
+  });
+
   it('lets an older successful generation persist when the overlapping newer generation rejects', async () => {
     const older = deferred<string>();
     const newer = deferred<string>();
