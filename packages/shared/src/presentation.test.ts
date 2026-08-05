@@ -27,6 +27,7 @@ describe('presentation contracts', () => {
     expect(PresentationSourceSchema.safeParse({ ...source, page_number: 4 }).success).toBe(false);
     expect(PresentationSourceSchema.safeParse({ ...source, image: '../secret.png' }).success).toBe(false);
     expect(PresentationSourceSchema.safeParse({ ...source, image: 'C:\\secret.png' }).success).toBe(false);
+    expect(PresentationSourceSchema.safeParse({ ...source, image: 'pages\\..\\secret.png' }).success).toBe(false);
     expect(PresentationSourceSchema.safeParse({ ...source, hold_duration_sec: 0 }).success).toBe(false);
   });
 
@@ -99,7 +100,7 @@ describe('presentation contracts', () => {
       page_number: 1,
       image_sha256: 'b'.repeat(64),
       extracted_text_sha256: 'c'.repeat(64),
-      model: { entry_id: 'gemini-pro', model: 'gemini-2.5-pro' },
+      model: { entry_id: 'gemini-pro', provider: 'gemini', model: 'gemini-2.5-pro' },
       prompt_version: 1,
       visual_summary: 'A system architecture diagram.',
       detected_title: 'Architecture',
@@ -120,6 +121,14 @@ describe('presentation contracts', () => {
     };
 
     expect(PresentationSlideBriefSchema.parse(brief)).toEqual(brief);
+    expect(PresentationSlideBriefSchema.safeParse({
+      ...brief,
+      model: { ...brief.model, provider: 'anthropic' },
+    }).success).toBe(false);
+    expect(PresentationSlideBriefSchema.safeParse({
+      ...brief,
+      model: { entry_id: 'gemini-pro', model: 'gemini-2.5-pro' },
+    }).success).toBe(false);
     expect(PresentationDraftSchema.parse(draft)).toEqual(draft);
     expect(PresentationDraftSchema.safeParse({ ...draft, script: 'x'.repeat(12_001) }).success).toBe(false);
   });

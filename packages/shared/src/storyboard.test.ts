@@ -27,6 +27,16 @@ describe('SceneSchema shot_plan additions', () => {
     expect(SceneSchema.parse(scene).presentation_source).toEqual(presentationSource);
     expect(SceneSchema.safeParse({ ...scene, presentation_source: undefined }).success).toBe(false);
     expect(SceneSchema.safeParse({ ...scene, recording: undefined }).success).toBe(false);
+    expect(SceneSchema.safeParse({ ...scene, type: 'desktop' }).success).toBe(false);
+    expect(SceneSchema.safeParse({ ...scene, type: undefined }).success).toBe(false);
+    expect(SceneSchema.safeParse({
+      ...scene,
+      recording: { ...scene.recording, source: '/private/secret.mp4' },
+    }).success).toBe(false);
+    expect(SceneSchema.safeParse({
+      ...scene,
+      recording: { ...scene.recording, source: '../secret.mp4' },
+    }).success).toBe(false);
   });
 
   it('parses a scene without shot_plan (backwards compatible)', () => {

@@ -17,14 +17,17 @@ const jobStages = [
 const pageAiStatuses = ['not-requested', 'pending', 'ready', 'failed', 'preserved-user-edit'] as const;
 
 /** Project-owned paths only; persisted presentation records never contain local paths. */
-const SafeProjectRelativePathSchema = z.string().min(1).max(1_024).superRefine((path, ctx) => {
-  if (path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(path)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Path must be project-relative' });
-    return;
+export function isSafeProjectRelativePath(path: string): boolean {
+  if (path.startsWith('/') || path.startsWith('\\') || path.includes('\\') || /^[A-Za-z]:[\\/]/.test(path)) {
+    return false;
   }
   const segments = path.split('/');
-  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Path contains an unsafe segment' });
+  return !segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..');
+}
+
+const SafeProjectRelativePathSchema = z.string().min(1).max(1_024).superRefine((path, ctx) => {
+  if (!isSafeProjectRelativePath(path)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Path must be a safe project-relative path' });
   }
 });
 
@@ -32,6 +35,10 @@ const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const ModelProvenanceSchema = z.object({
   entry_id: z.string().min(1).max(200),
   model: z.string().min(1).max(500),
+}).strict();
+
+const GeminiModelProvenanceSchema = ModelProvenanceSchema.extend({
+  provider: z.literal('gemini'),
 }).strict();
 
 export const PresentationJobStatusSchema = z.enum(jobStatuses);
@@ -150,7 +157,7 @@ export const PresentationSlideBriefSchema = z.object({
   page_number: z.number().int().positive().max(200),
   image_sha256: Sha256Schema,
   extracted_text_sha256: Sha256Schema,
-  model: ModelProvenanceSchema,
+  model: GeminiModelProvenanceSchema,
   prompt_version: z.literal(PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION),
   visual_summary: z.string().min(1).max(4_000),
   detected_title: z.string().max(200),
