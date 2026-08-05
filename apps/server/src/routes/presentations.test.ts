@@ -9,6 +9,7 @@ import path from 'node:path';
 import type { PresentationJob, PresentationManifest, Project } from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
 import type { PresentationImportService } from '../services/presentation/import-service.js';
+import type { PresentationNarrationDrafter } from '../services/presentation/narration-drafter.js';
 import { projectFiles } from '../services/project/paths.js';
 import { registerPresentationRoutes } from './presentations.js';
 
@@ -68,6 +69,10 @@ describe('presentation routes', () => {
     retryNarration: Mock<Parameters<PresentationImportService['retryNarration']>, ReturnType<PresentationImportService['retryNarration']>>;
     remove: Mock<Parameters<PresentationImportService['remove']>, ReturnType<PresentationImportService['remove']>>;
   };
+  let drafter: {
+    run: Mock<Parameters<PresentationNarrationDrafter['run']>, ReturnType<PresentationNarrationDrafter['run']>>;
+    retry: Mock<Parameters<PresentationNarrationDrafter['retry']>, ReturnType<PresentationNarrationDrafter['retry']>>;
+  };
 
   beforeEach(async () => {
     root = await mkdtemp(path.join(tmpdir(), 'vpa-presentation-routes-'));
@@ -88,12 +93,27 @@ describe('presentation routes', () => {
       retryNarration: vi.fn<Parameters<PresentationImportService['retryNarration']>, ReturnType<PresentationImportService['retryNarration']>>(async (targetProject, presentationId, callback) => callback(targetProject, presentationId)),
       remove: vi.fn<Parameters<PresentationImportService['remove']>, ReturnType<PresentationImportService['remove']>>(async () => undefined),
     };
+    drafter = {
+      run: vi.fn<Parameters<PresentationNarrationDrafter['run']>, ReturnType<PresentationNarrationDrafter['run']>>(async () => job({
+        project_id: project.id,
+        status: 'ready',
+        stage: 'ready',
+        deterministic_commit: 'committed',
+      })),
+      retry: vi.fn<Parameters<PresentationNarrationDrafter['retry']>, ReturnType<PresentationNarrationDrafter['retry']>>(async () => job({
+        project_id: project.id,
+        status: 'ready',
+        stage: 'ready',
+        deterministic_commit: 'committed',
+      })),
+    };
     app = Fastify({ logger: false });
     await app.register(multipart);
     await registerPresentationRoutes(app, {
       store,
       service: service as unknown as PresentationImportService,
       maxBytes: 32,
+      drafter: drafter as unknown as PresentationNarrationDrafter,
     });
   });
 
@@ -138,6 +158,53 @@ describe('presentation routes', () => {
     expect(await readFile(input.stagedSourcePath, 'utf8')).toBe('%PDF route bytes');
     expect((await stat(input.stagedSourcePath)).mode & 0o777).toBe(0o600);
     await vi.waitFor(() => expect(service.process).toHaveBeenCalledWith(project, input.id));
+    expect(drafter.run).not.toHaveBeenCalled();
+  });
+
+  it('starts narration only after detached deterministic processing returns a committed drafting job', async () => {
+    service.process.mockImplementationOnce(async (_project, presentationId) => job({
+      id: presentationId,
+      project_id: project.id,
+      status: 'processing',
+      stage: 'drafting-narration',
+      deterministic_commit: 'committed',
+      page_count: 3,
+      processed_pages: 3,
+      remaining_scene_count: 3,
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${project.id}/presentations`,
+      ...multipartPayload([{ kind: 'file', bytes: Buffer.from('%PDF route bytes') }]),
+    });
+
+    expect(response.statusCode).toBe(202);
+    const presentationId = response.json().presentation_id as string;
+    await vi.waitFor(() => expect(drafter.run).toHaveBeenCalledWith(project, presentationId));
+  });
+
+  it.each([
+    ['failed processing', { status: 'failed', stage: 'failed', deterministic_commit: 'uncommitted' }],
+    ['uncommitted drafting', { status: 'processing', stage: 'drafting-narration', deterministic_commit: 'commit-pending' }],
+    ['deletion pending', { status: 'processing', stage: 'drafting-narration', deterministic_commit: 'committed', deletion_pending: true }],
+  ])('does not start narration after %s', async (_case, state) => {
+    service.process.mockImplementationOnce(async (_project, presentationId) => job({
+      id: presentationId,
+      project_id: project.id,
+      ...state,
+    } as Partial<PresentationJob>));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${project.id}/presentations`,
+      ...multipartPayload([{ kind: 'file', bytes: Buffer.from('%PDF route bytes') }]),
+    });
+
+    expect(response.statusCode).toBe(202);
+    await vi.waitFor(() => expect(service.process).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(drafter.run).not.toHaveBeenCalled();
   });
 
   it('delegates PDF content validation to detached service processing instead of trusting metadata', async () => {
@@ -280,44 +347,19 @@ describe('presentation routes', () => {
     expect(service.retryImport).toHaveBeenCalledWith(project, PRESENTATION_ID);
   });
 
-  it('returns 501 for retry-narration until a callback is injected', async () => {
+  it('retries narration through the lifecycle-checked service callback', async () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
     });
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json()).toEqual({
-      error: 'Presentation narration is not available',
-      code: 'narration_not_implemented',
-    });
-  });
-
-  it('returns a retry-narration job through the optional callback', async () => {
-    const retryNarration = vi.fn(async () => job({ project_id: project.id, stage: 'drafting-narration' }));
-    const callbackApp = Fastify({ logger: false });
-    await callbackApp.register(multipart);
-    await registerPresentationRoutes(callbackApp, {
-      store,
-      service: service as unknown as PresentationImportService,
-      maxBytes: 32,
-      retryNarration,
-    });
-    try {
-      const response = await callbackApp.inject({
-        method: 'POST',
-        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
-      });
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ id: PRESENTATION_ID, stage: 'drafting-narration' });
-      expect(retryNarration).toHaveBeenCalledWith(project, PRESENTATION_ID);
-    } finally {
-      await callbackApp.close();
-    }
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: PRESENTATION_ID, stage: 'ready' });
+    expect(service.retryNarration).toHaveBeenCalledWith(project, PRESENTATION_ID, expect.any(Function));
+    expect(drafter.retry).toHaveBeenCalledWith(project, PRESENTATION_ID);
   });
 
   it('returns not_found without invoking narration retry for a public tombstone', async () => {
-    const retryNarration = vi.fn(async () => job({ project_id: project.id, stage: 'drafting-narration' }));
     service.get.mockResolvedValueOnce(null);
     const callbackApp = Fastify({ logger: false });
     await callbackApp.register(multipart);
@@ -325,7 +367,7 @@ describe('presentation routes', () => {
       store,
       service: service as unknown as PresentationImportService,
       maxBytes: 32,
-      retryNarration,
+      drafter: drafter as unknown as PresentationNarrationDrafter,
     });
     try {
       const response = await callbackApp.inject({
@@ -335,7 +377,7 @@ describe('presentation routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(response.json()).toEqual({ error: 'Presentation not found', code: 'not_found' });
-      expect(retryNarration).not.toHaveBeenCalled();
+      expect(drafter.retry).not.toHaveBeenCalled();
     } finally {
       await callbackApp.close();
     }
@@ -537,6 +579,7 @@ describe('presentation routes', () => {
       store,
       service: service as unknown as PresentationImportService,
       maxBytes: 32,
+      drafter: drafter as unknown as PresentationNarrationDrafter,
       openFile,
     });
 

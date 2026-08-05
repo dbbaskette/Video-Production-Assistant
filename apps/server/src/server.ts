@@ -74,8 +74,9 @@ import { promisify } from 'node:util';
 import { PresentationJobStore } from './services/presentation/job-store.js';
 import {
   PresentationImportService,
-  type RetryPresentationNarration,
 } from './services/presentation/import-service.js';
+import { SlideUnderstandingService } from './services/presentation/slide-understanding.js';
+import { PresentationNarrationDrafter } from './services/presentation/narration-drafter.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,12 +103,13 @@ export interface BuildServerOptions {
   videoUnderstanding?: VideoUnderstandingService;
   recordingProbe?: typeof probeVideo;
   presentationService?: PresentationImportService;
-  retryPresentationNarration?: RetryPresentationNarration;
+  presentationNarrationDrafter?: PresentationNarrationDrafter;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
   const config = options.config ?? loadConfig();
   const app = Fastify({ logger: options.logger ?? { level: 'info' } });
+  const wsRoot = resolve(import.meta.dirname, '../../..');
 
   await app.register(cors, {
     origin: [config.webOrigin],
@@ -173,7 +175,6 @@ export async function buildServer(options: BuildServerOptions = {}) {
     app.log.info('TTS: xAI provider registered');
   }
 
-  const wsRoot = resolve(import.meta.dirname, '../../..');
   const videoUnderstandingWarning: VideoUnderstandingWarning = (fields, message) => {
     const safeFields = sanitizeVideoUnderstandingWarningFields(fields);
     const safeMessage = message === 'Gemini video cleanup failed'
@@ -185,6 +186,18 @@ export async function buildServer(options: BuildServerOptions = {}) {
     workspaceRoot: wsRoot,
     warn: videoUnderstandingWarning,
   });
+  const slideUnderstanding = new SlideUnderstandingService({
+    workspaceRoot: wsRoot,
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
+  const presentationNarrationDrafter = options.presentationNarrationDrafter
+    ?? new PresentationNarrationDrafter({
+      workspaceRoot: wsRoot,
+      router: modelRouter,
+      slideUnderstanding,
+      jobs: presentationJobs,
+      warn: (fields, message) => app.log.warn(fields, message),
+    });
 
   const capProcess = createCapProcess();
   const capLocator = new CapLocator({ vpaHome: config.vpaHome, run: capProcess.run });
@@ -246,7 +259,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     store,
     service: presentationService,
     maxBytes: config.presentation.maxBytes,
-    retryNarration: options.retryPresentationNarration,
+    drafter: presentationNarrationDrafter,
   }));
   await app.register(async (instance) =>
     registerIdeationRoutes(instance, { store, router: modelRouter, ideationManager }),
@@ -381,9 +394,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
     app.log.warn({ errorName }, 'Presentation project discovery failed during reconciliation');
   }
   try {
+    const retryPresentationNarration = (project: Parameters<PresentationNarrationDrafter['retry']>[0], presentationId: string) => (
+      presentationNarrationDrafter.retry(project, presentationId)
+    );
     await presentationService.reconcile(
       presentationProjects,
-      options.retryPresentationNarration,
+      retryPresentationNarration,
     );
   } catch (error) {
     const errorName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(error.name)
@@ -402,6 +418,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     codexRunner,
     agentRecordingCoordinator,
     presentationService,
+    presentationNarrationDrafter,
   };
 }
 

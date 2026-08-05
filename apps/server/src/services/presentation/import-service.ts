@@ -125,7 +125,7 @@ function publicPdfMessage(code: PresentationImportErrorCode): string {
   return 'The file is not a valid PDF';
 }
 
-async function serializePresentationLifecycle<T>(
+export async function withPresentationLifecycle<T>(
   projectPath: string,
   id: string,
   operation: () => Promise<T>,
@@ -265,7 +265,7 @@ export class PresentationImportService {
   }
 
   async registerUpload(input: RegisterPresentationUploadInput): Promise<PresentationJob> {
-    return serializePresentationLifecycle(input.project.path, input.id, async () => {
+    return withPresentationLifecycle(input.project.path, input.id, async () => {
       const paths = this.paths(input.project.path, input.id);
       if (path.resolve(input.stagedSourcePath) !== path.resolve(paths.source)
         || !Number.isSafeInteger(input.sizeBytes)
@@ -297,7 +297,7 @@ export class PresentationImportService {
   }
 
   async process(project: Project, id: string): Promise<PresentationJob> {
-    return serializePresentationLifecycle(project.path, id, () => this.processUnlocked(project, id));
+    return withPresentationLifecycle(project.path, id, () => this.processUnlocked(project, id));
   }
 
   private async processUnlocked(project: Project, id: string): Promise<PresentationJob> {
@@ -523,7 +523,7 @@ export class PresentationImportService {
   }
 
   async retryImport(project: Project, id: string): Promise<PresentationJob> {
-    return serializePresentationLifecycle(project.path, id, () => this.retryImportUnlocked(project, id));
+    return withPresentationLifecycle(project.path, id, () => this.retryImportUnlocked(project, id));
   }
 
   private async retryImportUnlocked(project: Project, id: string): Promise<PresentationJob> {
@@ -585,7 +585,7 @@ export class PresentationImportService {
     id: string,
     retryNarration: RetryPresentationNarration,
   ): Promise<PresentationJob> {
-    return serializePresentationLifecycle(project.path, id, async () => {
+    await withPresentationLifecycle(project.path, id, async () => {
       const job = await this.options.jobs.read(project.path, id);
       if (!job || job.project_id !== project.id || job.deletion_pending) {
         throw new PresentationImportError(
@@ -593,8 +593,8 @@ export class PresentationImportService {
           'The presentation is not available for narration retry',
         );
       }
-      return retryNarration(project, id);
     });
+    return retryNarration(project, id);
   }
 
   private async withExactRemainingCounts(
@@ -622,7 +622,7 @@ export class PresentationImportService {
   }
 
   async remove(project: Project, id: string): Promise<void> {
-    return serializePresentationLifecycle(project.path, id, () => this.removeUnlocked(project, id));
+    return withPresentationLifecycle(project.path, id, () => this.removeUnlocked(project, id));
   }
 
   private async removeUnlocked(project: Project, id: string): Promise<void> {
@@ -659,13 +659,12 @@ export class PresentationImportService {
   private async reconcileJob(
     project: Project,
     id: string,
-    retryNarration?: RetryPresentationNarration,
-  ): Promise<void> {
+  ): Promise<boolean> {
     let job = await this.options.jobs.read(project.path, id);
-    if (!job || job.project_id !== project.id) return;
+    if (!job || job.project_id !== project.id) return false;
     if (job.deletion_pending) {
       await this.removeUnlocked(project, id);
-      return;
+      return false;
     }
     const storyboard = await loadStoryboard(project.path);
 
@@ -715,9 +714,7 @@ export class PresentationImportService {
       });
     }
 
-    if (job.status === 'processing' && job.stage === 'drafting-narration' && retryNarration) {
-      await retryNarration(project, id);
-    }
+    return job.status === 'processing' && job.stage === 'drafting-narration';
   }
 
   private async cleanupOrphanStaging(project: Project): Promise<void> {
@@ -742,7 +739,7 @@ export class PresentationImportService {
         continue;
       }
       try {
-        await serializePresentationLifecycle(project.path, id, async () => {
+        await withPresentationLifecycle(project.path, id, async () => {
           if (!await this.options.jobs.read(project.path, id)) {
             await this.removeFiles(path.join(stagingDirectory, id), { recursive: true, force: true });
           }
@@ -770,7 +767,7 @@ export class PresentationImportService {
       if (!entry.isDirectory() || !JobIdSchema.safeParse(entry.name).success) continue;
       const id = entry.name;
       try {
-        await serializePresentationLifecycle(project.path, id, async () => {
+        await withPresentationLifecycle(project.path, id, async () => {
           const storyboard = await loadStoryboard(project.path);
           const job = await this.options.jobs.read(project.path, id);
           let manifest: PresentationManifest;
@@ -818,9 +815,10 @@ export class PresentationImportService {
     const jobs = await this.options.jobs.list(project.path);
     for (const job of jobs) {
       try {
-        await serializePresentationLifecycle(project.path, job.id, () => (
-          this.reconcileJob(project, job.id, retryNarration)
+        const shouldRetryNarration = await withPresentationLifecycle(project.path, job.id, () => (
+          this.reconcileJob(project, job.id)
         ));
+        if (shouldRetryNarration && retryNarration) await retryNarration(project, job.id);
       } catch (error) {
         this.warn(
           { errorName: safeErrorName(error), projectId: project.id, presentationId: job.id },

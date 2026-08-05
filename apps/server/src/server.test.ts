@@ -8,6 +8,7 @@ import type { ServerConfig } from './config.js';
 import { buildServer } from './server.js';
 import { saveStoryboard } from './services/storyboard/index.js';
 import { PresentationImportService } from './services/presentation/import-service.js';
+import { PresentationNarrationDrafter } from './services/presentation/narration-drafter.js';
 
 const SESSION_ID = '64d79770-ee07-4f70-b084-2115dc28e0d3';
 const NOW = '2026-07-31T12:00:00.000Z';
@@ -43,7 +44,10 @@ describe('agent recording server lifecycle', () => {
       createdAt: NOW,
       updatedAt: NOW,
     }));
-    const reconcile = vi.fn(async () => {
+    const reconcile = vi.fn<
+      Parameters<PresentationImportService['reconcile']>,
+      ReturnType<PresentationImportService['reconcile']>
+    >(async () => {
       throw new Error('persisted session could not be read');
     });
     const coordinator = {
@@ -63,6 +67,7 @@ describe('agent recording server lifecycle', () => {
       expect(built.desktopDriver).toBeDefined();
       expect(built.codexRunner).toBeDefined();
       expect(built.presentationService).toBeInstanceOf(PresentationImportService);
+      expect(built.presentationNarrationDrafter).toBeInstanceOf(PresentationNarrationDrafter);
 
       const project = await built.store.create({ name: 'server-agent-demo' });
       const storyboard: Storyboard = {
@@ -114,7 +119,10 @@ describe('agent recording server lifecycle', () => {
       llm: { provider: 'fake' },
       presentation: { maxBytes: 64, maxPages: 12 },
     };
-    const reconcile = vi.fn(async () => undefined);
+    const reconcile = vi.fn<
+      Parameters<PresentationImportService['reconcile']>,
+      ReturnType<PresentationImportService['reconcile']>
+    >(async () => undefined);
     const list = vi.fn(async (): Promise<PresentationJob[]> => []);
     const presentationService = {
       reconcile,
@@ -125,6 +133,10 @@ describe('agent recording server lifecycle', () => {
       retryImport: vi.fn(),
       remove: vi.fn(),
     } as unknown as PresentationImportService;
+    const presentationNarrationDrafter = {
+      run: vi.fn(async () => { throw new Error('not used'); }),
+      retry: vi.fn(async () => undefined as never),
+    } as unknown as PresentationNarrationDrafter;
     const agentRecordingCoordinator = {
       rehearse: vi.fn(),
       confirmAndRecord: vi.fn(),
@@ -136,13 +148,23 @@ describe('agent recording server lifecycle', () => {
     const built = await buildServer({
       config,
       presentationService,
+      presentationNarrationDrafter,
       agentRecordingCoordinator,
       logger: false,
     });
     try {
       expect(built.presentationService).toBe(presentationService);
+      expect(built.presentationNarrationDrafter).toBe(presentationNarrationDrafter);
       expect(reconcile).toHaveBeenCalledOnce();
-      expect(reconcile).toHaveBeenCalledWith([], undefined);
+      expect(reconcile).toHaveBeenCalledWith([], expect.any(Function));
+      const retry = reconcile.mock.calls[0]![1]!;
+      const retryProject = { id: '11111111-1111-4111-8111-111111111111' } as never;
+      const retryPresentationId = '22222222-2222-4222-8222-222222222222';
+      await retry(retryProject, retryPresentationId);
+      expect(presentationNarrationDrafter.retry).toHaveBeenCalledWith(
+        retryProject,
+        retryPresentationId,
+      );
 
       const project = await built.store.create({ name: 'presentation-route-server-test' });
       const response = await built.app.inject({

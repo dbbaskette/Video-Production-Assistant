@@ -16,6 +16,7 @@ import {
   PresentationImportError,
   type PresentationImportService,
 } from '../services/presentation/import-service.js';
+import type { PresentationNarrationDrafter } from '../services/presentation/narration-drafter.js';
 import {
   stageUploadStream,
   StagedUploadError,
@@ -30,7 +31,7 @@ export interface PresentationRouteDeps {
   store: ProjectStore;
   service: PresentationImportService;
   maxBytes: number;
-  retryNarration?: (project: Project, presentationId: string) => Promise<PresentationJob>;
+  drafter: Pick<PresentationNarrationDrafter, 'run' | 'retry'>;
   openFile?: typeof open;
 }
 
@@ -246,13 +247,27 @@ export async function registerPresentationRoutes(
         generateNarration: upload.generateNarration,
       }), project, presentationId);
       registered = true;
-      void deps.service.process(project, presentationId).catch((error: unknown) => {
-        app.log.warn({
-          projectId: project.id,
-          presentationId,
-          errorName: safeErrorName(error),
-        }, 'Detached presentation processing failed');
-      });
+      void deps.service.process(project, presentationId)
+        .then(async (value) => {
+          const completed = requireJob(value, project, presentationId);
+          if (
+            upload.generateNarration
+            && completed.generate_narration
+            && completed.status === 'processing'
+            && completed.stage === 'drafting-narration'
+            && completed.deterministic_commit === 'committed'
+            && !completed.deletion_pending
+          ) {
+            await deps.drafter.run(project, presentationId);
+          }
+        })
+        .catch((error: unknown) => {
+          app.log.warn({
+            projectId: project.id,
+            presentationId,
+            errorName: safeErrorName(error),
+          }, 'Detached presentation processing failed');
+        });
       return reply.status(202).send({ presentation_id: presentationId, job });
     } catch (error) {
       if (!registered && stagingRoot) {
@@ -328,14 +343,14 @@ export async function registerPresentationRoutes(
       const value = await deps.service.get(project.path, presentationId);
       if (!value) throw new PresentationRouteError(404, 'not_found', 'Presentation not found');
       requireJob(value, project, presentationId);
-      if (!deps.retryNarration) {
-        return reply.status(501).send({
-          error: 'Presentation narration is not available',
-          code: 'narration_not_implemented',
-        });
-      }
       return requireJob(
-        await deps.service.retryNarration(project, presentationId, deps.retryNarration),
+        await deps.service.retryNarration(
+          project,
+          presentationId,
+          (targetProject, targetPresentationId) => (
+            deps.drafter.retry(targetProject, targetPresentationId)
+          ),
+        ),
         project,
         presentationId,
       );
