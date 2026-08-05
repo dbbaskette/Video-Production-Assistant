@@ -49,10 +49,12 @@ export interface GeminiImageTransportOptions {
 }
 
 function validText(value: string, maxChars: number): boolean {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= maxChars
-    && value.trim().length > 0;
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxChars &&
+    value.trim().length > 0
+  );
 }
 
 export interface GeminiTransportIdentity {
@@ -62,49 +64,49 @@ export interface GeminiTransportIdentity {
 }
 
 function containsControlCharacter(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 31 || codePoint === 127;
-  });
+  return /\p{Cc}/u.test(value);
 }
 
 export function isValidGeminiTransportIdentity(identity: GeminiTransportIdentity): boolean {
-  return validText(identity.apiKey, MAX_API_KEY_CHARS)
-    && !/\s/.test(identity.apiKey)
-    && !containsControlCharacter(identity.apiKey)
-    && validText(identity.model, MAX_MODEL_CHARS)
-    && SAFE_MODEL.test(identity.model)
-    && (identity.entryId === undefined || (
-      typeof identity.entryId === 'string'
-      && identity.entryId.length > 0
-      && identity.entryId.length <= 200
-      && !containsControlCharacter(identity.entryId)
-    ));
+  return (
+    validText(identity.apiKey, MAX_API_KEY_CHARS) &&
+    !/\s/.test(identity.apiKey) &&
+    !containsControlCharacter(identity.apiKey) &&
+    validText(identity.model, MAX_MODEL_CHARS) &&
+    SAFE_MODEL.test(identity.model) &&
+    (identity.entryId === undefined ||
+      (typeof identity.entryId === 'string' &&
+        identity.entryId.length > 0 &&
+        identity.entryId.length <= 200 &&
+        !containsControlCharacter(identity.entryId)))
+  );
 }
 
 function validateInput(input: GenerateWithImageInput): void {
   const suppliedImagePath = input.imagePath !== undefined;
   const suppliedImageBytes = input.imageBytes !== undefined;
-  const validImagePath = typeof input.imagePath === 'string'
-    && validText(input.imagePath, MAX_IMAGE_PATH_CHARS)
-    && !input.imagePath.includes('\0');
-  const validImageBytes = Buffer.isBuffer(input.imageBytes)
-    && input.imageBytes.byteLength > 0
-    && input.imageBytes.byteLength <= MAX_INLINE_IMAGE_BYTES;
+  const validImagePath =
+    typeof input.imagePath === 'string' &&
+    validText(input.imagePath, MAX_IMAGE_PATH_CHARS) &&
+    !input.imagePath.includes('\0');
+  const validImageBytes =
+    Buffer.isBuffer(input.imageBytes) &&
+    input.imageBytes.byteLength > 0 &&
+    input.imageBytes.byteLength <= MAX_INLINE_IMAGE_BYTES;
   if (
-    !isValidGeminiTransportIdentity(input)
-    || !validText(input.systemPrompt, MAX_SYSTEM_PROMPT_CHARS)
-    || !validText(input.userPrompt, MAX_USER_PROMPT_CHARS)
-    || suppliedImagePath === suppliedImageBytes
-    || (suppliedImagePath && !validImagePath)
-    || (suppliedImageBytes && !validImageBytes)
-    || input.imageMimeType !== 'image/png'
-    || input.responseMimeType !== 'application/json'
-    || !Number.isSafeInteger(input.maxTokens)
-    || input.maxTokens < 1
-    || input.maxTokens > MAX_OUTPUT_TOKENS
-    || typeof input.expectedImageSha256 !== 'string'
-    || !SHA256.test(input.expectedImageSha256)
+    !isValidGeminiTransportIdentity(input) ||
+    !validText(input.systemPrompt, MAX_SYSTEM_PROMPT_CHARS) ||
+    !validText(input.userPrompt, MAX_USER_PROMPT_CHARS) ||
+    suppliedImagePath === suppliedImageBytes ||
+    (suppliedImagePath && !validImagePath) ||
+    (suppliedImageBytes && !validImageBytes) ||
+    input.imageMimeType !== 'image/png' ||
+    input.responseMimeType !== 'application/json' ||
+    !Number.isSafeInteger(input.maxTokens) ||
+    input.maxTokens < 1 ||
+    input.maxTokens > MAX_OUTPUT_TOKENS ||
+    typeof input.expectedImageSha256 !== 'string' ||
+    !SHA256.test(input.expectedImageSha256)
   ) {
     throw new GeminiImageTransportError();
   }
@@ -132,12 +134,12 @@ export async function readBoundedFileNoFollow(target: string, maxBytes: number):
     const overflow = await handle.read(probe, 0, 1, length);
     const after = await handle.stat({ bigint: true });
     if (
-      overflow.bytesRead !== 0
-      || after.dev !== before.dev
-      || after.ino !== before.ino
-      || after.size !== before.size
-      || after.mtimeNs !== before.mtimeNs
-      || after.ctimeNs !== before.ctimeNs
+      overflow.bytesRead !== 0 ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
     ) {
       throw new GeminiImageTransportError();
     }
@@ -156,7 +158,11 @@ async function readBoundedJson(response: Response, signal: AbortSignal): Promise
   const declaredLength = response.headers.get('content-length');
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
-    if (!Number.isFinite(parsedLength) || parsedLength < 0 || parsedLength > MAX_PROVIDER_RESPONSE_BYTES) {
+    if (
+      !Number.isFinite(parsedLength) ||
+      parsedLength < 0 ||
+      parsedLength > MAX_PROVIDER_RESPONSE_BYTES
+    ) {
       await cancelResponseBody(response);
       throw new GeminiImageTransportError();
     }
@@ -239,17 +245,21 @@ export class GeminiImageTransport implements GeminiImageTransportLike {
         throw new GeminiImageTransportError();
       }
       const encodedImage = bytes.toString('base64');
-      const endpoint = new URL(`${GEMINI_API_BASE}/models/${encodeURIComponent(input.model)}:generateContent`);
+      const endpoint = new URL(
+        `${GEMINI_API_BASE}/models/${encodeURIComponent(input.model)}:generateContent`,
+      );
       endpoint.searchParams.set('key', input.apiKey);
       const body = JSON.stringify({
         system_instruction: { parts: [{ text: input.systemPrompt }] },
-        contents: [{
-          role: 'user',
-          parts: [
-            { inline_data: { mime_type: input.imageMimeType, data: encodedImage } },
-            { text: input.userPrompt },
-          ],
-        }],
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inline_data: { mime_type: input.imageMimeType, data: encodedImage } },
+              { text: input.userPrompt },
+            ],
+          },
+        ],
         generationConfig: {
           responseMimeType: input.responseMimeType,
           maxOutputTokens: input.maxTokens,

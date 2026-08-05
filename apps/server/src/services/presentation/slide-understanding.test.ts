@@ -12,6 +12,7 @@ import {
   symlink,
   truncate,
   unlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,6 +24,10 @@ import {
 } from '@vpa/shared';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest';
 import type { ResolvedVisualModel } from '../llm/model-router.js';
+import {
+  inspectContainedFilesystemResources,
+  resetContainedFilesystemMetricsForTests,
+} from './contained-filesystem.js';
 import {
   MAX_INLINE_IMAGE_BYTES,
   type GenerateWithImageInput,
@@ -89,13 +94,7 @@ describe('SlideUnderstandingService', () => {
 
   beforeEach(async () => {
     projectPath = await realpath(await mkdtemp(path.join(tmpdir(), 'vpa-slide-understanding-')));
-    imagePath = path.join(
-      projectPath,
-      'presentations',
-      PRESENTATION_ID,
-      'pages',
-      'page-0001.png',
-    );
+    imagePath = path.join(projectPath, 'presentations', PRESENTATION_ID, 'pages', 'page-0001.png');
     await mkdir(path.dirname(imagePath), { recursive: true });
     await writeFile(imagePath, ORIGINAL_IMAGE);
     input = {
@@ -106,9 +105,9 @@ describe('SlideUnderstandingService', () => {
       extractedText: EXTRACTED_TEXT,
     };
     warn = vi.fn();
-    generateWithImage = vi.fn(async (_request: GenerateWithImageInput) => validModelOutput) as MockedFunction<
-      GeminiImageTransportLike['generateWithImage']
-    >;
+    generateWithImage = vi.fn(
+      async (_request: GenerateWithImageInput) => validModelOutput,
+    ) as MockedFunction<GeminiImageTransportLike['generateWithImage']>;
   });
 
   afterEach(async () => {
@@ -155,20 +154,34 @@ describe('SlideUnderstandingService', () => {
     });
     const persisted = JSON.parse(await readFile(artifactPath(), 'utf8'));
     expect(PresentationSlideBriefSchema.parse(persisted)).toEqual(brief);
-    expect(Object.keys(persisted).sort()).toEqual([
-      'detected_title', 'extracted_text_sha256', 'image_sha256', 'key_points', 'model',
-      'page_number', 'presentation_id', 'prompt_version', 'quantitative_claims',
-      'schema_version', 'uncertain_content', 'visual_elements', 'visual_summary',
-    ].sort());
-    expect(generateWithImage).toHaveBeenCalledWith(expect.objectContaining({
-      apiKey: 'private-api-key',
-      model: 'gemini-2.5-pro',
-      systemPrompt: 'Exact versioned visual prompt.',
-      imageMimeType: 'image/png',
-      responseMimeType: 'application/json',
-      maxTokens: 4_096,
-      expectedImageSha256: sha256(ORIGINAL_IMAGE),
-    }));
+    expect(Object.keys(persisted).sort()).toEqual(
+      [
+        'detected_title',
+        'extracted_text_sha256',
+        'image_sha256',
+        'key_points',
+        'model',
+        'page_number',
+        'presentation_id',
+        'prompt_version',
+        'quantitative_claims',
+        'schema_version',
+        'uncertain_content',
+        'visual_elements',
+        'visual_summary',
+      ].sort(),
+    );
+    expect(generateWithImage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'private-api-key',
+        model: 'gemini-2.5-pro',
+        systemPrompt: 'Exact versioned visual prompt.',
+        imageMimeType: 'image/png',
+        responseMimeType: 'application/json',
+        maxTokens: 4_096,
+        expectedImageSha256: sha256(ORIGINAL_IMAGE),
+      }),
+    );
     const request = generateWithImage.mock.calls[0]![0] as GenerateWithImageInput;
     expect(request.userPrompt).toContain('Analyze slide 1.');
     expect(request.userPrompt).toContain(EXTRACTED_TEXT);
@@ -197,23 +210,40 @@ describe('SlideUnderstandingService', () => {
     ['an unclosed fence', `\`\`\`json\n${validModelOutput}`],
     ['text outside a fence', `private prefix\n\`\`\`json\n${validModelOutput}\n\`\`\``],
     ['extra key', JSON.stringify({ ...JSON.parse(validModelOutput), speaker_notes: 'invented' })],
-    ['missing key', JSON.stringify({
-      visual_summary: 'A revenue chart rises from Q1 through Q4.',
-      key_points: ['Revenue increased throughout the year.'],
-      visual_elements: ['A blue line chart with four quarterly labels.'],
-      quantitative_claims: ['Revenue increased 18% to $4.2M.'],
-      uncertain_content: [],
-    })],
+    [
+      'missing key',
+      JSON.stringify({
+        visual_summary: 'A revenue chart rises from Q1 through Q4.',
+        key_points: ['Revenue increased throughout the year.'],
+        visual_elements: ['A blue line chart with four quarterly labels.'],
+        quantitative_claims: ['Revenue increased 18% to $4.2M.'],
+        uncertain_content: [],
+      }),
+    ],
     ['wrong type', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: 'not an array' })],
-    ['too many list items', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: Array(51).fill('point') })],
-    ['an oversized list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: ['x'.repeat(1_001)] })],
+    [
+      'too many list items',
+      JSON.stringify({ ...JSON.parse(validModelOutput), key_points: Array(51).fill('point') }),
+    ],
+    [
+      'an oversized list item',
+      JSON.stringify({ ...JSON.parse(validModelOutput), key_points: ['x'.repeat(1_001)] }),
+    ],
     ['an empty list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: [''] })],
-    ['a whitespace visual summary', JSON.stringify({ ...JSON.parse(validModelOutput), visual_summary: '   ' })],
-    ['a whitespace list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: [' \t '] })],
+    [
+      'a whitespace visual summary',
+      JSON.stringify({ ...JSON.parse(validModelOutput), visual_summary: '   ' }),
+    ],
+    [
+      'a whitespace list item',
+      JSON.stringify({ ...JSON.parse(validModelOutput), key_points: [' \t '] }),
+    ],
   ])('rejects and does not persist %s', async (_label, output) => {
     generateWithImage.mockResolvedValueOnce(output);
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     await expect(access(artifactPath())).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -224,12 +254,30 @@ describe('SlideUnderstandingService', () => {
     const first = await instance.ensureBrief(input, model());
     generateWithImage.mockClear();
     readPrompt.mockClear();
+    resetContainedFilesystemMetricsForTests();
 
     const second = await instance.ensureBrief(input, model());
 
     expect(second).toEqual(first);
     expect(generateWithImage).not.toHaveBeenCalled();
     expect(readPrompt).not.toHaveBeenCalled();
+    expect(inspectContainedFilesystemResources()).toMatchObject({
+      activePermits: 0,
+      activeProcesses: 0,
+      queued: 0,
+      spawned: 2,
+    });
+  });
+
+  it('caches one bounded validated system prompt across cache-invalidating generations', async () => {
+    const readPrompt = vi.fn(async () => 'Exact versioned visual prompt.');
+    const instance = service({ readPrompt });
+
+    await instance.ensureBrief(input, model());
+    await instance.ensureBrief({ ...input, extractedText: `${EXTRACTED_TEXT} updated` }, model());
+
+    expect(generateWithImage).toHaveBeenCalledTimes(2);
+    expect(readPrompt).toHaveBeenCalledOnce();
   });
 
   it('invalidates independently on image bytes, exact extracted text, model entry, and concrete model', async () => {
@@ -237,9 +285,15 @@ describe('SlideUnderstandingService', () => {
     await instance.ensureBrief(input, model());
     await writeFile(imagePath, Buffer.from('changed image bytes'));
     const changedImage = await instance.ensureBrief(input, model());
-    const changedText = await instance.ensureBrief({ ...input, extractedText: `${EXTRACTED_TEXT} ` }, model());
+    const changedText = await instance.ensureBrief(
+      { ...input, extractedText: `${EXTRACTED_TEXT} ` },
+      model(),
+    );
     const changedEntry = await instance.ensureBrief(input, model('visual-entry-next'));
-    const changedConcrete = await instance.ensureBrief(input, model('visual-entry-next', 'gemini-3-pro'));
+    const changedConcrete = await instance.ensureBrief(
+      input,
+      model('visual-entry-next', 'gemini-3-pro'),
+    );
 
     expect(generateWithImage).toHaveBeenCalledTimes(5);
     expect(changedImage.image_sha256).toBe(sha256('changed image bytes'));
@@ -290,10 +344,17 @@ describe('SlideUnderstandingService', () => {
     const gate = deferred<string>();
     generateWithImage.mockImplementation(() => gate.promise);
     const instance = service();
+    resetContainedFilesystemMetricsForTests();
 
     const first = instance.ensureBrief(input, model());
     const second = instance.ensureBrief(input, model());
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    expect(inspectContainedFilesystemResources()).toMatchObject({
+      activePermits: 0,
+      activeProcesses: 0,
+      queued: 0,
+      spawned: 3,
+    });
     gate.resolve(validModelOutput);
 
     const [one, two] = await Promise.all([first, second]);
@@ -304,7 +365,9 @@ describe('SlideUnderstandingService', () => {
     const secondImage = path.join(path.dirname(imagePath), 'page-0002.png');
     await writeFile(secondImage, Buffer.from('page two image'));
     const gates = [deferred<string>(), deferred<string>(), deferred<string>()];
-    generateWithImage.mockImplementation(() => gates[generateWithImage.mock.calls.length - 1]!.promise);
+    generateWithImage.mockImplementation(
+      () => gates[generateWithImage.mock.calls.length - 1]!.promise,
+    );
     const instance = service();
 
     const calls = [
@@ -324,7 +387,9 @@ describe('SlideUnderstandingService', () => {
       .mockResolvedValueOnce(validModelOutput);
     const instance = service();
 
-    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
     expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
     await expect(instance.ensureBrief(input, model())).resolves.toMatchObject({ page_number: 1 });
 
@@ -350,7 +415,9 @@ describe('SlideUnderstandingService', () => {
     await rm(imagePath);
     await symlink(outside, imagePath);
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     expect(generateWithImage).not.toHaveBeenCalled();
   });
@@ -371,7 +438,7 @@ describe('SlideUnderstandingService', () => {
     expect((await readdir(path.dirname(artifactPath()))).sort()).toEqual(['page-0001.json']);
   });
 
-  it('reads from the initially opened no-follow source descriptor when its path is replaced', async () => {
+  it('rejects an opened source descriptor when pathname replacement changes its ctime', async () => {
     const replacement = Buffer.from('replacement after source open');
     const onContainedOperationReady = vi.fn(async (operation: string) => {
       if (operation !== 'source-read') return;
@@ -382,12 +449,39 @@ describe('SlideUnderstandingService', () => {
       testHooks: { onContainedOperationReady },
     } as unknown as Partial<SlideUnderstandingServiceOptions>);
 
-    const brief = await instance.ensureBrief(input, model());
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
-    expect(brief.image_sha256).toBe(sha256(ORIGINAL_IMAGE));
-    expect(generateWithImage.mock.calls[0]![0].imageBytes).toEqual(ORIGINAL_IMAGE);
+    expect(generateWithImage).not.toHaveBeenCalled();
     expect(await readFile(imagePath)).toEqual(replacement);
     expect(onContainedOperationReady).toHaveBeenCalledWith('source-read');
+  });
+
+  it('rejects an in-place same-length source rewrite even when mtime is restored', async () => {
+    const fixedTime = new Date('2020-01-02T03:04:05.000Z');
+    await utimes(imagePath, fixedTime, fixedTime);
+    const before = await stat(imagePath, { bigint: true });
+    const replacement = Buffer.alloc(ORIGINAL_IMAGE.byteLength, 0x78);
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'source-read') return;
+      await writeFile(imagePath, replacement);
+      await utimes(imagePath, fixedTime, fixedTime);
+      const after = await stat(imagePath, { bigint: true });
+      expect(after.dev).toBe(before.dev);
+      expect(after.ino).toBe(before.ino);
+      expect(after.size).toBe(before.size);
+      expect(after.mtimeNs).toBe(before.mtimeNs);
+      expect(after.ctimeNs).not.toBe(before.ctimeNs);
+    });
+
+    await expect(
+      service({
+        testHooks: { onContainedOperationReady },
+      } as unknown as Partial<SlideUnderstandingServiceOptions>).ensureBrief(input, model()),
+    ).rejects.toEqual(new SlideUnderstandingError());
+
+    expect(generateWithImage).not.toHaveBeenCalled();
   });
 
   it('keeps the source read anchored across a pages-parent swap and restore', async () => {
@@ -398,7 +492,10 @@ describe('SlideUnderstandingService', () => {
       if (operation !== 'source-read') return;
       await rename(pagesPath, movedPagesPath);
       await mkdir(pagesPath);
-      await writeFile(path.join(pagesPath, path.basename(imagePath)), Buffer.from('replacement parent image'));
+      await writeFile(
+        path.join(pagesPath, path.basename(imagePath)),
+        Buffer.from('replacement parent image'),
+      );
       await rename(pagesPath, replacementPagesPath);
       await rename(movedPagesPath, pagesPath);
     });
@@ -417,8 +514,9 @@ describe('SlideUnderstandingService', () => {
     }
   });
 
-  it('reads a cache entry from the initially opened descriptor when its pathname is replaced', async () => {
+  it('regenerates when an opened cache pathname replacement changes descriptor ctime', async () => {
     const first = await service().ensureBrief(input, model());
+    const originalCache = await readFile(artifactPath(), 'utf8');
     generateWithImage.mockClear();
     const replacement = `${JSON.stringify({ ...first, detected_title: 'Replacement cache' })}\n`;
     const onContainedOperationReady = vi.fn(async (operation: string) => {
@@ -432,8 +530,9 @@ describe('SlideUnderstandingService', () => {
 
     await expect(instance.ensureBrief(input, model())).resolves.toEqual(first);
 
-    expect(generateWithImage).not.toHaveBeenCalled();
-    expect(await readFile(artifactPath(), 'utf8')).toBe(replacement);
+    expect(generateWithImage).toHaveBeenCalledOnce();
+    expect(await readFile(artifactPath(), 'utf8')).not.toBe(replacement);
+    expect(await readFile(`${artifactPath()}.opened`, 'utf8')).toBe(originalCache);
     expect(onContainedOperationReady).toHaveBeenCalledWith('cache-read');
   });
 
@@ -451,15 +550,19 @@ describe('SlideUnderstandingService', () => {
       testHooks: { onContainedOperationReady },
     } as unknown as Partial<SlideUnderstandingServiceOptions>);
 
-    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
-    await expect(access(path.join(analysisPath, path.basename(artifactPath())))).rejects.toMatchObject({
+    await expect(
+      access(path.join(analysisPath, path.basename(artifactPath()))),
+    ).rejects.toMatchObject({
       code: 'ENOENT',
     });
     await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
-    await expect(readFile(path.join(movedAnalysisPath, path.basename(artifactPath())), 'utf8')).resolves.toContain(
-      '"schema_version"',
-    );
+    await expect(
+      readFile(path.join(movedAnalysisPath, path.basename(artifactPath())), 'utf8'),
+    ).resolves.toContain('"schema_version"');
   });
 
   it('persists through the original analysis directory across a parent swap and restore', async () => {
@@ -476,9 +579,11 @@ describe('SlideUnderstandingService', () => {
       await rename(movedAnalysisPath, analysisPath);
     });
     try {
-      await expect(service({
-        testHooks: { onContainedOperationReady },
-      } as unknown as Partial<SlideUnderstandingServiceOptions>).ensureBrief(input, model())).resolves.toMatchObject({
+      await expect(
+        service({
+          testHooks: { onContainedOperationReady },
+        } as unknown as Partial<SlideUnderstandingServiceOptions>).ensureBrief(input, model()),
+      ).resolves.toMatchObject({
         page_number: 1,
       });
 
@@ -495,10 +600,14 @@ describe('SlideUnderstandingService', () => {
     const marker = path.join(artifactPath(), 'replacement-marker.txt');
     await writeFile(marker, 'must survive');
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
-    expect((await readdir(path.dirname(artifactPath()))).filter((entry) => entry.endsWith('.tmp'))).toEqual([]);
+    expect(
+      (await readdir(path.dirname(artifactPath()))).filter((entry) => entry.endsWith('.tmp')),
+    ).toEqual([]);
   });
 
   it('never replaces a valid cache artifact when the changed source exceeds the read cap', async () => {
@@ -507,7 +616,9 @@ describe('SlideUnderstandingService', () => {
     const originalArtifact = await readFile(artifactPath(), 'utf8');
     await truncate(imagePath, MAX_INLINE_IMAGE_BYTES + 1);
 
-    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     expect(await readFile(artifactPath(), 'utf8')).toBe(originalArtifact);
   });
@@ -517,16 +628,19 @@ describe('SlideUnderstandingService', () => {
     const instance = service({ readPrompt });
     const incompatible = [
       { ...model(), summary: { ...model().summary, provider: 'openai' } },
-      { ...model(), summary: { ...model().summary, capabilities: { text: true, image: false, video: true } } },
+      {
+        ...model(),
+        summary: { ...model().summary, capabilities: { text: true, image: false, video: true } },
+      },
       { ...model(), summary: { ...model().summary, model: 'gemini-other' } },
       { ...model(), summary: { ...model().summary, role: 'writing' } },
       { ...model(), apiKey: '' },
     ] as unknown as ResolvedVisualModel[];
 
     for (const routed of incompatible) {
-      await expect(instance.ensureBrief({ ...input, imagePath: '/missing/private.png' }, routed)).rejects.toEqual(
-        new SlideUnderstandingError(),
-      );
+      await expect(
+        instance.ensureBrief({ ...input, imagePath: '/missing/private.png' }, routed),
+      ).rejects.toEqual(new SlideUnderstandingError());
     }
     expect(readPrompt).not.toHaveBeenCalled();
     expect(generateWithImage).not.toHaveBeenCalled();
@@ -544,7 +658,9 @@ describe('SlideUnderstandingService', () => {
     ];
     generateWithImage.mockRejectedValueOnce(new Error('private provider response body'));
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     expect(warn).toHaveBeenCalledWith(
       { errorName: 'Error', presentationId: PRESENTATION_ID, pageNumber: 1 },
@@ -564,7 +680,9 @@ describe('SlideUnderstandingService', () => {
         imagePath: imagePath.replace(projectPath, projectLink),
       };
 
-      await expect(service().ensureBrief(linkedInput, model())).rejects.toEqual(new SlideUnderstandingError());
+      await expect(service().ensureBrief(linkedInput, model())).rejects.toEqual(
+        new SlideUnderstandingError(),
+      );
 
       expect(generateWithImage).not.toHaveBeenCalled();
     } finally {
@@ -575,11 +693,15 @@ describe('SlideUnderstandingService', () => {
   it('creates no cleanup-sensitive snapshot path when transport rejects captured bytes', async () => {
     generateWithImage.mockRejectedValueOnce(new Error('private provider failure'));
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
-    expect((await readdir(path.dirname(artifactPath()))).filter((entry) => (
-      entry.startsWith('.slide-understanding-')
-    ))).toEqual([]);
+    expect(
+      (await readdir(path.dirname(artifactPath()))).filter((entry) =>
+        entry.startsWith('.slide-understanding-'),
+      ),
+    ).toEqual([]);
   });
 
   it('immediately releases losing captured buffers for many duplicate same-key callers', async () => {
@@ -590,7 +712,9 @@ describe('SlideUnderstandingService', () => {
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
     const analysisEntries = await readdir(path.dirname(artifactPath()));
 
-    expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
+    expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual(
+      [],
+    );
     expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 1, targets: 1 });
 
     gate.resolve(validModelOutput);
@@ -612,7 +736,9 @@ describe('SlideUnderstandingService', () => {
 
     await rm(artifactPath());
     const oversizedPrompt = service({ readPrompt: async () => 'x'.repeat(20_001) });
-    await expect(oversizedPrompt.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(oversizedPrompt.ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
     expect(generateWithImage).not.toHaveBeenCalled();
   });
 
@@ -633,7 +759,9 @@ describe('SlideUnderstandingService', () => {
   it('rejects an over-cap cache value returned by an injected reader before parsing it', async () => {
     const readTextFile = vi.fn(async () => 'x'.repeat(256 * 1024 + 1));
 
-    await expect(service({ readTextFile }).ensureBrief(input, model())).resolves.toMatchObject({ page_number: 1 });
+    await expect(service({ readTextFile }).ensureBrief(input, model())).resolves.toMatchObject({
+      page_number: 1,
+    });
 
     expect(generateWithImage).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
@@ -645,7 +773,9 @@ describe('SlideUnderstandingService', () => {
   it('rejects an oversized real source before transport through the capped descriptor reader', async () => {
     await truncate(imagePath, MAX_INLINE_IMAGE_BYTES + 1);
 
-    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(
+      new SlideUnderstandingError(),
+    );
 
     expect(generateWithImage).not.toHaveBeenCalled();
   });
@@ -656,6 +786,8 @@ describe('SlideUnderstandingService', () => {
       model('alpha', 'beta\0gamma'),
       model('alpha\u001fbeta'),
       model('alpha\u007fbeta'),
+      model('alpha\u0080beta'),
+      model('alpha\u009fbeta'),
       model('x'.repeat(201)),
       { ...model(), apiKey: 'private\nkey' },
       { ...model(), apiKey: 'x'.repeat(1_025) },
@@ -664,7 +796,9 @@ describe('SlideUnderstandingService', () => {
     ] as ResolvedVisualModel[];
 
     const instance = service();
-    const results = await Promise.allSettled(unsafe.map((routed) => instance.ensureBrief(input, routed)));
+    const results = await Promise.allSettled(
+      unsafe.map((routed) => instance.ensureBrief(input, routed)),
+    );
 
     expect(results.every((result) => result.status === 'rejected')).toBe(true);
     expect(generateWithImage).not.toHaveBeenCalled();
@@ -682,12 +816,20 @@ describe('SlideUnderstandingService', () => {
 
   it('releases per-target ordering state after many unique targets settle', async () => {
     const instance = service();
-    const calls = await Promise.all(Array.from({ length: 24 }, async (_unused, index) => {
-      const pageNumber = index + 1;
-      const pageImagePath = path.join(path.dirname(imagePath), `page-${String(pageNumber).padStart(4, '0')}.png`);
-      await writeFile(pageImagePath, Buffer.from(`page ${pageNumber}`));
-      return instance.ensureBrief({ ...input, pageNumber, imagePath: pageImagePath }, model(`entry-${pageNumber}`));
-    }));
+    const calls = await Promise.all(
+      Array.from({ length: 24 }, async (_unused, index) => {
+        const pageNumber = index + 1;
+        const pageImagePath = path.join(
+          path.dirname(imagePath),
+          `page-${String(pageNumber).padStart(4, '0')}.png`,
+        );
+        await writeFile(pageImagePath, Buffer.from(`page ${pageNumber}`));
+        return instance.ensureBrief(
+          { ...input, pageNumber, imagePath: pageImagePath },
+          model(`entry-${pageNumber}`),
+        );
+      }),
+    );
 
     expect(calls).toHaveLength(24);
     expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
@@ -696,11 +838,17 @@ describe('SlideUnderstandingService', () => {
   it('keeps the newest completed freshness generation in the page cache', async () => {
     const older = deferred<string>();
     const newer = deferred<string>();
-    const oldOutput = JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Older model' });
-    const newOutput = JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Newer model' });
-    generateWithImage.mockImplementation((request: GenerateWithImageInput) => (
-      request.model === 'gemini-old' ? older.promise : newer.promise
-    ));
+    const oldOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Older model',
+    });
+    const newOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Newer model',
+    });
+    generateWithImage.mockImplementation((request: GenerateWithImageInput) =>
+      request.model === 'gemini-old' ? older.promise : newer.promise,
+    );
     const instance = service();
 
     const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
@@ -713,7 +861,9 @@ describe('SlideUnderstandingService', () => {
     await expect(olderCall).resolves.toMatchObject({ detected_title: 'Older model' });
     generateWithImage.mockClear();
 
-    await expect(instance.ensureBrief(input, model('new-entry', 'gemini-new'))).resolves.toMatchObject({
+    await expect(
+      instance.ensureBrief(input, model('new-entry', 'gemini-new')),
+    ).resolves.toMatchObject({
       detected_title: 'Newer model',
     });
     expect(generateWithImage).not.toHaveBeenCalled();
@@ -722,9 +872,9 @@ describe('SlideUnderstandingService', () => {
   it('lets an older successful generation persist when the overlapping newer generation rejects', async () => {
     const older = deferred<string>();
     const newer = deferred<string>();
-    generateWithImage.mockImplementation((request: GenerateWithImageInput) => (
-      request.model === 'gemini-old' ? older.promise : newer.promise
-    ));
+    generateWithImage.mockImplementation((request: GenerateWithImageInput) =>
+      request.model === 'gemini-old' ? older.promise : newer.promise,
+    );
     const instance = service();
 
     const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
@@ -733,12 +883,16 @@ describe('SlideUnderstandingService', () => {
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
     newer.reject(new Error('private newer provider rejection'));
     await expect(newerCall).rejects.toEqual(new SlideUnderstandingError());
-    older.resolve(JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Older survivor' }));
+    older.resolve(
+      JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Older survivor' }),
+    );
     await expect(olderCall).resolves.toMatchObject({ detected_title: 'Older survivor' });
 
     expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
     generateWithImage.mockClear();
-    await expect(instance.ensureBrief(input, model('old-entry', 'gemini-old'))).resolves.toMatchObject({
+    await expect(
+      instance.ensureBrief(input, model('old-entry', 'gemini-old')),
+    ).resolves.toMatchObject({
       detected_title: 'Older survivor',
     });
     expect(generateWithImage).not.toHaveBeenCalled();

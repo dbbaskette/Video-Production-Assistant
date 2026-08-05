@@ -1,8 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  lstat,
-  realpath,
-} from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
   PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
@@ -17,6 +14,8 @@ import {
   ensureContainedDirectory,
   readContainedFile,
   type ContainedOperation,
+  type ContainedOperationEvent,
+  type ContainedRuntimeOptions,
 } from './contained-filesystem.js';
 import {
   GeminiImageTransport,
@@ -33,33 +32,45 @@ const MAX_CACHE_BYTES = 256 * 1024;
 const MAX_ARTIFACT_BYTES = 256 * 1024;
 const SLIDE_MAX_TOKENS = 4_096;
 
-const InputSchema = z.object({
-  projectPath: z.string().min(1).max(MAX_PROJECT_PATH_CHARS),
-  presentationId: z.string().uuid(),
-  pageNumber: z.number().int().positive().max(200),
-  imagePath: z.string().min(1).max(MAX_PROJECT_PATH_CHARS),
-  extractedText: z.string().max(MAX_EXTRACTED_TEXT_CHARS),
-}).strict();
+const InputSchema = z
+  .object({
+    projectPath: z.string().min(1).max(MAX_PROJECT_PATH_CHARS),
+    presentationId: z.string().uuid(),
+    pageNumber: z.number().int().positive().max(200),
+    imagePath: z.string().min(1).max(MAX_PROJECT_PATH_CHARS),
+    extractedText: z.string().max(MAX_EXTRACTED_TEXT_CHARS),
+  })
+  .strict();
 
-const NonWhitespaceItemSchema = z.string().min(1).max(1_000).refine(
-  (value) => value.trim().length > 0,
-  'Item must contain non-whitespace content',
-);
+const NonWhitespaceItemSchema = z
+  .string()
+  .min(1)
+  .max(1_000)
+  .refine((value) => value.trim().length > 0, 'Item must contain non-whitespace content');
 const BriefListSchema = z.array(NonWhitespaceItemSchema).max(50);
-const ModelProducedBriefSchema = z.object({
-  visual_summary: z.string().min(1).max(4_000).refine(
-    (value) => value.trim().length > 0,
-    'visual_summary must contain non-whitespace content',
-  ),
-  detected_title: z.string().max(200).refine(
-    (value) => value.length === 0 || value.trim().length > 0,
-    'detected_title must be empty or contain non-whitespace content',
-  ),
-  key_points: BriefListSchema,
-  visual_elements: BriefListSchema,
-  quantitative_claims: BriefListSchema,
-  uncertain_content: BriefListSchema,
-}).strict();
+const ModelProducedBriefSchema = z
+  .object({
+    visual_summary: z
+      .string()
+      .min(1)
+      .max(4_000)
+      .refine(
+        (value) => value.trim().length > 0,
+        'visual_summary must contain non-whitespace content',
+      ),
+    detected_title: z
+      .string()
+      .max(200)
+      .refine(
+        (value) => value.length === 0 || value.trim().length > 0,
+        'detected_title must be empty or contain non-whitespace content',
+      ),
+    key_points: BriefListSchema,
+    visual_elements: BriefListSchema,
+    quantitative_claims: BriefListSchema,
+    uncertain_content: BriefListSchema,
+  })
+  .strict();
 
 export interface EnsureSlideBriefInput {
   projectPath: string;
@@ -69,10 +80,7 @@ export interface EnsureSlideBriefInput {
   extractedText: string;
 }
 
-export type SlideUnderstandingWarning = (
-  fields: Record<string, unknown>,
-  message: string,
-) => void;
+export type SlideUnderstandingWarning = (fields: Record<string, unknown>, message: string) => void;
 
 export interface SlideUnderstandingServiceOptions {
   workspaceRoot: string;
@@ -81,6 +89,10 @@ export interface SlideUnderstandingServiceOptions {
   readTextFile?: (path: string, maxBytes: number) => Promise<string>;
   testHooks?: {
     onContainedOperationReady?: (operation: ContainedOperation) => Promise<void> | void;
+    onContainedOperationEvent?: (event: ContainedOperationEvent) => Promise<void> | void;
+    helperTimeoutMs?: number;
+    helperTerminationGraceMs?: number;
+    helperChildBehavior?: ContainedRuntimeOptions['childBehavior'];
   };
   warn: SlideUnderstandingWarning;
 }
@@ -141,18 +153,22 @@ function safeErrorName(error: unknown): string {
     'SlideUnderstandingError',
     'SyntaxError',
     'ZodError',
-  ]).has(error.name) ? error.name : 'Error';
+  ]).has(error.name)
+    ? error.name
+    : 'Error';
 }
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-async function currentIdentity(target: string): Promise<FileIdentity & {
-  isDirectory(): boolean;
-  isFile(): boolean;
-  isSymbolicLink(): boolean;
-}> {
+async function currentIdentity(target: string): Promise<
+  FileIdentity & {
+    isDirectory(): boolean;
+    isFile(): boolean;
+    isSymbolicLink(): boolean;
+  }
+> {
   const current = await lstat(target, { bigint: true });
   return current;
 }
@@ -170,9 +186,10 @@ async function assertNoSymlinkAncestors(target: string): Promise<void> {
 }
 
 async function canonicalDirectory(target: string): Promise<DirectoryIdentity> {
-  if (!path.isAbsolute(target) || path.resolve(target) !== target) throw new SlideUnderstandingError();
+  if (!path.isAbsolute(target) || path.resolve(target) !== target)
+    throw new SlideUnderstandingError();
   await assertNoSymlinkAncestors(target);
-  if (await realpath(target) !== target) throw new SlideUnderstandingError();
+  if ((await realpath(target)) !== target) throw new SlideUnderstandingError();
   const stat = await currentIdentity(target);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new SlideUnderstandingError();
   return { path: target, dev: stat.dev, ino: stat.ino };
@@ -181,10 +198,10 @@ async function canonicalDirectory(target: string): Promise<DirectoryIdentity> {
 async function assertDirectoryIdentity(expected: DirectoryIdentity): Promise<void> {
   const stat = await currentIdentity(expected.path);
   if (
-    !stat.isDirectory()
-    || stat.isSymbolicLink()
-    || !sameIdentity(stat, expected)
-    || await realpath(expected.path) !== expected.path
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    !sameIdentity(stat, expected) ||
+    (await realpath(expected.path)) !== expected.path
   ) {
     throw new SlideUnderstandingError();
   }
@@ -192,7 +209,7 @@ async function assertDirectoryIdentity(expected: DirectoryIdentity): Promise<voi
 
 async function resolveBundlePaths(
   input: EnsureSlideBriefInput,
-  onReady?: (operation: ContainedOperation) => Promise<void> | void,
+  runtime: ContainedRuntimeOptions,
 ): Promise<BundlePaths> {
   const projectPath = path.resolve(input.projectPath);
   if (projectPath !== input.projectPath) throw new SlideUnderstandingError();
@@ -203,7 +220,19 @@ async function resolveBundlePaths(
   const imagePath = path.join(pages.path, pageName(input.pageNumber, 'png'));
   if (input.imagePath !== imagePath) throw new SlideUnderstandingError();
 
-  const analysis = await ensureContainedDirectory(bundle, 'analysis', onReady);
+  const analysisPath = path.join(bundle.path, 'analysis');
+  let analysis: DirectoryIdentity;
+  try {
+    const existing = await canonicalDirectory(analysisPath);
+    const stat = await lstat(analysisPath, { bigint: true });
+    analysis =
+      (stat.mode & 0o777n) === 0o700n
+        ? existing
+        : await ensureContainedDirectory(bundle, 'analysis', runtime);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+    analysis = await ensureContainedDirectory(bundle, 'analysis', runtime);
+  }
   await assertDirectoryIdentity(project);
   await assertDirectoryIdentity(bundle);
   await assertDirectoryIdentity(pages);
@@ -224,14 +253,14 @@ async function readBoundedTextNoFollow(target: string, maxBytes: number): Promis
 function validateVisualModel(model: ResolvedVisualModel): void {
   const summary = model?.summary;
   if (
-    !model
-    || !summary
-    || summary.role !== 'video-understanding'
-    || summary.provider !== 'gemini'
-    || summary.ready !== true
-    || summary.capabilities?.image !== true
-    || summary.model !== model.model
-    || !isValidGeminiTransportIdentity({
+    !model ||
+    !summary ||
+    summary.role !== 'video-understanding' ||
+    summary.provider !== 'gemini' ||
+    summary.ready !== true ||
+    summary.capabilities?.image !== true ||
+    summary.model !== model.model ||
+    !isValidGeminiTransportIdentity({
       apiKey: model.apiKey,
       model: model.model,
       entryId: summary.entry_id,
@@ -278,29 +307,33 @@ function isFresh(
   extractedTextSha256: string,
   model: ResolvedVisualModel,
 ): boolean {
-  return brief.schema_version === PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION
-    && brief.prompt_version === PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION
-    && brief.presentation_id === input.presentationId
-    && brief.page_number === input.pageNumber
-    && brief.image_sha256 === imageSha256
-    && brief.extracted_text_sha256 === extractedTextSha256
-    && brief.model.provider === 'gemini'
-    && brief.model.entry_id === model.summary.entry_id
-    && brief.model.model === model.model;
+  return (
+    brief.schema_version === PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION &&
+    brief.prompt_version === PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION &&
+    brief.presentation_id === input.presentationId &&
+    brief.page_number === input.pageNumber &&
+    brief.image_sha256 === imageSha256 &&
+    brief.extracted_text_sha256 === extractedTextSha256 &&
+    brief.model.provider === 'gemini' &&
+    brief.model.entry_id === model.summary.entry_id &&
+    brief.model.model === model.model
+  );
 }
 
-function freshnessKey(fields: {
-  bundlePath: string;
+function requestKey(fields: {
+  projectPath: string;
+  presentationId: string;
   pageNumber: number;
-  imageSha256: string;
+  imagePath: string;
   extractedTextSha256: string;
   entryId: string;
   model: string;
 }): string {
   return JSON.stringify({
-    bundlePath: fields.bundlePath,
+    projectPath: fields.projectPath,
+    presentationId: fields.presentationId,
     pageNumber: fields.pageNumber,
-    imageSha256: fields.imageSha256,
+    imagePath: fields.imagePath,
     extractedTextSha256: fields.extractedTextSha256,
     entryId: fields.entryId,
     model: fields.model,
@@ -313,24 +346,42 @@ export class SlideUnderstandingService {
   private readonly transport: GeminiImageTransportLike;
   private readonly readPrompt: () => Promise<string>;
   private readonly readTextFile?: (path: string, maxBytes: number) => Promise<string>;
-  private readonly onContainedOperationReady?: (
-    operation: ContainedOperation,
-  ) => Promise<void> | void;
+  private readonly containedRuntime: ContainedRuntimeOptions;
   private readonly warn: SlideUnderstandingWarning;
   private readonly inFlight = new Map<string, Promise<PresentationSlideBrief>>();
   private readonly targetStates = new Map<string, TargetState>();
+  private promptCache?: Promise<string>;
 
   constructor(options: SlideUnderstandingServiceOptions) {
     this.transport = options.transport ?? new GeminiImageTransport();
-    this.readPrompt = options.readPrompt ?? (() => readBoundedTextNoFollow(path.join(
-      options.workspaceRoot,
-      'apps',
-      'server',
-      'prompts',
-      'presentation-slide-understanding.md',
-    ), MAX_PROMPT_BYTES));
+    this.readPrompt =
+      options.readPrompt ??
+      (() =>
+        readBoundedTextNoFollow(
+          path.join(
+            options.workspaceRoot,
+            'apps',
+            'server',
+            'prompts',
+            'presentation-slide-understanding.md',
+          ),
+          MAX_PROMPT_BYTES,
+        ));
     this.readTextFile = options.readTextFile;
-    this.onContainedOperationReady = options.testHooks?.onContainedOperationReady;
+    this.containedRuntime = {
+      timeoutMs: options.testHooks?.helperTimeoutMs,
+      terminationGraceMs: options.testHooks?.helperTerminationGraceMs,
+      childBehavior: options.testHooks?.helperChildBehavior,
+      onEvent:
+        options.testHooks?.onContainedOperationReady || options.testHooks?.onContainedOperationEvent
+          ? async (event) => {
+              if (event.stage === 'ready') {
+                await options.testHooks?.onContainedOperationReady?.(event.operation);
+              }
+              await options.testHooks?.onContainedOperationEvent?.(event);
+            }
+          : undefined,
+    };
     this.warn = options.warn;
   }
 
@@ -340,7 +391,10 @@ export class SlideUnderstandingService {
     message: string,
   ): void {
     try {
-      this.warn({ errorName, presentationId: input.presentationId, pageNumber: input.pageNumber }, message);
+      this.warn(
+        { errorName, presentationId: input.presentationId, pageNumber: input.pageNumber },
+        message,
+      );
     } catch {
       // Diagnostics must never change generation or cleanup behavior.
     }
@@ -355,22 +409,32 @@ export class SlideUnderstandingService {
     try {
       raw = this.readTextFile
         ? await this.readTextFile(paths.artifactPath, MAX_CACHE_BYTES)
-        : (await readContainedFile(
-          paths.analysis,
-          path.basename(paths.artifactPath),
-          MAX_CACHE_BYTES,
-          'cache-read',
-          this.onContainedOperationReady,
-        )).toString('utf8');
+        : (
+            await readContainedFile(
+              paths.analysis,
+              path.basename(paths.artifactPath),
+              MAX_CACHE_BYTES,
+              'cache-read',
+              this.containedRuntime,
+            )
+          ).toString('utf8');
     } catch (error) {
       await assertDirectoryIdentity(paths.analysis);
       if (errorCode(error) === 'ENOENT') return undefined;
-      this.warnSafely(input, 'UnreadableSlideBriefCache', 'Regenerating unreadable slide brief cache');
+      this.warnSafely(
+        input,
+        'UnreadableSlideBriefCache',
+        'Regenerating unreadable slide brief cache',
+      );
       return undefined;
     }
     await assertDirectoryIdentity(paths.analysis);
     if (Buffer.byteLength(raw, 'utf8') > MAX_CACHE_BYTES) {
-      this.warnSafely(input, 'UnreadableSlideBriefCache', 'Regenerating unreadable slide brief cache');
+      this.warnSafely(
+        input,
+        'UnreadableSlideBriefCache',
+        'Regenerating unreadable slide brief cache',
+      );
       return undefined;
     }
     try {
@@ -402,9 +466,9 @@ export class SlideUnderstandingService {
 
   private deleteIdleTargetState(target: string, state: TargetState): void {
     if (
-      state.activeGenerations === 0
-      && state.writeTail === undefined
-      && this.targetStates.get(target) === state
+      state.activeGenerations === 0 &&
+      state.writeTail === undefined &&
+      this.targetStates.get(target) === state
     ) {
       this.targetStates.delete(target);
     }
@@ -422,21 +486,22 @@ export class SlideUnderstandingService {
   ): Promise<void> {
     const target = paths.artifactPath;
     const previous = state.writeTail ?? Promise.resolve();
-    const write = previous.catch(() => undefined).then(async () => {
-      if (state.latestCompletedGeneration !== generation) return;
-      await assertDirectoryIdentity(paths.analysis);
-      const bytes = Buffer.from(data, 'utf8');
-      if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
-      await atomicWriteContainedFile(
-        paths.analysis,
-        path.basename(target),
-        `.${path.basename(target)}.${randomUUID()}.tmp`,
-        bytes,
-        MAX_ARTIFACT_BYTES,
-        this.onContainedOperationReady,
-      );
-      await assertDirectoryIdentity(paths.analysis);
-    });
+    const write = previous
+      .catch(() => undefined)
+      .then(async () => {
+        if (state.latestCompletedGeneration !== generation) return;
+        await assertDirectoryIdentity(paths.analysis);
+        const bytes = Buffer.from(data, 'utf8');
+        if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
+        await atomicWriteContainedFile(
+          paths.analysis,
+          path.basename(target),
+          bytes,
+          MAX_ARTIFACT_BYTES,
+          this.containedRuntime,
+        );
+        await assertDirectoryIdentity(paths.analysis);
+      });
     const tracked = write.finally(() => {
       if (state.writeTail === tracked) state.writeTail = undefined;
       this.deleteIdleTargetState(target, state);
@@ -454,15 +519,38 @@ export class SlideUnderstandingService {
     if (!parsedInput.success) throw new SlideUnderstandingError();
     const input = parsedInput.data;
 
+    const key = requestKey({
+      projectPath: input.projectPath,
+      presentationId: input.presentationId,
+      pageNumber: input.pageNumber,
+      imagePath: input.imagePath,
+      extractedTextSha256: sha256(input.extractedText),
+      entryId: model.summary.entry_id,
+      model: model.model,
+    });
+    const current = this.inFlight.get(key);
+    if (current) return await current;
+    const generated = this.ensureBriefOnce(input, model);
+    const tracked = generated.finally(() => {
+      if (this.inFlight.get(key) === tracked) this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, tracked);
+    return await tracked;
+  }
+
+  private async ensureBriefOnce(
+    input: EnsureSlideBriefInput,
+    model: ResolvedVisualModel,
+  ): Promise<PresentationSlideBrief> {
     let imageBytes: Buffer | undefined;
     try {
-      const paths = await resolveBundlePaths(input, this.onContainedOperationReady);
+      const paths = await resolveBundlePaths(input, this.containedRuntime);
       imageBytes = await readContainedFile(
         paths.pages,
         path.basename(paths.imagePath),
         MAX_INLINE_IMAGE_BYTES,
         'source-read',
-        this.onContainedOperationReady,
+        this.containedRuntime,
       );
       if (imageBytes.byteLength === 0 || imageBytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
         throw new SlideUnderstandingError();
@@ -474,22 +562,8 @@ export class SlideUnderstandingService {
         return cached;
       }
 
-      const key = freshnessKey({
-        bundlePath: paths.bundle.path,
-        pageNumber: input.pageNumber,
-        imageSha256,
-        extractedTextSha256,
-        entryId: model.summary.entry_id,
-        model: model.model,
-      });
-      const current = this.inFlight.get(key);
-      if (current) {
-        imageBytes = undefined;
-        return await current;
-      }
-
       const { generation, state } = this.acquireTargetGeneration(paths.artifactPath);
-      const generated = this.generateBrief(
+      const generatedBrief = this.generateBrief(
         input,
         paths,
         imageBytes,
@@ -500,18 +574,35 @@ export class SlideUnderstandingService {
         generation,
       );
       imageBytes = undefined;
-      const tracked = generated.finally(() => {
-        if (this.inFlight.get(key) === tracked) this.inFlight.delete(key);
+      return await generatedBrief.finally(() => {
         this.releaseTargetGeneration(paths.artifactPath, state);
       });
-      this.inFlight.set(key, tracked);
-      return await tracked;
     } catch (error) {
       if (error instanceof SlideUnderstandingError) throw error;
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');
       throw new SlideUnderstandingError();
     } finally {
       imageBytes = undefined;
+    }
+  }
+
+  private async systemPrompt(): Promise<string> {
+    if (this.promptCache) return await this.promptCache;
+    const loaded = this.readPrompt().then((systemPrompt) => {
+      if (
+        Buffer.byteLength(systemPrompt, 'utf8') > MAX_PROMPT_BYTES ||
+        systemPrompt.trim().length === 0
+      ) {
+        throw new SlideUnderstandingError();
+      }
+      return systemPrompt;
+    });
+    this.promptCache = loaded;
+    try {
+      return await loaded;
+    } catch (error) {
+      if (this.promptCache === loaded) this.promptCache = undefined;
+      throw error;
     }
   }
 
@@ -526,13 +617,7 @@ export class SlideUnderstandingService {
     generation: number,
   ): Promise<PresentationSlideBrief> {
     try {
-      const systemPrompt = await this.readPrompt();
-      if (
-        Buffer.byteLength(systemPrompt, 'utf8') > MAX_PROMPT_BYTES
-        || systemPrompt.trim().length === 0
-      ) {
-        throw new SlideUnderstandingError();
-      }
+      const systemPrompt = await this.systemPrompt();
       const output = await this.transport.generateWithImage({
         apiKey: model.apiKey,
         model: model.model,
@@ -573,9 +658,10 @@ export class SlideUnderstandingService {
   }
 }
 
-export function inspectSlideUnderstandingResources(
-  service: SlideUnderstandingService,
-): { inFlight: number; targets: number } {
+export function inspectSlideUnderstandingResources(service: SlideUnderstandingService): {
+  inFlight: number;
+  targets: number;
+} {
   const internal = service as unknown as {
     inFlight: Map<string, unknown>;
     targetStates: Map<string, unknown>;
