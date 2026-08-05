@@ -183,3 +183,69 @@ describe('ProjectStore.touch', () => {
     expect(after).not.toBe(before);
   });
 });
+
+describe('ProjectStore.setProjectModelRouting', () => {
+  let home: string;
+  beforeEach(async () => { home = await makeHome(); });
+  afterEach(async () => { await rm(home, { recursive: true, force: true }); });
+
+  it('patches routing overrides while preserving unrelated project metadata', async () => {
+    const projectsDefault = path.join(home, 'projects-root');
+    const store = new ProjectStore({ vpaHome: home, projectsDefault });
+    const project = await store.create({
+      name: 'routed',
+      objective: 'keep this objective',
+      audience: 'keep this audience',
+      brand: { id: 'brand-1', applied_version: 2 },
+    });
+
+    const first = await store.setProjectModelRouting(project.id, {
+      'video-understanding': 'vision-model',
+      writing: 'writer-model',
+    });
+    expect(first.model_routing).toEqual({
+      video_understanding: 'vision-model',
+      writing: 'writer-model',
+    });
+
+    const second = await store.setProjectModelRouting(project.id, {
+      writing: null,
+      general: 'general-model',
+    });
+    expect(second).toMatchObject({
+      id: project.id,
+      name: 'routed',
+      objective: 'keep this objective',
+      audience: 'keep this audience',
+      brand: { id: 'brand-1', applied_version: 2 },
+      model_routing: {
+        video_understanding: 'vision-model',
+        general: 'general-model',
+      },
+    });
+    expect(second.model_routing).not.toHaveProperty('writing');
+
+    const persisted = await readFile(path.join(project.path, 'project.yaml'), 'utf8');
+    expect(persisted).toContain('video_understanding: vision-model');
+    expect(persisted).toContain('objective: keep this objective');
+    expect(persisted).not.toContain('writing:');
+  });
+
+  it('serializes concurrent different-role patches so both acknowledged updates survive', async () => {
+    const projectsDefault = path.join(home, 'projects-root');
+    const store = new ProjectStore({ vpaHome: home, projectsDefault });
+    const project = await store.create({ name: 'concurrent-routing' });
+
+    await Promise.all([
+      store.setProjectModelRouting(project.id, { writing: 'writer-model' }),
+      store.setProjectModelRouting(project.id, { general: 'general-model' }),
+      store.setProjectModelRouting(project.id, { 'video-understanding': 'video-model' }),
+    ]);
+
+    expect((await store.readProject(project.id)).model_routing).toEqual({
+      writing: 'writer-model',
+      general: 'general-model',
+      video_understanding: 'video-model',
+    });
+  });
+});

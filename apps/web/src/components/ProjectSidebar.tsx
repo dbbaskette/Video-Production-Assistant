@@ -43,6 +43,7 @@ export function ProjectSidebar({ projectName }: Props) {
 
   return (
     <nav
+      className="project-sidebar"
       style={{
         width: 240,
         minWidth: 240,
@@ -58,6 +59,7 @@ export function ProjectSidebar({ projectName }: Props) {
     >
       {/* Project name + applied brand */}
       <div
+        className="project-sidebar__header"
         style={{
           padding: '20px 16px 12px',
           borderBottom: '1px solid var(--border)',
@@ -95,9 +97,13 @@ export function ProjectSidebar({ projectName }: Props) {
       </div>
 
       {/* Main nav */}
-      <div style={{ flex: 1, overflow: 'auto', paddingTop: 8 }}>
+      <div
+        className="project-sidebar__nav"
+        style={{ flex: 1, overflow: 'auto', paddingTop: 8 }}
+      >
         {/* Overview lives outside the pipeline (it's the meta-view) */}
         <NavLink
+          className="project-sidebar__link"
           to={`/project/${projectId}`}
           end
           style={({ isActive }) => flatLinkStyle(isActive)}
@@ -106,23 +112,38 @@ export function ProjectSidebar({ projectName }: Props) {
         </NavLink>
 
         {/* Pipeline: numbered workflow steps with status dots */}
-        <p style={sectionLabel}>Workflow</p>
+        <p className="project-sidebar__section-label" style={sectionLabel}>
+          Workflow
+        </p>
         {steps.map((step, i) => (
           <SidebarStep key={step.key} step={step} number={i + 1} />
         ))}
 
         {/* Library section */}
-        <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}>
-          <p style={sectionLabel}>Library</p>
-          <NavLink to="/brands" style={({ isActive }) => flatLinkStyle(isActive)}>
+        <div
+          className="project-sidebar__library"
+          style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}
+        >
+          <p className="project-sidebar__section-label" style={sectionLabel}>
+            Library
+          </p>
+          <NavLink
+            className="project-sidebar__link"
+            to="/brands"
+            style={({ isActive }) => flatLinkStyle(isActive)}
+          >
             Brands
           </NavLink>
         </div>
       </div>
 
       {/* Back to all projects */}
-      <div style={{ borderTop: '1px solid var(--border)', padding: 8 }}>
+      <div
+        className="project-sidebar__back"
+        style={{ borderTop: '1px solid var(--border)', padding: 8 }}
+      >
         <NavLink
+          className="project-sidebar__back-link"
           to="/"
           style={{
             display: 'block',
@@ -149,6 +170,7 @@ export function ProjectSidebar({ projectName }: Props) {
 function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
   return (
     <NavLink
+      className="project-sidebar__step"
       to={step.to}
       end={step.key === 'review'}
       style={({ isActive }) => ({

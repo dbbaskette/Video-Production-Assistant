@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProjectModelRoutingSchema } from './model-routing.js';
 
 /** Project metadata stored in <project root>/project.yaml */
 export const ProjectSchema = z.object({
@@ -16,6 +17,7 @@ export const ProjectSchema = z.object({
     id: z.string(),
     applied_version: z.number().int().positive(),
   }).nullable().default(null),
+  model_routing: ProjectModelRoutingSchema.optional().default({}),
 });
 export type Project = z.infer<typeof ProjectSchema>;
 

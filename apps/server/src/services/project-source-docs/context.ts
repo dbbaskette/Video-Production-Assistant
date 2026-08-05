@@ -32,6 +32,8 @@ interface ContextOptions {
   summarize?: boolean;
   /** Required when `summarize` is true. */
   llm?: LlmClient;
+  /** Propagate summarizer failures instead of falling back to truncation. */
+  strictSummarization?: boolean;
 }
 
 export interface ReferenceBundle {
@@ -48,6 +50,43 @@ export interface ReferenceBundle {
   summarised: boolean;
 }
 
+/**
+ * Inspect manifest metadata only. Callers use this before model resolution so
+ * the general role is required exactly when source compression will make an
+ * LLM call.
+ */
+export async function sourceDocsNeedSummarization(
+  projectPath: string,
+  budget = REFERENCE_BUDGET_CHARS,
+): Promise<boolean> {
+  const docs = (await listDocs(projectPath)).filter(isReady);
+  return docs.reduce((total, doc) => total + doc.extractedChars, 0) > budget;
+}
+
+/**
+ * Load the source context for routed generation. If compression is required,
+ * the caller must provide the independently resolved general client and a
+ * provider failure is allowed to abort the feature without a silent fallback.
+ */
+export async function loadProjectSourceContext(
+  projectPath: string,
+  general?: LlmClient,
+): Promise<string> {
+  const needsSummarization = await sourceDocsNeedSummarization(projectPath);
+  if (needsSummarization && !general) {
+    throw new Error('Source document summarization requires the general model.');
+  }
+  const bundle = await getReferenceContext(projectPath, {
+    // The preflight only determines whether callers should resolve general.
+    // Re-check the final loaded bundle so growth between those operations
+    // cannot silently fall back to truncation.
+    summarize: true,
+    llm: general,
+    strictSummarization: true,
+  });
+  return bundle.text;
+}
+
 export async function getReferenceContext(
   projectPath: string,
   opts: ContextOptions = {},
@@ -62,13 +101,12 @@ export async function getReferenceContext(
   }
 
   const budget = opts.budget ?? REFERENCE_BUDGET_CHARS;
-  const totalChars = docs.reduce((acc, d) => acc + d.extractedChars, 0);
-  const fitsRaw = totalChars <= budget;
-
   // Read all docs up-front so callers see consistent ordering.
   const loaded = await Promise.all(
     docs.map(async (d) => ({ doc: d, body: (await readExtracted(projectPath, d)).trim() })),
   );
+  const totalChars = loaded.reduce((acc, item) => acc + item.body.length, 0);
+  const fitsRaw = totalChars <= budget;
 
   if (fitsRaw) {
     const text = formatBundle(loaded);
@@ -83,6 +121,9 @@ export async function getReferenceContext(
 
   // Over budget: prefer summarisation if the caller wired it; otherwise
   // truncate proportionally so each doc still contributes.
+  if (opts.summarize && opts.strictSummarization && !opts.llm) {
+    throw new Error('Source document summarization requires the general model.');
+  }
   if (opts.summarize && opts.llm) {
     try {
       const summarised = await summariseBundle(loaded, opts.llm, budget);
@@ -93,7 +134,8 @@ export async function getReferenceContext(
         truncated: false,
         summarised: true,
       };
-    } catch {
+    } catch (error) {
+      if (opts.strictSummarization) throw error;
       // Fall through to truncation if the LLM call fails.
     }
   }

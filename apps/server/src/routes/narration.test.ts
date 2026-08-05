@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,26 +8,61 @@ import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js'
 import { TtsService, createFakeTtsProvider } from '../services/tts/index.js';
 import { registerNarrationRoutes } from './narration.js';
 import type { Storyboard } from '@vpa/shared';
+import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
+import { jobQueue } from '../lib/job-queue.js';
 
-async function buildTestServer() {
+async function waitForJobStatus(jobId: string, target: 'completed' | 'failed'): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const status = jobQueue.get(jobId)?.status;
+    if (status === target) return;
+    if (status === 'failed' && target !== 'failed') {
+      throw new Error(`Job failed: ${jobQueue.get(jobId)?.error}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for job ${jobId} to reach ${target}`);
+}
+
+async function buildTestServer(writerOverride?: LlmClient) {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-narr-routes-'));
   const projects = await mkdtemp(path.join(tmpdir(), 'vpa-narr-projects-'));
   const store = new ProjectStore({ vpaHome: home, projectsDefault: projects });
   const tts = new TtsService();
   tts.register(createFakeTtsProvider());
 
-  const llm = {
+  const writer = writerOverride ?? {
     async complete() {
       return { text: 'fake llm response' };
     },
   };
+  const general: LlmClient = {
+    async complete() {
+      return { text: 'source summary' };
+    },
+  };
+  const resolveText = vi.fn(async (role: 'writing' | 'general') => ({
+    client: role === 'writing' ? writer : general,
+    summary: {
+      role,
+      scope: 'project' as const,
+      entry_id: `${role}-model`,
+      provider: 'fake' as const,
+      model: `fake-${role}`,
+      name: role,
+      capabilities: { text: true, video: false },
+      ready: true as const,
+    },
+  }));
+  const router = { resolveText } as unknown as ModelRouter;
 
   const app = Fastify();
   const workspaceRoot = path.resolve(import.meta.dirname, '../../../..');
   await app.register(async (i) =>
-    registerNarrationRoutes(i, { store, tts, llm, workspaceRoot, vpaHome: home }),
+    registerNarrationRoutes(i, { store, tts, router, workspaceRoot, vpaHome: home }),
   );
-  return { app, store, tts, llm, home, projects };
+  return { app, store, tts, writer, general, resolveText, home, projects };
 }
 
 function makeSampleStoryboard(projectId: string): Storyboard {
@@ -183,6 +218,135 @@ describe('narration routes', () => {
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
     expect(scene?.narration?.audio).toBe('narration/scene-01.mp3');
     expect(scene?.narration?.tts?.engine).toBe('fake');
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('returns a stable writing routing error without changing narration', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration!.audio = 'narration/existing.mp3';
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValueOnce(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate`,
+      payload: { engine: 'xai', voice: 'alice' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'writing' });
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
+    const unchanged = await loadStoryboard(projectPath);
+    expect(unchanged!.scenes[0]!.narration!.audio).toBe('narration/existing.mp3');
+  });
+
+  it('generate-all ignores dormant xAI speaker settings in monologue mode', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: 'First paragraph.\n\nSecond paragraph.',
+      mode: 'monologue',
+      speakers: {
+        A: { engine: 'xai', voice: 'dormant-xai', speed: 1 },
+      },
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValue(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'all' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toEqual({ total: 2, completed: 2, failed: 0 });
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('generate-all ignores xAI assigned only to an unselected dialog chunk', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: '[Speaker A] Already rendered.\n[Speaker B] Needs audio.',
+      mode: 'dialog',
+      speakers: {
+        A: { engine: 'xai', voice: 'xai-voice', speed: 1 },
+        B: { engine: 'fake', voice: 'bob', speed: 1 },
+      },
+      chunks: [{
+        index: 0,
+        text: '[Speaker A] Already rendered.',
+        audio: 'narration/existing-a.mp3',
+        durationSec: 2,
+        speaker: 'A',
+      }],
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValue(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'missing' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toEqual({ total: 1, completed: 1, failed: 0 });
+    expect(ctx.resolveText).not.toHaveBeenCalled();
+  });
+
+  it('generate-all returns the stable writing error for a selected xAI dialog chunk', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    sb.scenes[0]!.narration = {
+      script: '[Speaker A] Generate this with xAI.',
+      mode: 'dialog',
+      speakers: {
+        A: { engine: 'xai', voice: 'xai-voice', speed: 1 },
+      },
+    };
+    await saveStoryboard(projectPath, sb);
+    ctx.resolveText.mockRejectedValueOnce(new ModelRoutingError(
+      'model_unavailable',
+      'writing',
+      'project',
+      'The assigned writing model is unavailable.',
+      503,
+    ));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'fake', voice: 'alice', selector: 'all' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'model_unavailable', role: 'writing' });
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
   });
 
   it('POST generate returns 400 when engine/voice missing', async () => {
@@ -209,6 +373,27 @@ describe('narration routes', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().code).toBe('missing_script');
+  });
+
+  it('routes dialog conversion through writing without resolving general for small sources', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/convert-dialog`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(ctx.resolveText).toHaveBeenCalledWith(
+      'writing',
+      expect.objectContaining({ id: projectId }),
+    );
+    expect(ctx.resolveText).not.toHaveBeenCalledWith('general', expect.anything());
+    const updated = await loadStoryboard(projectPath);
+    expect(updated!.scenes[0]!.narration).toMatchObject({
+      mode: 'dialog',
+      dialogScript: 'fake llm response',
+    });
   });
 
   it('GET audio returns 404 before generation', async () => {

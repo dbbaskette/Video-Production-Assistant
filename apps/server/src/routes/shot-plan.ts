@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import {
   ShotPlanManager,
   type ShotPlanStep,
@@ -14,7 +14,7 @@ import {
 
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
+  router: ModelRouter;
   shotPlanManager: ShotPlanManager;
 }
 
@@ -28,12 +28,13 @@ async function resolveProjectAndScene(
   projectId: string,
   sceneId: string,
 ) {
-  const tracker = await store.readTracker();
-  const entry = tracker.projects.find((p) => p.id === projectId);
-  if (!entry) {
+  let project;
+  try {
+    project = await store.readProject(projectId);
+  } catch {
     throw { statusCode: 404, code: 'project_not_found', message: `Project not found: ${projectId}` };
   }
-  const sb = await loadStoryboard(entry.path);
+  const sb = await loadStoryboard(project.path);
   if (!sb) {
     throw { statusCode: 404, code: 'scene_not_found', message: `No storyboard yet for ${projectId}` };
   }
@@ -41,14 +42,14 @@ async function resolveProjectAndScene(
   if (!scene) {
     throw { statusCode: 404, code: 'scene_not_found', message: `Scene not found: ${sceneId}` };
   }
-  return { entry, sb, scene };
+  return { project, sb, scene };
 }
 
 export async function registerShotPlanRoutes(
   app: FastifyInstance,
   deps: Deps,
 ): Promise<void> {
-  const { store, llm, shotPlanManager } = deps;
+  const { store, router, shotPlanManager } = deps;
 
   // Plugin-scoped error handler. Other routes in this codebase throw plain
   // `{ statusCode, message }` and rely on Fastify's built-in handler. We throw
@@ -92,14 +93,14 @@ export async function registerShotPlanRoutes(
     if (!content || typeof content !== 'string' || !content.trim()) {
       return reply.status(400).send({ error: 'content is required', code: 'invalid_request' });
     }
-    const { sb, scene } = await resolveProjectAndScene(store, id, sceneId);
-    const session = shotPlanManager.getOrCreate(id, sceneId, scene.shot_plan_chat ?? undefined);
+    const { project, sb, scene } = await resolveProjectAndScene(store, id, sceneId);
 
-    let assistantTurn;
     try {
-      assistantTurn = await session.sendMessage(
+      const writer = await router.resolveText('writing', project);
+      const session = shotPlanManager.getOrCreate(id, sceneId, scene.shot_plan_chat ?? undefined);
+      const assistantTurn = await session.sendMessage(
         content.trim(),
-        llm,
+        writer.client,
         {
           id: scene.id,
           name: scene.name,
@@ -108,8 +109,8 @@ export async function registerShotPlanRoutes(
           intent: scene.intent,
         },
         {
-          objective: sb.project.objective,
-          audience: sb.project.audience,
+          objective: project.objective,
+          audience: project.audience,
           sourceDocs: sb.project.source_docs ?? [],
         },
         // Pass the full storyboard so the model maintains cross-scene
@@ -122,23 +123,33 @@ export async function registerShotPlanRoutes(
           type: s.type,
         })),
       );
-    } catch (err) {
-      req.log.error({ err }, 'shot-plan LLM call failed');
+      return {
+        reply: assistantTurn.content,
+        proposedSteps: session.proposedSteps,
+      };
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, sceneId, errorName: 'ShotPlanError' }, 'Shot-plan generation failed');
       return reply
         .status(502)
-        .send({ error: err instanceof Error ? err.message : 'LLM call failed', code: 'llm_error' });
+        .send({
+          error: 'Shot-plan generation failed. Your existing plan was not changed.',
+          code: 'shot_plan_failed',
+        });
     }
 
-    return {
-      reply: assistantTurn.content,
-      proposedSteps: session.proposedSteps,
-    };
   });
 
   // POST /api/projects/:id/scenes/:sceneId/shot-plan/accept
   app.post('/api/projects/:id/scenes/:sceneId/shot-plan/accept', async (req, reply) => {
     const { id, sceneId } = req.params as RouteParams;
-    const { entry, sb } = await resolveProjectAndScene(store, id, sceneId);
+    const { project, sb } = await resolveProjectAndScene(store, id, sceneId);
 
     const session = shotPlanManager.get(id, sceneId);
     if (!session || session.proposedSteps.length === 0) {
@@ -153,7 +164,7 @@ export async function registerShotPlanRoutes(
     const shot_plan_chat: ShotPlanChatTurn[] = [...session.transcript];
 
     const updated = updateScene(sb, sceneId, { shot_plan, shot_plan_chat });
-    await saveStoryboard(entry.path, updated);
+    await saveStoryboard(project.path, updated);
     shotPlanManager.delete(id, sceneId);
 
     return updated.scenes.find((s) => s.id === sceneId);
@@ -162,12 +173,12 @@ export async function registerShotPlanRoutes(
   // DELETE /api/projects/:id/scenes/:sceneId/shot-plan
   app.delete('/api/projects/:id/scenes/:sceneId/shot-plan', async (req) => {
     const { id, sceneId } = req.params as RouteParams;
-    const { entry, sb } = await resolveProjectAndScene(store, id, sceneId);
+    const { project, sb } = await resolveProjectAndScene(store, id, sceneId);
     const updated = updateScene(sb, sceneId, {
       shot_plan: undefined,
       shot_plan_chat: undefined,
     });
-    await saveStoryboard(entry.path, updated);
+    await saveStoryboard(project.path, updated);
     shotPlanManager.delete(id, sceneId);
     return updated.scenes.find((s) => s.id === sceneId);
   });

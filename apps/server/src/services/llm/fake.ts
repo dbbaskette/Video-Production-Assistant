@@ -125,6 +125,13 @@ function isLowerThirdPrompt(opts: LlmCompleteOptions): boolean {
   return opts.systemPrompt.toLowerCase().includes('lower-third recommender');
 }
 
+function boundedLowerThirdTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length <= 40
+    ? normalized
+    : `${normalized.slice(0, 39).trimEnd()}…`;
+}
+
 function isQualityReviewPrompt(opts: LlmCompleteOptions): boolean {
   return opts.systemPrompt.toLowerCase().includes('quality review');
 }
@@ -174,9 +181,18 @@ export function createFakeLlm(): LlmClient {
       if (isLowerThirdPrompt(opts)) {
         const nameMatch = opts.userPrompt.match(/Scene name:\s*(.+)/) ?? opts.userPrompt.match(/Scene:\s*(.+)/);
         const sceneName = nameMatch?.[1]?.trim() ?? 'Demo Scene';
+        const title = boundedLowerThirdTitle(sceneName);
+        if (opts.userPrompt.includes('Return only segment IDs')) {
+          const segmentId = opts.userPrompt.match(/segment-[\w-]+/)?.[0] ?? 'segment-001';
+          return {
+            text: JSON.stringify([
+              { segment_id: segmentId, title, subtitle: 'Getting Started', style: 'frosted' },
+            ]),
+          };
+        }
         return {
           text: JSON.stringify([
-            { title: sceneName, subtitle: 'Getting Started', style: 'frosted', in_sec: 1.5, out_sec: 5.5 },
+            { title, subtitle: 'Getting Started', style: 'frosted', in_sec: 1.5, out_sec: 5.5 },
             { title: 'Key Concept', style: 'minimal', in_sec: 12.0, out_sec: 16.0 },
           ]),
         };

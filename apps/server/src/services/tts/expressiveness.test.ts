@@ -96,7 +96,7 @@ describe('prepareExpressiveText', () => {
       text: 'Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out.startsWith('<') || out.startsWith('[')).toBe(false);
@@ -109,7 +109,7 @@ describe('prepareExpressiveText', () => {
       text: 'Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out).not.toContain('<emphasis>');
@@ -126,7 +126,7 @@ describe('prepareExpressiveText', () => {
       text: 'Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out).toContain('<slow>');
@@ -141,7 +141,7 @@ describe('prepareExpressiveText', () => {
       text: 'Hello world. Ready?',
       engine: 'xai',
       level: 'heavy',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out).toBe('Hello world. Ready?'); // guard rejected the tampered output
@@ -153,7 +153,7 @@ describe('prepareExpressiveText', () => {
       text: '[warm] Hello world.',
       engine: 'xai',
       level: 'medium',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out).toBe('Hello world.'); // app emotive stripped, no tags
@@ -165,7 +165,7 @@ describe('prepareExpressiveText', () => {
       text: '[warm] Hello world.',
       engine: 'gemini',
       level: 'heavy',
-      llm,
+      writer: llm,
       workspaceRoot: workspaceRoot(),
     });
     expect(out).toBe('[warm] Hello world.');

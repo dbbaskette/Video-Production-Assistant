@@ -67,7 +67,8 @@ export interface PrepareExpressiveTextInput {
   text: string;
   engine: string;
   level: Expressiveness;
-  llm: LlmClient;
+  /** Independently routed writing client for xAI tag authoring. */
+  writer?: LlmClient;
   workspaceRoot: string;
 }
 
@@ -143,13 +144,16 @@ export async function prepareExpressiveText(
   if (input.engine !== 'xai') {
     return input.text;
   }
+  if (!input.writer) {
+    throw new Error('A writing model is required for xAI narration expressiveness.');
+  }
 
   // Clean prose to annotate — drop app emotive cues first.
   const clean = stripAppEmotives(input.text);
   try {
     const systemPrompt = await loadPrompt(input.workspaceRoot, 'narration-expressiveness-xai');
     const userPrompt = `Requested level: ${input.level}\n\nNarration:\n${clean}`;
-    const result = await input.llm.complete({ systemPrompt, userPrompt, temperature: 0.4 });
+    const result = await input.writer.complete({ systemPrompt, userPrompt, temperature: 0.4 });
     const out = result.text.trim();
     if (out.length === 0) return clean;
 

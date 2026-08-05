@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { clearSetupHealthCache, runSetupHealth } from '../services/setup/probes.js';
 import type { TtsService } from '../services/tts/index.js';
-import type { LlmClient } from '../services/llm/index.js';
+import type { ModelRouter } from '../services/llm/model-router.js';
 import { CapSetupStatusSchema } from '@vpa/shared';
 import { z } from 'zod';
 import type { CapRuntime } from '../services/cap/runtime.js';
@@ -9,7 +9,7 @@ import type { CapInstaller } from '../services/cap/installer.js';
 
 interface Deps {
   tts: TtsService;
-  llm: LlmClient;
+  router: ModelRouter;
   vpaHome: string;
   capRuntime: Pick<CapRuntime, 'getStatus'>;
   capInstaller: Pick<CapInstaller, 'start'>;

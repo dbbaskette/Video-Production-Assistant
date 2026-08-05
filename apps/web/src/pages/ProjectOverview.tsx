@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi } from '../lib/api.js';
+import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi, settingsApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
@@ -16,6 +16,7 @@ import type { ProjectTrackerEntry } from '@vpa/shared';
 import { SnapshotHistory } from '../components/SnapshotHistory.js';
 import { ProjectActionCard } from '../components/ProjectActionCard.js';
 import { RenderPreflight } from '../components/RenderPreflight.js';
+import { ModelAssignments } from '../components/ModelAssignments.js';
 import { useWorkflowStatus } from '../lib/pipeline.js';
 import { ApiError } from '../lib/api.js';
 
@@ -33,13 +34,52 @@ export function ProjectOverview() {
     enabled: !!projectId,
   });
   const hasStoryboard = !!storyboard && (storyboard.scenes?.length ?? 0) > 0;
+  const queryClient = useQueryClient();
+  const modelsQuery = useQuery({
+    queryKey: ['settings', 'models'],
+    queryFn: () => settingsApi.listModels(),
+  });
+  const routingQuery = useQuery({
+    queryKey: ['project', project.id, 'model-routing'],
+    queryFn: () => api.getProjectModelRouting(project.id),
+  });
 
   return (
-    <div style={{ padding: '40px 48px', maxWidth: 800 }}>
+    <div className="project-overview">
       <h1 style={{ margin: 0, fontSize: 24 }}>{project.name}</h1>
       <p style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: 13 }}>
         {project.path}
       </p>
+
+      <section className="project-ai-models" aria-labelledby="project-ai-models-title">
+        <div className="project-ai-models__header">
+          <div>
+            <span>Project setup</span>
+            <h2 id="project-ai-models-title">AI models</h2>
+          </div>
+          <p>Use the global specialist for each job or assign a project override.</p>
+        </div>
+        {(modelsQuery.isLoading || routingQuery.isLoading) && (
+          <p className="hint">Loading project model assignments…</p>
+        )}
+        {(modelsQuery.error || routingQuery.error) && (
+          <p className="model-routing-load-error" role="alert">
+            Could not load project model assignments. Check that VPA is running, then reload this page.
+          </p>
+        )}
+        {modelsQuery.data && routingQuery.data && (
+          <ModelAssignments
+            mode="project"
+            models={modelsQuery.data}
+            routing={routingQuery.data}
+            onUpdate={async (update) => {
+              const next = await api.updateProjectModelRouting(project.id, update);
+              queryClient.setQueryData(['project', project.id, 'model-routing'], next);
+              return next;
+            }}
+          />
+        )}
+      </section>
 
       <ProjectActionCard
         projectId={project.id}

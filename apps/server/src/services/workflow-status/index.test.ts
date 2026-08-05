@@ -15,7 +15,7 @@ async function fixture() {
   roots.push(root);
   const project: Project = {
     id: '11111111-1111-4111-8111-111111111111', name: 'demo', path: root,
-    created: '2026-07-31T12:00:00.000Z', brand: null,
+    created: '2026-07-31T12:00:00.000Z', brand: null, model_routing: {},
   };
   const storyboard: Storyboard = {
     schema_version: 1,

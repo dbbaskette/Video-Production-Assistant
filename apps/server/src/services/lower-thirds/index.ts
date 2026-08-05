@@ -22,8 +22,10 @@ export interface LowerThirdInput {
 
 export async function recommendLowerThirds(
   input: LowerThirdInput,
-  llm: LlmClient,
+  writer: LlmClient,
   workspaceRoot: string,
+  /** Independently routed general client for oversized source-doc compression. */
+  general?: LlmClient,
 ): Promise<LowerThird[]> {
   const systemPrompt = await loadPrompt(workspaceRoot, 'lower-third-recommender');
 
@@ -44,10 +46,11 @@ export async function recommendLowerThirds(
   const userPrompt = await withReferenceContext(parts.join('\n'), {
     projectPath: input.projectPath,
     summarize: true,
-    llm,
+    llm: general,
+    strictSummarization: true,
   });
 
-  const result = await llm.complete({
+  const result = await writer.complete({
     systemPrompt,
     userPrompt,
     responseFormat: 'json',

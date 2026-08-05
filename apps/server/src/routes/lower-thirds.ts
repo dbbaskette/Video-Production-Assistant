@@ -1,13 +1,72 @@
 import { join } from 'node:path';
 import { unlink } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
-import type { ModelRegistry } from '../services/llm/model-registry.js';
+import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
 import { loadStoryboard, saveStoryboard } from '../services/storyboard/index.js';
 import { recommendLowerThirds } from '../services/lower-thirds/index.js';
-import { recommendLowerThirdsWithVideo } from '../services/lower-thirds/video-grounded.js';
-import type { LowerThird, Scene, Storyboard } from '@vpa/shared';
+import { recommendLowerThirdsFromBrief } from '../services/lower-thirds/video-grounded.js';
+import { VideoUnderstandingService } from '../services/video-understanding/index.js';
+import { sha256File } from '../services/recording/metadata.js';
+import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
+import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
+import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+import {
+  LowerThirdSchema,
+  type LowerThird,
+  type ResolvedModelSummary,
+  type Scene,
+  type Storyboard,
+} from '@vpa/shared';
+
+const LowerThirdSetSchema = z.array(LowerThirdSchema).min(1).max(5);
+const RecommendBodySchema = z.object({
+  groundInVideo: z.boolean().optional(),
+}).strict();
+const VIDEO_LOWER_THIRDS_FAILED_MESSAGE =
+  'Video-grounded lower-third recommendation failed. Your existing lower thirds were not changed.';
+const LOWER_THIRDS_FAILED_MESSAGE =
+  'Lower-third recommendation failed. Your existing lower thirds were not changed.';
+
+type RecommendationStage = 'preparing' | 'routing' | 'video-understanding' | 'source-summarization' | 'writing' | 'persistence';
+
+function privateRecommendationDiagnostic(
+  error: unknown,
+  sceneId: string,
+  stage: RecommendationStage,
+): Record<string, unknown> {
+  if (error instanceof ModelRoutingError) {
+    return {
+      ...safeSceneDiagnosticFields(sceneId),
+      stage,
+      errorName: 'ModelRoutingError',
+      code: error.code,
+      role: error.role,
+      scope: error.scope,
+    };
+  }
+  return { ...safeSceneDiagnosticFields(sceneId), stage, errorName: 'RecommendationError' };
+}
+
+function modelOperationFields(
+  sceneId: string,
+  summary: ResolvedModelSummary,
+  phase: string,
+  briefFreshness?: 'generated' | 'reused',
+): Record<string, unknown> {
+  return {
+    ...safeSceneDiagnosticFields(sceneId),
+    operation: 'lower-third-recommendation',
+    phase,
+    role: summary.role,
+    entryId: summary.entry_id,
+    provider: summary.provider,
+    model: summary.model,
+    ...(briefFreshness ? { briefFreshness } : {}),
+  };
+}
 
 /**
  * Replace a scene's lower_thirds AND invalidate the caches that depend on
@@ -18,18 +77,11 @@ import type { LowerThird, Scene, Storyboard } from '@vpa/shared';
  * Without this, the next render reuses the cached overlay and the user
  * sees the LTs they just deleted.
  */
-async function updateLowerThirds(
+function updateLowerThirds(
   sb: Storyboard,
-  projectPath: string,
   scene: Scene,
   lowerThirds: LowerThird[],
-): Promise<Storyboard> {
-  if (scene.overlay_render) {
-    await unlink(join(projectPath, scene.overlay_render)).catch(() => {});
-  }
-  if (scene.frame_render) {
-    await unlink(join(projectPath, scene.frame_render)).catch(() => {});
-  }
+): Storyboard {
   // Build the replacement scene with the cache pointers stripped — we can't
   // pass `undefined` through updateScene because the YAML dump trips on
   // explicit undefined values.
@@ -40,12 +92,33 @@ async function updateLowerThirds(
   return { ...sb, scenes };
 }
 
+async function cleanupLowerThirdArtifacts(
+  projectPath: string,
+  scene: Scene,
+  removeArtifact: (path: string) => Promise<void>,
+): Promise<void> {
+  const artifacts = [scene.overlay_render, scene.frame_render].filter(
+    (value): value is string => Boolean(value),
+  );
+  await Promise.all(artifacts.map(async (artifact) => {
+    try {
+      await removeArtifact(join(projectPath, artifact));
+    } catch {
+      // The pointer-free storyboard is already durable. Stale cache files are
+      // harmless and can be cleaned up by a later render or maintenance pass.
+    }
+  }));
+}
+
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
   workspaceRoot: string;
-  /** Used to detect Gemini for video-grounded mode. */
-  registry?: ModelRegistry;
+  router: ModelRouter;
+  videoUnderstanding: VideoUnderstandingService;
+  agentRecordingCoordinator: Pick<AgentRecordingCoordinator, 'withManualUploadReservation'>;
+  fingerprintRecording?: (path: string) => Promise<string>;
+  persistStoryboard?: typeof saveStoryboard;
+  removeArtifact?: (path: string) => Promise<void>;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -56,7 +129,16 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 }
 
 export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, registry } = deps;
+  const {
+    store,
+    workspaceRoot,
+    router,
+    videoUnderstanding,
+    agentRecordingCoordinator,
+    fingerprintRecording = sha256File,
+    persistStoryboard = saveStoryboard,
+    removeArtifact = unlink,
+  } = deps;
 
   // GET /api/projects/:id/scenes/:sceneId/lower-thirds — get current lower thirds
   app.get('/api/projects/:id/scenes/:sceneId/lower-thirds', async (req, reply) => {
@@ -73,15 +155,18 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
   });
 
   // POST /api/projects/:id/scenes/:sceneId/lower-thirds/recommend — AI recommend
-  // Body: { groundInVideo?: boolean }.
-  // Video-grounded mode (Gemini-only) uploads the recording to the Files
-  // API so the model can anchor each LT timestamp to a real on-screen
-  // moment. Falls back to text-only when the active provider isn't Gemini,
-  // the registry is unavailable, the scene has no recording, or the flag
-  // is false.
+  // Body: { groundInVideo?: boolean }. Grounded and text-only requests are
+  // explicit paths. A grounded failure never falls back to text-only.
   app.post('/api/projects/:id/scenes/:sceneId/lower-thirds/recommend', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean };
+    const parsedBody = RecommendBodySchema.safeParse(req.body === undefined ? {} : req.body);
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: 'groundInVideo must be a boolean when provided.',
+        code: 'invalid_request',
+      });
+    }
+    const body = parsedBody.data;
     const projectPath = await resolveProjectPath(store, id);
 
     const sb = await loadStoryboard(projectPath);
@@ -89,79 +174,166 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
 
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
-
-    // Pull objective + audience from project.yaml so they reach the
-    // prompt — same pattern the script + analyze routes use.
-    let projectObjective: string | undefined;
-    let projectAudience: string | undefined;
-    try {
-      const project = await store.readProject(id);
-      projectObjective = project.objective;
-      projectAudience = project.audience;
-    } catch {
-      // project.yaml missing shouldn't block LT recommendation.
+    const videoRequested = body.groundInVideo === true;
+    if (videoRequested && !scene.recording?.source) {
+      return reply.status(400).send({
+        error: 'Scene has no recording. Upload a recording first.',
+        code: 'no_recording',
+      });
     }
 
-    const active = registry?.getActive();
-    const canUseVideo =
-      body.groundInVideo === true &&
-      active?.provider === 'gemini' &&
-      !!active.apiKey &&
-      !!scene.recording?.source;
-
-    let lowerThirds: LowerThird[];
-    let mode: 'text' | 'video' = 'text';
+    const mode: 'text' | 'video' = videoRequested ? 'video' : 'text';
+    const operationState: { stage: RecommendationStage } = { stage: 'preparing' };
     try {
-      if (canUseVideo && active && scene.recording) {
-        mode = 'video';
-        lowerThirds = await recommendLowerThirdsWithVideo(
-          {
-            videoPath: join(projectPath, scene.recording.source),
+      const project = await store.readProject(id);
+      const needsGeneral = await sourceDocsNeedSummarization(project.path);
+      operationState.stage = 'routing';
+      const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
+      const writer = await router.resolveText('writing', project);
+      const general = needsGeneral
+        ? await router.resolveText('general', project)
+        : undefined;
+      for (const resolved of [videoModel, writer, general]) {
+        if (resolved) {
+          app.log.info(
+            modelOperationFields(sceneId, resolved.summary, 'model-resolved'),
+            'Lower-third model resolved',
+          );
+        }
+      }
+
+      const recommendAndPersist = async () => {
+        let briefFreshness: 'generated' | 'reused' | undefined;
+        let groundedBriefSource: { path: string; sha256: string } | undefined;
+        let recommendations: LowerThird[];
+        if (mode === 'video' && videoModel && scene.recording) {
+          const briefInput = {
+            projectPath: project.path,
+            sceneId,
+            sceneName: scene.name,
+            videoPath: join(project.path, scene.recording.source),
             videoMimeType: 'video/mp4',
+          };
+          operationState.stage = 'video-understanding';
+          const briefStatus = await videoUnderstanding.readBriefStatus(briefInput, videoModel);
+          briefFreshness = briefStatus.status === 'fresh' ? 'reused' : 'generated';
+          const brief = await videoUnderstanding.ensureBrief(briefInput, videoModel, (phase) => {
+            app.log.info(
+              modelOperationFields(sceneId, videoModel.summary, phase, briefFreshness),
+              'Video-grounded lower-third phase',
+            );
+          });
+          groundedBriefSource = {
+            path: brief.source.path,
+            sha256: brief.source.sha256,
+          };
+          operationState.stage = 'writing';
+          app.log.info(
+            modelOperationFields(sceneId, writer.summary, 'writing', briefFreshness),
+            'Lower-third writing phase',
+          );
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
+          recommendations = await recommendLowerThirdsFromBrief({
+            videoPath: briefInput.videoPath,
+            videoMimeType: briefInput.videoMimeType,
             sceneName: scene.name,
             sceneDescription: scene.description,
             sceneIntent: scene.intent,
-            durationSec: scene.recording.duration_sec,
-            projectObjective,
-            projectAudience,
-            projectPath,
-          },
-          { apiKey: active.apiKey!, model: active.model },
-          workspaceRoot,
-          llm,
-          (phase, detail) => {
-            app.log.info({ sceneId, phase, detail }, 'video-grounded LT phase');
-          },
-        );
-      } else {
-        lowerThirds = await recommendLowerThirds(
-          {
+            durationSec: scene.recording.duration_sec ?? brief.source.duration_sec,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+            brief,
+          }, writer.client, workspaceRoot, general?.client);
+        } else {
+          operationState.stage = needsGeneral ? 'source-summarization' : 'writing';
+          app.log.info(
+            modelOperationFields(sceneId, writer.summary, 'writing'),
+            'Lower-third writing phase',
+          );
+          recommendations = await recommendLowerThirds({
             sceneName: scene.name,
             sceneDescription: scene.description,
             sceneType: scene.type,
             sceneIntent: scene.intent,
             durationSec: scene.recording?.duration_sec,
-            projectObjective,
-            projectAudience,
-            projectPath,
-          },
-          llm,
-          workspaceRoot,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+          }, writer.client, workspaceRoot, general?.client);
+        }
+
+        // Keep all model output in memory until the complete set validates.
+        const lowerThirds = LowerThirdSetSchema.parse(recommendations);
+
+        // Re-read immediately before the single persistence operation so scene
+        // edits made during model calls are retained.
+        operationState.stage = 'persistence';
+        const latestVersion = mode === 'video' && groundedBriefSource
+          ? await loadSceneAtRecordingVersion(
+              project.path,
+              sceneId,
+              groundedBriefSource,
+              fingerprintRecording,
+            )
+          : undefined;
+        const latest = latestVersion?.storyboard ?? await loadStoryboard(project.path);
+        const latestScene = latestVersion?.scene
+          ?? latest?.scenes.find((candidate) => candidate.id === sceneId);
+        if (!latest || !latestScene) throw new Error('Scene changed during lower-third recommendation.');
+        const updated = updateLowerThirds(latest, latestScene, lowerThirds);
+        await persistStoryboard(project.path, updated);
+        await cleanupLowerThirdArtifacts(project.path, latestScene, removeArtifact);
+        return { lowerThirds, briefFreshness };
+      };
+
+      // Grounded generation and its final save share the exact scene
+      // reservation used by manual and agent recording replacement. No
+      // coordinated replacement can commit between brief identity and save.
+      const { lowerThirds, briefFreshness } = mode === 'video'
+        ? await agentRecordingCoordinator.withManualUploadReservation(
+            id,
+            [sceneId],
+            recommendAndPersist,
+          )
+        : await recommendAndPersist();
+
+      return {
+        sceneId,
+        lowerThirds,
+        mode,
+        routing: {
+          ...(videoModel ? { videoUnderstanding: videoModel.summary } : {}),
+          writing: writer.summary,
+          ...(general ? { general: general.summary } : {}),
+        },
+        ...(briefFreshness ? { briefFreshness } : {}),
+      };
+    } catch (error) {
+      try {
+        app.log.error(
+          privateRecommendationDiagnostic(error, sceneId, operationState.stage),
+          'Lower-third recommendation failed',
         );
+      } catch {
+        // Logging must never change the bounded public failure.
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      app.log.error({ err: msg }, 'lower-thirds recommendation failed');
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
       return reply.status(500).send({
-        error: `Lower-thirds recommendation failed: ${msg}`,
-        code: 'lt_recommend_failed',
+        error: mode === 'video' && operationState.stage === 'video-understanding'
+          ? VIDEO_LOWER_THIRDS_FAILED_MESSAGE
+          : LOWER_THIRDS_FAILED_MESSAGE,
+        code: mode === 'video' && operationState.stage === 'video-understanding'
+          ? 'video_lower_thirds_failed'
+          : 'lower_thirds_generation_failed',
       });
     }
-
-    const updated = await updateLowerThirds(sb, projectPath, scene, lowerThirds);
-    await saveStoryboard(projectPath, updated);
-
-    return { sceneId, lowerThirds, mode };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/lower-thirds — save edited lower thirds
@@ -181,8 +353,9 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    const updated = await updateLowerThirds(sb, projectPath, scene, lowerThirds);
-    await saveStoryboard(projectPath, updated);
+    const updated = updateLowerThirds(sb, scene, lowerThirds);
+    await persistStoryboard(projectPath, updated);
+    await cleanupLowerThirdArtifacts(projectPath, scene, removeArtifact);
 
     return { sceneId, lowerThirds };
   });

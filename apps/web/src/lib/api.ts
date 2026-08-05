@@ -18,10 +18,15 @@ import {
   CapSetupStatusSchema,
   AgentRecordingPlanSchema,
   AgentRecordingSessionSchema,
+  ModelRoutingResponseSchema,
   type CapSetupStatus,
   type AgentRecordingPlan,
   type AgentRecordingPlanUpdate,
   type AgentRecordingSession,
+  type ModelCapabilities,
+  type ModelRoutingResponse,
+  type ModelRoutingUpdate,
+  type ResolvedModelSummary,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -91,6 +96,19 @@ export const api = {
   async getProject(id: string): Promise<Project> {
     const data = await request<unknown>('GET', `/api/projects/${id}`);
     return ProjectSchema.parse(data);
+  },
+  async getProjectModelRouting(id: string): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('GET', `/api/projects/${id}/model-routing`),
+    );
+  },
+  async updateProjectModelRouting(
+    id: string,
+    update: ModelRoutingUpdate,
+  ): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('PUT', `/api/projects/${id}/model-routing`, update),
+    );
   },
   async setProjectBrand(
     id: string,
@@ -291,11 +309,27 @@ export interface IngestResult {
   metadata: VideoMetadata;
 }
 
+export interface RecordingAnalysisFailure {
+  status: 'failed';
+  code: string;
+  message: string;
+}
+
+export interface RecordingUploadResult extends IngestResult {
+  analysis:
+    | {
+        status: 'ready';
+        model: ResolvedModelSummary;
+        briefFreshness: 'generated' | 'reused';
+      }
+    | RecordingAnalysisFailure;
+}
+
 export const recordingsApi = {
   videoUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording/video`;
   },
-  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<IngestResult> {
+  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<RecordingUploadResult> {
     const form = new FormData();
     if (provenance) {
       form.append('source_kind', provenance.source_kind);
@@ -335,9 +369,9 @@ export const recordingsApi = {
   /**
    * Re-run scene analysis for an already-ingested recording. Refreshes the
    * scene's name/description/type — useful after adding source-docs or
-   * editing the project objective. Pass `groundInVideo: true` to upload
-   * the recording to Gemini's Files API for a video-aware description
-   * (Gemini-only; falls back to text-only otherwise).
+   * editing the project objective. Pass `groundInVideo: true` to resolve the
+   * project's video-understanding role and use its reusable brief. Grounded
+   * failures never fall back to metadata-only analysis.
    *
    * `dryRun: true` returns the proposed values + a snapshot of what's
    * currently saved so the UI can show a diff and require explicit
@@ -354,6 +388,7 @@ export const recordingsApi = {
         description: string;
         type: string;
         mode: 'text' | 'video';
+        recordingVersion: string;
         dryRun?: false;
       }
     | {
@@ -362,6 +397,7 @@ export const recordingsApi = {
         proposed: { name: string; description: string; type: string };
         current: { name: string; description: string; type: string };
         mode: 'text' | 'video';
+        recordingVersion: string;
       }
   > {
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/analyze`, opts, {
@@ -384,6 +420,7 @@ export const recordingsApi = {
       transition_duration_sec?: number | null;
       frame_style?: string | null;
       frame_background?: string | null;
+      recordingVersion?: string;
     },
   ): Promise<{
     sceneId: string;
@@ -485,11 +522,10 @@ export const scriptApi = {
   /**
    * Generate a script for a scene.
    *
-   * Pass `groundInVideo: true` to use the video-grounded path (Gemini only) —
-   * the recording is uploaded to Gemini's Files API and the model writes a
-   * script grounded in what's actually on screen. Falls back to text-only
-   * generation when the active provider isn't Gemini or the scene has no
-   * recording, regardless of the flag.
+   * Pass `groundInVideo: true` to resolve the project's video-understanding
+   * and writing roles. The video model creates or refreshes a reusable brief;
+   * the writer receives only that bounded text. Grounded failures do not fall
+   * back to text-only generation.
    *
    * Response includes `mode: 'text' | 'video'` so the UI can confirm which
    * path actually ran.
@@ -498,7 +534,19 @@ export const scriptApi = {
     projectId: string,
     sceneId: string,
     opts: { groundInVideo?: boolean; signal?: AbortSignal } = {},
-  ): Promise<{ sceneId: string; script: string; dialogScript?: string; mode: 'text' | 'video' }> {
+  ): Promise<{
+    sceneId: string;
+    script: string;
+    dialog?: string;
+    dialogScript?: string;
+    mode: 'text' | 'video';
+    routing: {
+      videoUnderstanding?: ResolvedModelSummary;
+      writing: ResolvedModelSummary;
+      general?: ResolvedModelSummary;
+    };
+    briefFreshness?: 'generated' | 'reused';
+  }> {
     const { signal, ...body } = opts;
     return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/script/generate`, body, {
       timeoutMs: 5 * 60_000,
@@ -628,17 +676,25 @@ export const lowerThirdsApi = {
     return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds`);
   },
   /**
-   * AI-recommend lower-thirds for a scene. Pass `groundInVideo: true` to
-   * upload the recording to Gemini's Files API and have the model anchor
-   * each LT to a real on-screen moment (Gemini-only; falls back to
-   * text-only when the active provider isn't Gemini, the scene has no
-   * recording, or the flag is false).
+   * AI-recommend lower thirds for a scene. In grounded mode, the project's
+   * video role owns a reusable timing brief and the writing role returns only
+   * segment IDs plus copy. VPA derives times from validated segments, and a
+   * grounded failure never falls back to text-only generation.
    */
   async recommend(
     projectId: string,
     sceneId: string,
     opts: { groundInVideo?: boolean } = {},
-  ): Promise<{ sceneId: string; lowerThirds: LowerThirdItem[]; mode: 'text' | 'video' }> {
+  ): Promise<{
+    sceneId: string;
+    lowerThirds: LowerThirdItem[];
+    mode: 'text' | 'video';
+    routing: {
+      videoUnderstanding?: ResolvedModelSummary;
+      writing: ResolvedModelSummary;
+    };
+    briefFreshness?: 'generated' | 'reused';
+  }> {
     return request(
       'POST',
       `/api/projects/${projectId}/scenes/${sceneId}/lower-thirds/recommend`,
@@ -1276,16 +1332,9 @@ export interface ModelEntry {
   model: string;
   endpoint?: string;
   hasApiKey: boolean;
-  active: boolean;
-}
-
-export interface ActiveModelInfo {
-  id: string;
-  name: string;
-  provider: string;
-  model: string;
-  endpoint?: string;
-  label: string;
+  capabilities: ModelCapabilities;
+  ready: boolean;
+  readinessMessage?: string;
 }
 
 export const settingsApi = {
@@ -1310,14 +1359,18 @@ export const settingsApi = {
   }): Promise<ModelEntry> {
     return request<ModelEntry>('PUT', `/api/settings/models/${id}`, patch);
   },
-  async activateModel(id: string): Promise<ModelEntry> {
-    return request<ModelEntry>('POST', `/api/settings/models/${id}/activate`);
+  async getModelRouting(): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('GET', '/api/settings/model-routing'),
+    );
+  },
+  async updateModelRouting(update: ModelRoutingUpdate): Promise<ModelRoutingResponse> {
+    return ModelRoutingResponseSchema.parse(
+      await request('PUT', '/api/settings/model-routing', update),
+    );
   },
   async deleteModel(id: string): Promise<void> {
     await request('DELETE', `/api/settings/models/${id}`);
-  },
-  async getActiveModel(): Promise<ActiveModelInfo> {
-    return request<ActiveModelInfo>('GET', '/api/settings/models/active');
   },
 };
 

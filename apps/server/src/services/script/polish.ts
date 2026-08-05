@@ -109,8 +109,10 @@ function buildUserPrompt(input: PolishInput, targetWords?: number): string {
  */
 export async function polishScript(
   input: PolishInput,
-  llm: LlmClient,
+  writer: LlmClient,
   workspaceRoot: string,
+  /** Independently routed general client for oversized source-doc compression. */
+  general?: LlmClient,
 ): Promise<PolishResult> {
   const currentWords = wordCount(input.draft);
 
@@ -125,10 +127,11 @@ export async function polishScript(
   const userPrompt = await withReferenceContext(buildUserPrompt(input, targetWords), {
     projectPath: input.projectPath,
     summarize: true,
-    llm,
+    llm: general,
+    strictSummarization: true,
   });
 
-  const result = await llm.complete({
+  const result = await writer.complete({
     systemPrompt,
     userPrompt,
     responseFormat: 'json',

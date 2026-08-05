@@ -33,10 +33,14 @@ import { trackerPath } from './services/project/paths.js';
 import { resolve } from 'node:path';
 import { brandPaths } from './services/brand/paths.js';
 import { seedBrands } from './services/brand/seed.js';
-import { createLlm, createLlmFromEntry } from './services/llm/factory.js';
-import { SwappableLlm } from './services/llm/swappable.js';
-import { RetryingLlm } from './services/llm/retrying.js';
+import { createLlmFromEntry } from './services/llm/factory.js';
 import { ModelRegistry } from './services/llm/model-registry.js';
+import { ModelRoutingCoordinator } from './services/llm/model-routing-coordinator.js';
+import {
+  ModelRouter,
+  type CliReadinessProbe,
+  type ModelRouterOptions,
+} from './services/llm/model-router.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { IdeationManager } from './services/ideation/index.js';
 import { TtsService, createFakeTtsProvider } from './services/tts/index.js';
@@ -58,13 +62,39 @@ import {
 } from './services/agent-recording/coordinator.js';
 import { probeVideo } from './services/recording/metadata.js';
 import { ingestRecording } from './services/recording/ingest.js';
+import {
+  VideoUnderstandingService,
+  sanitizeVideoUnderstandingWarningFields,
+  type VideoUnderstandingWarning,
+} from './services/video-understanding/index.js';
 import type { ServerConfig } from './config.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+const checkCliReady: CliReadinessProbe = async (provider) => {
+  const executable = provider === 'claude-code' ? 'claude' : 'codex';
+  try {
+    await execFileAsync(executable, ['--version'], { timeout: 3_000 });
+    return { ready: true };
+  } catch (error) {
+    return {
+      ready: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
 
 export interface BuildServerOptions {
   /** Test seam for hermetic server lifecycle and route wiring checks. */
   config?: ServerConfig;
   agentRecordingCoordinator?: AgentRecordingCoordinator;
   logger?: boolean;
+  modelClientFactory?: ModelRouterOptions['createClient'];
+  cliReadinessProbe?: CliReadinessProbe;
+  videoUnderstanding?: VideoUnderstandingService;
+  recordingProbe?: typeof probeVideo;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -96,23 +126,17 @@ export async function buildServer(options: BuildServerOptions = {}) {
   // ── Model registry (persisted in ~/.vpa/models.json) ──────────────
   const modelRegistry = new ModelRegistry(join(config.vpaHome, 'models.json'));
   await modelRegistry.load();
-
-  const activeModel = modelRegistry.getActive();
-  let innerLlm;
-  let llmLabel: string;
-  if (activeModel) {
-    innerLlm = createLlmFromEntry(activeModel);
-    llmLabel = `${activeModel.name} (${activeModel.provider}/${activeModel.model})`;
-  } else {
-    innerLlm = createLlm(config.llm);
-    llmLabel = `${config.llm.provider}${config.llm.model ? ` / ${config.llm.model}` : ''}`;
-  }
-  // Wrap each provider in retry-on-transient logic. SwappableLlm sees the
-  // wrapped client; settings.swap() goes through the same wrapper helper.
-  const wrapWithRetry = (inner: ReturnType<typeof createLlmFromEntry>) =>
-    new RetryingLlm(inner, undefined, (m) => app.log.warn(m));
-  const llm = new SwappableLlm(wrapWithRetry(innerLlm), llmLabel);
-  app.log.info(`LLM: ${llm.getLabel()} (with retry on 429/5xx/network)`);
+  const modelRouter = new ModelRouter({
+    registry: modelRegistry,
+    createClient: options.modelClientFactory ?? createLlmFromEntry,
+    checkCliReady: options.cliReadinessProbe ?? checkCliReady,
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
+  const modelRoutingCoordinator = new ModelRoutingCoordinator({
+    registry: modelRegistry,
+    store,
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
 
   const ideationManager = new IdeationManager();
   const shotPlanManager = new ShotPlanManager();
@@ -134,6 +158,17 @@ export async function buildServer(options: BuildServerOptions = {}) {
   }
 
   const wsRoot = resolve(import.meta.dirname, '../../..');
+  const videoUnderstandingWarning: VideoUnderstandingWarning = (fields, message) => {
+    const safeFields = sanitizeVideoUnderstandingWarningFields(fields);
+    const safeMessage = message === 'Gemini video cleanup failed'
+      ? 'Gemini video cleanup failed'
+      : 'Video understanding failed';
+    app.log.warn(safeFields, safeMessage);
+  };
+  const videoUnderstanding = options.videoUnderstanding ?? new VideoUnderstandingService({
+    workspaceRoot: wsRoot,
+    warn: videoUnderstandingWarning,
+  });
 
   const capProcess = createCapProcess();
   const capLocator = new CapLocator({ vpaHome: config.vpaHome, run: capProcess.run });
@@ -174,7 +209,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
   }
 
   await app.register(healthRoutes);
-  await app.register(async (instance) => projectsRoutes(instance, { store, config }));
+  await app.register(async (instance) => projectsRoutes(instance, {
+    store,
+    config,
+    router: modelRouter,
+    coordinator: modelRoutingCoordinator,
+  }));
   await registerJobRoutes(app);
   await registerBrandRoutes(app, {
     paths: bPaths,
@@ -183,27 +223,42 @@ export async function buildServer(options: BuildServerOptions = {}) {
     // Needed so GET /api/brands/:slug/projects can list projects referencing
     // a brand (powers the Brand Usage tab + brand-delete safety check).
     trackerPath: trackerPath(config.vpaHome),
-    llm,
+    router: modelRouter,
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
-  await app.register(async (instance) => registerIdeationRoutes(instance, { store, llm, ideationManager }));
   await app.register(async (instance) =>
-    registerShotPlanRoutes(instance, { store, llm, shotPlanManager }),
+    registerIdeationRoutes(instance, { store, router: modelRouter, ideationManager }),
+  );
+  await app.register(async (instance) =>
+    registerShotPlanRoutes(instance, { store, router: modelRouter, shotPlanManager }),
   );
   await app.register(async (instance) =>
     registerRecordingRoutes(instance, {
       store,
-      llm,
       workspaceRoot: wsRoot,
-      registry: modelRegistry,
+      router: modelRouter,
+      videoUnderstanding,
+      probe: options.recordingProbe,
       agentRecordingCoordinator,
     }),
   );
   await app.register(async (instance) =>
-    registerScriptRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
+    registerScriptRoutes(instance, {
+      store,
+      workspaceRoot: wsRoot,
+      router: modelRouter,
+      videoUnderstanding,
+      agentRecordingCoordinator,
+    }),
   );
   await app.register(async (instance) =>
-    registerNarrationRoutes(instance, { store, tts, llm, workspaceRoot: wsRoot, vpaHome: config.vpaHome }),
+    registerNarrationRoutes(instance, {
+      store,
+      tts,
+      router: modelRouter,
+      workspaceRoot: wsRoot,
+      vpaHome: config.vpaHome,
+    }),
   );
   await app.register(async (instance) =>
     registerVoiceCloneRoutes(instance, { vpaHome: config.vpaHome, tts }),
@@ -212,7 +267,13 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerTtsScratchRoutes(instance, { vpaHome: config.vpaHome, tts }),
   );
   await app.register(async (instance) =>
-    registerSetupRoutes(instance, { tts, llm, vpaHome: config.vpaHome, capRuntime, capInstaller }),
+    registerSetupRoutes(instance, {
+      tts,
+      router: modelRouter,
+      vpaHome: config.vpaHome,
+      capRuntime,
+      capInstaller,
+    }),
   );
   await app.register(async (instance) =>
     registerRenderRoutes(instance, {
@@ -238,10 +299,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerSourceDocsRoutes(instance, { store }),
   );
   await app.register(async (instance) =>
-    registerLowerThirdsRoutes(instance, { store, llm, workspaceRoot: wsRoot, registry: modelRegistry }),
+    registerLowerThirdsRoutes(instance, {
+      store,
+      workspaceRoot: wsRoot,
+      router: modelRouter,
+      videoUnderstanding,
+      agentRecordingCoordinator,
+    }),
   );
   await app.register(async (instance) =>
-    registerQualityReviewRoutes(instance, { store, llm, workspaceRoot: wsRoot }),
+    registerQualityReviewRoutes(instance, { store, router: modelRouter, workspaceRoot: wsRoot }),
   );
   await app.register(async (instance) =>
     registerOverlayRoutes(instance, { store, workspaceRoot: wsRoot, vpaHome: config.vpaHome }),
@@ -256,7 +323,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
     registerAgentRecordingRoutes(instance, { store, coordinator: agentRecordingCoordinator }),
   );
   await app.register(async (instance) => registerAgentDesktopRoutes(instance, { desktop: desktopDriver }));
-  await registerSettingsRoutes(app, { registry: modelRegistry, llm });
+  await registerSettingsRoutes(app, {
+    registry: modelRegistry,
+    router: modelRouter,
+    store,
+    coordinator: modelRoutingCoordinator,
+  });
 
   try {
     await agentRecordingCoordinator.reconcile();

@@ -1,18 +1,36 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile, unlink } from 'node:fs/promises';
+import { copyFile, mkdir, rename, rm, stat, writeFile, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
-import type { LlmClient } from '../services/llm/index.js';
-import type { ModelRegistry } from '../services/llm/model-registry.js';
-import { probeVideo, type VideoMetadata } from '../services/recording/metadata.js';
+import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
+import { probeVideo, sha256File, type VideoMetadata } from '../services/recording/metadata.js';
+import {
+  loadSceneAtRecordingVersion,
+  loadVersionedSceneRecording,
+  RecordingVersionConflictError,
+} from '../services/recording/version.js';
 import { ingestRecording, type IngestResult } from '../services/recording/ingest.js';
 import { loadStoryboard, saveStoryboard, createStoryboard, updateScene } from '../services/storyboard/index.js';
-import { analyzeRecording, analyzeRecordingWithVideo } from '../services/video-analysis/index.js';
+import { analyzeRecording, proposeSceneMetadataFromBrief } from '../services/video-analysis/index.js';
+import {
+  VideoUnderstandingService,
+  videoUnderstandingErrorClass,
+} from '../services/video-understanding/index.js';
 import { proposeBoundaries } from '../services/recording/propose-boundaries.js';
 import { splitRecording, type SceneBoundary } from '../services/recording/split.js';
-import { RecordingProvenanceSchema, SceneSchema, SceneTransitionSchema, type RecordingProvenance, type Scene, type SceneTransition } from '@vpa/shared';
+import {
+  RecordingProvenanceSchema,
+  SceneSchema,
+  SceneTransitionSchema,
+  type ModelRoutingErrorCode,
+  type RecordingProvenance,
+  type ResolvedModelSummary,
+  type Scene,
+  type SceneTransition,
+} from '@vpa/shared';
 import { projectFiles } from '../services/project/paths.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { isAgentRecordingDomainError } from '../services/agent-recording/errors.js';
@@ -25,13 +43,13 @@ import {
   stageUploadStream,
   type StagedUpload,
 } from '../services/recording/staged-upload.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
 
 interface Deps {
   store: ProjectStore;
-  llm: LlmClient;
   workspaceRoot: string;
-  /** Used by the re-analyze route to detect Gemini for video-grounded mode. */
-  registry?: ModelRegistry;
+  router: ModelRouter;
+  videoUnderstanding: VideoUnderstandingService;
   /** Use fake ffprobe in test environments */
   probe?: typeof probeVideo;
   /** Test seam for recording persistence failures. */
@@ -41,6 +59,56 @@ interface Deps {
     'recoverAttachment' | 'withManualUploadReservation'
   >;
   bulkUploadLimits?: { fileSizeBytes: number; fileCount: number };
+  fingerprintRecording?: (filePath: string) => Promise<string>;
+}
+
+const AnalyzeBodySchema = z.object({
+  groundInVideo: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+}).strict();
+
+const RECORDING_VERSION_PATTERN = /^[0-9a-f]{64}$/;
+
+type RecordingAnalysisResult =
+  | {
+      status: 'ready';
+      model: ResolvedModelSummary;
+      briefFreshness: 'generated' | 'reused';
+    }
+  | {
+      status: 'failed';
+      code: ModelRoutingErrorCode | 'video_analysis_failed';
+      message: string;
+    };
+
+const VIDEO_ANALYSIS_FAILED_MESSAGE =
+  'Video analysis failed. The recording is saved; try re-analyzing later.';
+
+function privateAnalysisDiagnostic(error: unknown, sceneId: string): Record<string, unknown> {
+  if (error instanceof ModelRoutingError) {
+    return {
+      ...safeSceneDiagnosticFields(sceneId),
+      errorName: 'ModelRoutingError',
+      code: error.code,
+      role: error.role,
+      scope: error.scope,
+    };
+  }
+  return {
+    ...safeSceneDiagnosticFields(sceneId),
+    errorName: videoUnderstandingErrorClass(error),
+  };
+}
+
+function publicAnalysisFailure(error: unknown): RecordingAnalysisResult {
+  if (error instanceof ModelRoutingError) {
+    return { status: 'failed', code: error.code, message: error.message };
+  }
+  return {
+    status: 'failed',
+    code: 'video_analysis_failed',
+    message: VIDEO_ANALYSIS_FAILED_MESSAGE,
+  };
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -120,12 +188,54 @@ function mapBulkScenes(scenes: Scene[], uploadCount: number): Scene[] {
 }
 
 export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { store, llm, workspaceRoot, registry } = deps;
+  const { store, workspaceRoot, router, videoUnderstanding } = deps;
   const probe = deps.probe ?? probeVideo;
   const ingest = deps.ingest ?? ingestRecording;
+  const fingerprintRecording = deps.fingerprintRecording ?? sha256File;
   const bulkUploadLimits = deps.bulkUploadLimits ?? {
     fileSizeBytes: BULK_UPLOAD_MAX_FILE_BYTES,
     fileCount: BULK_UPLOAD_MAX_FILES,
+  };
+  const warnAnalysisFailure = (error: unknown, sceneId: string, message: string): void => {
+    try {
+      app.log.warn(privateAnalysisDiagnostic(error, sceneId), message);
+    } catch {
+      // Private diagnostics must never change attachment or analysis outcomes.
+    }
+  };
+
+  const ensureRecordingBrief = async (
+    projectId: string,
+    projectPath: string,
+    scene: Scene,
+    result: IngestResult,
+  ): Promise<RecordingAnalysisResult> => {
+    try {
+      const project = await store.readProject(projectId);
+      const videoModel = await router.resolveVideo(project);
+      const input = {
+        projectPath,
+        sceneId: scene.id,
+        sceneName: scene.name,
+        videoPath: path.join(projectPath, result.relativePath),
+        videoMimeType: 'video/mp4',
+      };
+      const status = await videoUnderstanding.readBriefStatus(input, videoModel);
+      await videoUnderstanding.ensureBrief(input, videoModel, (phase) => {
+        app.log.info(
+          { ...safeSceneDiagnosticFields(scene.id), phase },
+          'video understanding phase',
+        );
+      });
+      return {
+        status: 'ready',
+        model: videoModel.summary,
+        briefFreshness: status.status === 'fresh' ? 'reused' : 'generated',
+      };
+    } catch (error) {
+      warnAnalysisFailure(error, scene.id, 'Post-attachment video analysis failed');
+      return publicAnalysisFailure(error);
+    }
   };
 
   // POST /api/projects/:id/scenes/:sceneId/recording — upload recording for a specific scene
@@ -138,7 +248,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     if (!sb) {
       return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
     }
-    if (!sb.scenes.some((s) => s.id === sceneId)) {
+    const scene = sb.scenes.find((candidate) => candidate.id === sceneId);
+    if (!scene) {
       return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
     }
 
@@ -165,33 +276,43 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     const tmpFile = path.join(tmpDir, `upload-${randomUUID()}.mp4`);
 
     try {
+      let result: IngestResult;
       if (provenance.source_kind === 'cap-agent') {
         await mkdir(tmpDir, { recursive: true });
         await writeFile(tmpFile, upload);
         try {
-          return await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
+          result = await deps.agentRecordingCoordinator.recoverAttachment(id, sceneId, provenance.capture_session_id!, {
             capturedAt: provenance.captured_at!, uploadedPath: tmpFile,
           });
         } catch {
           return reply.status(409).send({ error: 'Verified Cap attachment recovery was rejected.', code: 'invalid_capture_session' });
         }
+      } else {
+        try {
+          result = await deps.agentRecordingCoordinator.withManualUploadReservation(
+            id,
+            [sceneId],
+            async () => {
+              await mkdir(tmpDir, { recursive: true });
+              await writeFile(tmpFile, upload);
+              const metadata = await probe(tmpFile);
+              const ingested = await ingest(projectPath, sceneId, tmpFile, metadata, provenance);
+              await verifyManualIngestion(projectPath, sceneId, metadata, ingested, provenance);
+              return ingested;
+            },
+          );
+        } catch (error) {
+          return sendUploadConflict(reply, error);
+        }
       }
-      try {
-        return await deps.agentRecordingCoordinator.withManualUploadReservation(
-          id,
-          [sceneId],
-          async () => {
-            await mkdir(tmpDir, { recursive: true });
-            await writeFile(tmpFile, upload);
-            const metadata = await probe(tmpFile);
-            const result = await ingest(projectPath, sceneId, tmpFile, metadata, provenance);
-            await verifyManualIngestion(projectPath, sceneId, metadata, result, provenance);
-            return result;
-          },
-        );
-      } catch (error) {
-        return sendUploadConflict(reply, error);
-      }
+
+      const attachment = {
+        sceneId: result.sceneId,
+        relativePath: result.relativePath,
+        metadata: result.metadata,
+      };
+      const analysis = await ensureRecordingBrief(id, projectPath, scene, attachment);
+      return reply.status(201).send({ ...attachment, analysis });
     } finally {
       await unlink(tmpFile).catch(() => {});
     }
@@ -355,8 +476,13 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // POST /api/projects/:id/recordings/generate-storyboard — generate storyboard from uploaded recordings
   app.post('/api/projects/:id/recordings/generate-storyboard', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const projectPath = entry.path;
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const projectPath = project.path;
 
     // Expect multipart with one or more MP4 files
     const parts = req.parts();
@@ -380,91 +506,135 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No files uploaded', code: 'no_files' });
     }
 
-    // Probe all files for metadata
-    const metadatas: VideoMetadata[] = [];
-    for (const { tmpFile } of uploadedFiles) {
-      metadatas.push(await probe(tmpFile));
-    }
-
-    // Project objective + audience live in project.yaml, NOT on the
-    // tracker entry (which is just {id, name, path, lastOpened}). Reading
-    // them once before the loop gets the high-signal context into every
-    // scene's analysis prompt — previously this passed undefined and the
-    // model had only filename + duration to work with.
-    let projectObjective: string | undefined;
-    let projectAudience: string | undefined;
+    let previousStoryboard: Awaited<ReturnType<typeof loadStoryboard>> | undefined;
+    let transactionDir: string | undefined;
+    const recordingBackups: Array<{ destination: string; backup?: string }> = [];
+    let mutationStarted = false;
     try {
-      const project = await store.readProject(entry.id);
-      projectObjective = project.objective;
-      projectAudience = project.audience;
-    } catch {
-      // If project.yaml is missing for any reason, fall back to undefined.
-      // We don't want to fail the whole upload for a metadata read.
+      const general = await router.resolveText('general', project);
+
+      // Probe all files for metadata.
+      const metadatas: VideoMetadata[] = [];
+      for (const { tmpFile } of uploadedFiles) {
+        metadatas.push(await probe(tmpFile));
+      }
+
+      // Analyze each recording to generate scene descriptions.
+      const scenes: Scene[] = [];
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const analysis = await analyzeRecording(
+          {
+            filename: uploadedFiles[i]!.filename,
+            duration_sec: metadatas[i]!.duration_sec,
+            width: metadatas[i]!.width,
+            height: metadatas[i]!.height,
+            sceneIndex: i,
+            totalScenes: uploadedFiles.length,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: project.path,
+          },
+          general.client,
+          workspaceRoot,
+        );
+
+        scenes.push(
+          SceneSchema.parse({
+            id: `scene-${String(i + 1).padStart(2, '0')}`,
+            name: analysis.name,
+            description: analysis.description,
+            type: analysis.type,
+          }),
+        );
+      }
+
+      const storyboard = createStoryboard(project, scenes);
+      const files = projectFiles(projectPath);
+      previousStoryboard = await loadStoryboard(projectPath);
+      transactionDir = path.join(tmpDir, `generate-storyboard-${randomUUID()}`);
+      await mkdir(transactionDir, { recursive: true });
+      await mkdir(files.recordingsDir, { recursive: true });
+      for (const scene of scenes) {
+        const destination = path.join(files.recordingsDir, `${scene.id}.mp4`);
+        const backup = path.join(transactionDir, `${scene.id}.mp4`);
+        try {
+          await copyFile(destination, backup);
+          recordingBackups.push({ destination, backup });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          recordingBackups.push({ destination });
+        }
+      }
+
+      mutationStarted = true;
+      await saveStoryboard(projectPath, storyboard);
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        await ingest(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
+      }
+
+      const generated = await loadStoryboard(projectPath);
+      if (!generated) throw new Error('Generated storyboard could not be loaded.');
+      return generated;
+    } catch (error) {
+      let rollbackFailed = false;
+      if (mutationStarted) {
+        for (const { destination, backup } of recordingBackups) {
+          try {
+            if (backup) await copyFile(backup, destination);
+            else await unlink(destination).catch((unlinkError: NodeJS.ErrnoException) => {
+              if (unlinkError.code !== 'ENOENT') throw unlinkError;
+            });
+          } catch {
+            rollbackFailed = true;
+          }
+        }
+        try {
+          if (previousStoryboard) {
+            await saveStoryboard(projectPath, previousStoryboard);
+          } else {
+            await unlink(projectFiles(projectPath).storyboard).catch((unlinkError: NodeJS.ErrnoException) => {
+              if (unlinkError.code !== 'ENOENT') throw unlinkError;
+            });
+          }
+        } catch {
+          rollbackFailed = true;
+        }
+      }
+      if (rollbackFailed) {
+        req.log.error({ projectId: id, errorName: 'StoryboardRollbackError' }, 'Recording storyboard rollback was incomplete');
+        return reply.status(500).send({
+          error: 'Storyboard generation failed and cleanup was incomplete. Review the project recordings before retrying.',
+          code: 'storyboard_rollback_failed',
+        });
+      }
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'StoryboardGenerationError' }, 'Recording storyboard generation failed');
+      return reply.status(500).send({
+        error: 'Storyboard generation failed. Your existing storyboard was not changed.',
+        code: 'storyboard_generation_failed',
+      });
+    } finally {
+      await Promise.all(uploadedFiles.map(({ tmpFile }) => unlink(tmpFile).catch(() => {})));
+      if (transactionDir) await rm(transactionDir, { recursive: true, force: true }).catch(() => {});
     }
-
-    // Analyze each recording to generate scene descriptions
-    const scenes: Scene[] = [];
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      const analysis = await analyzeRecording(
-        {
-          filename: uploadedFiles[i]!.filename,
-          duration_sec: metadatas[i]!.duration_sec,
-          width: metadatas[i]!.width,
-          height: metadatas[i]!.height,
-          sceneIndex: i,
-          totalScenes: uploadedFiles.length,
-          projectObjective,
-          projectAudience,
-          projectPath: entry.path,
-        },
-        llm,
-        workspaceRoot,
-      );
-
-      scenes.push(
-        SceneSchema.parse({
-          id: `scene-${String(i + 1).padStart(2, '0')}`,
-          name: analysis.name,
-          description: analysis.description,
-          type: analysis.type,
-        }),
-      );
-    }
-
-    // Create storyboard
-    const project = {
-      id: entry.id,
-      name: entry.name,
-      path: entry.path,
-      created: entry.lastOpened ?? new Date().toISOString(),
-      brand: null,
-    };
-    const storyboard = createStoryboard(project, scenes);
-    await saveStoryboard(projectPath, storyboard);
-
-    // Now ingest each recording to its scene
-    const files = projectFiles(projectPath);
-    await mkdir(files.recordingsDir, { recursive: true });
-
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      await ingestRecording(projectPath, scenes[i]!.id, uploadedFiles[i]!.tmpFile, metadatas[i]!);
-    }
-
-    // Clean up temp files
-    for (const { tmpFile } of uploadedFiles) {
-      await unlink(tmpFile).catch(() => {});
-    }
-
-    // Return the final storyboard (with recordings attached)
-    const finalSb = await loadStoryboard(projectPath);
-    return finalSb;
   });
 
   // POST /api/projects/:id/recordings/propose-split — upload a single file, get AI-proposed scene boundaries
   app.post('/api/projects/:id/recordings/propose-split', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const files = projectFiles(entry.path);
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const files = projectFiles(project.path);
     await mkdir(files.recordingsDir, { recursive: true });
 
     const data = await req.file();
@@ -472,32 +642,72 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'No file uploaded', code: 'no_file' });
     }
 
-    // Save uploaded file as _source.mp4
+    let general;
+    try {
+      general = await router.resolveText('general', project);
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'BoundaryRoutingError' }, 'Recording boundary routing failed');
+      return reply.status(503).send({
+        error: 'The assigned model for general is unavailable. Check its configuration in project model settings.',
+        code: 'model_unavailable',
+        role: 'general',
+      });
+    }
+
+    // Stage the upload and replace the durable source only after the model
+    // returns valid boundaries. A provider failure preserves the prior source.
     const sourcePath = path.join(files.recordingsDir, '_source.mp4');
+    const stagedSourcePath = path.join(files.recordingsDir, `._source-${randomUUID()}.mp4`);
     const chunks: Buffer[] = [];
     for await (const chunk of data.file) {
       chunks.push(chunk);
     }
-    await writeFile(sourcePath, Buffer.concat(chunks));
+    await writeFile(stagedSourcePath, Buffer.concat(chunks));
 
-    // Probe metadata
-    const metadata = await probe(sourcePath);
-
-    // Propose boundaries via LLM
-    const boundaries = await proposeBoundaries(
-      { duration_sec: metadata.duration_sec, filename: '_source.mp4' },
-      llm,
-      workspaceRoot,
-    );
-
-    return { boundaries, sourceFile: '_source.mp4', metadata };
+    try {
+      const metadata = await probe(stagedSourcePath);
+      const boundaries = await proposeBoundaries(
+        { duration_sec: metadata.duration_sec, filename: '_source.mp4' },
+        general.client,
+        workspaceRoot,
+      );
+      await rename(stagedSourcePath, sourcePath);
+      return { boundaries, sourceFile: '_source.mp4', metadata };
+    } catch (error) {
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ projectId: id, errorName: 'BoundaryProposalError' }, 'Recording boundary proposal failed');
+      return reply.status(500).send({
+        error: 'Recording boundary proposal failed. Your existing source recording was not changed.',
+        code: 'boundary_proposal_failed',
+      });
+    } finally {
+      await unlink(stagedSourcePath).catch(() => {});
+    }
   });
 
   // POST /api/projects/:id/recordings/execute-split — split source file at given boundaries
   app.post('/api/projects/:id/recordings/execute-split', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const entry = await resolveProjectEntry(store, id);
-    const files = projectFiles(entry.path);
+    let project;
+    try {
+      project = await store.readProject(id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const files = projectFiles(project.path);
 
     const body = req.body as { boundaries?: SceneBoundary[] } | null;
     if (!body?.boundaries || !Array.isArray(body.boundaries) || body.boundaries.length === 0) {
@@ -521,15 +731,8 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
     });
 
     // Create and save storyboard
-    const project = {
-      id: entry.id,
-      name: entry.name,
-      path: entry.path,
-      created: entry.lastOpened ?? new Date().toISOString(),
-      brand: null,
-    };
     const storyboard = createStoryboard(project, scenes);
-    await saveStoryboard(entry.path, storyboard);
+    await saveStoryboard(project.path, storyboard);
 
     // Ingest each clip
     for (const sr of splitResults) {
@@ -540,11 +743,11 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
         codec: 'h264', fps: 30,
         size_bytes: 0,
       };
-      await ingestRecording(entry.path, sr.sceneId, clipPath, clipMeta);
+      await ingestRecording(project.path, sr.sceneId, clipPath, clipMeta);
     }
 
     // Return final storyboard
-    const finalSb = await loadStoryboard(entry.path);
+    const finalSb = await loadStoryboard(project.path);
     return finalSb ?? storyboard;
   });
 
@@ -558,13 +761,18 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
   // overwriting whatever the user might have manually edited. Default
   // false preserves the prior behaviour.
   //
-  // Video-grounded mode (Gemini-only) uploads the recording to the Files
-  // API so the model describes what's actually on screen. Falls back to
-  // text-only when the active provider isn't Gemini, the registry is
-  // unavailable, or the flag is false.
+  // Grounded and text-only analysis are explicit, separate paths. Grounded
+  // failures never fall back to metadata-only analysis.
   app.post('/api/projects/:id/scenes/:sceneId/analyze', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
-    const body = (req.body ?? {}) as { groundInVideo?: boolean; dryRun?: boolean };
+    const parsedBody = AnalyzeBodySchema.safeParse(req.body === undefined ? {} : req.body);
+    if (!parsedBody.success) {
+      return reply.status(400).send({
+        error: 'groundInVideo and dryRun must be booleans when provided.',
+        code: 'invalid_request',
+      });
+    }
+    const body = parsedBody.data;
 
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -582,110 +790,136 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       });
     }
 
-    // Reuse the same metadata-loading path the upload uses so re-analyze
-    // matches first-analyze behaviour exactly.
-    let projectObjective: string | undefined;
-    let projectAudience: string | undefined;
+    const mode: 'text' | 'video' = body.groundInVideo === true ? 'video' : 'text';
     try {
       const project = await store.readProject(entry.id);
-      projectObjective = project.objective;
-      projectAudience = project.audience;
-    } catch {
-      // Missing project.yaml shouldn't block re-analyze.
-    }
+      const videoModel = mode === 'video' ? await router.resolveVideo(project) : undefined;
+      const generalModel = mode === 'text' ? await router.resolveText('general', project) : undefined;
 
-    const analysisInput = {
-      filename: scene.recording.source.split('/').pop() ?? scene.recording.source,
-      duration_sec: scene.recording.duration_sec ?? 0,
-      // Re-derive width/height. Cheap (one ffprobe), but we already have
-      // duration in storyboard so we don't need to ffprobe just for that.
-      width: 0,
-      height: 0,
-      sceneIndex: sb.scenes.findIndex((s) => s.id === sceneId),
-      totalScenes: sb.scenes.length,
-      projectObjective,
-      projectAudience,
-      projectPath: entry.path,
-    };
-    try {
-      const meta = await probe(path.join(entry.path, scene.recording.source));
-      analysisInput.width = meta.width;
-      analysisInput.height = meta.height;
-    } catch {
-      // ffprobe failure isn't fatal; the analyzer just gets 0x0 which the
-      // prompt will mention but the model can ignore.
-    }
+      return await deps.agentRecordingCoordinator.withManualUploadReservation(
+        id,
+        [sceneId],
+        async () => {
+          const started = await loadVersionedSceneRecording(
+            entry.path,
+            sceneId,
+            fingerprintRecording,
+          );
+          const operationScene = started.scene;
+          const analysisInput = {
+            filename: operationScene.recording!.source.split('/').pop()
+              ?? operationScene.recording!.source,
+            duration_sec: operationScene.recording!.duration_sec ?? 0,
+            width: 0,
+            height: 0,
+            sceneIndex: started.storyboard.scenes.findIndex(
+              (candidate) => candidate.id === sceneId,
+            ),
+            totalScenes: started.storyboard.scenes.length,
+            projectObjective: project.objective,
+            projectAudience: project.audience,
+            projectPath: entry.path,
+          };
+          try {
+            const meta = await probe(started.version.path);
+            analysisInput.width = meta.width;
+            analysisInput.height = meta.height;
+          } catch {
+            // Probe failure is non-fatal; text analysis can proceed with 0x0 and
+            // grounded analysis obtains authoritative dimensions from its brief.
+          }
 
-    const active = registry?.getActive();
-    const canUseVideo =
-      body.groundInVideo === true && active?.provider === 'gemini' && !!active.apiKey;
+          let analysis;
+          let expectedVersion = started.version;
+          if (mode === 'video' && videoModel) {
+            const brief = await videoUnderstanding.ensureBrief({
+              projectPath: entry.path,
+              sceneId,
+              sceneName: operationScene.name,
+              videoPath: started.version.path,
+              videoMimeType: 'video/mp4',
+            }, videoModel, (phase) => {
+              app.log.info(
+                { ...safeSceneDiagnosticFields(sceneId), phase },
+                'video-grounded analysis phase',
+              );
+            });
+            expectedVersion = { path: brief.source.path, sha256: brief.source.sha256 };
+            if (
+              expectedVersion.path !== started.version.path
+              || expectedVersion.sha256 !== started.version.sha256
+            ) {
+              throw new RecordingVersionConflictError();
+            }
+            analysis = proposeSceneMetadataFromBrief(operationScene, brief);
+          } else if (generalModel) {
+            analysis = await analyzeRecording(analysisInput, generalModel.client, workspaceRoot);
+          } else {
+            throw new Error('No analysis model was resolved.');
+          }
+          const validatedScene = SceneSchema.parse({ ...operationScene, ...analysis });
+          const proposal: Pick<Scene, 'name' | 'description' | 'type'> = {
+            name: validatedScene.name,
+            description: validatedScene.description,
+            type: validatedScene.type,
+          };
 
-    let analysis;
-    let mode: 'text' | 'video' = 'text';
-    try {
-      if (canUseVideo && active) {
-        mode = 'video';
-        analysis = await analyzeRecordingWithVideo(
-          {
-            ...analysisInput,
-            videoPath: path.join(entry.path, scene.recording.source),
-            videoMimeType: 'video/mp4',
-          },
-          { apiKey: active.apiKey!, model: active.model },
-          workspaceRoot,
-          llm,
-          (phase, detail) => {
-            app.log.info({ sceneId, phase, detail }, 'video-grounded analysis phase');
-          },
-        );
-      } else {
-        analysis = await analyzeRecording(analysisInput, llm, workspaceRoot);
+          const latest = await loadSceneAtRecordingVersion(
+            entry.path,
+            sceneId,
+            expectedVersion,
+            fingerprintRecording,
+          );
+
+          if (body.dryRun) {
+            return {
+              sceneId,
+              dryRun: true,
+              proposed: proposal,
+              current: {
+                name: operationScene.name,
+                description: operationScene.description,
+                type: operationScene.type,
+              },
+              mode,
+              recordingVersion: latest.version.sha256,
+            };
+          }
+
+          await saveStoryboard(
+            entry.path,
+            updateScene(latest.storyboard, sceneId, proposal),
+          );
+
+          return {
+            sceneId,
+            ...proposal,
+            mode,
+            recordingVersion: latest.version.sha256,
+          };
+        },
+      );
+    } catch (error) {
+      warnAnalysisFailure(error, sceneId, 'Scene re-analysis failed');
+      if (error instanceof RecordingVersionConflictError) {
+        return reply.status(409).send({
+          error: 'The recording changed during analysis. Run Re-analyze again.',
+          code: error.code,
+        });
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      app.log.error({ err: msg }, 'scene re-analysis failed');
+      if (error instanceof ModelRoutingError) {
+        return reply.status(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
       return reply.status(500).send({
-        error: `Scene analysis failed: ${msg}`,
-        code: 'analyze_failed',
+        error: VIDEO_ANALYSIS_FAILED_MESSAGE,
+        code: 'video_analysis_failed',
       });
     }
 
-    // dryRun: return proposed values + a snapshot of the current scene's
-    // values so the UI can show a diff and require explicit Apply.
-    if (body.dryRun) {
-      return {
-        sceneId,
-        dryRun: true,
-        proposed: {
-          name: analysis.name,
-          description: analysis.description,
-          type: analysis.type,
-        },
-        current: {
-          name: scene.name,
-          description: scene.description,
-          type: scene.type,
-        },
-        mode,
-      };
-    }
-
-    // Persist the new name/description/type. Don't touch other scene
-    // fields (recording, narration, lower_thirds, overlay_render, etc.).
-    const updated = updateScene(sb, sceneId, {
-      name: analysis.name,
-      description: analysis.description,
-      type: analysis.type,
-    });
-    await saveStoryboard(entry.path, updated);
-
-    return {
-      sceneId,
-      name: analysis.name,
-      description: analysis.description,
-      type: analysis.type,
-      mode,
-    };
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/metadata — apply a proposed
@@ -707,6 +941,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       //   • undefined / missing (leave the existing value alone)
       frame_style?: string | null;
       frame_background?: string | null;
+      recordingVersion?: string;
     };
     const entry = await resolveProjectEntry(store, id);
     const sb = await loadStoryboard(entry.path);
@@ -718,78 +953,121 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
     }
 
-    // Only update fields actually provided. Empty strings are honoured
-    // for description (user might want to clear it); name has a min(1)
-    // validation in SceneSchema so reject empty.
-    const patch: Partial<typeof scene> = {};
-    if (typeof body.name === 'string') {
-      if (body.name.trim().length === 0) {
-        return reply.status(400).send({ error: 'name cannot be empty', code: 'invalid_request' });
-      }
-      patch.name = body.name.trim();
-    }
-    if (typeof body.description === 'string') patch.description = body.description;
-    if (body.type) patch.type = body.type;
-
-    // Transition fields — `null` clears the value, undefined leaves it alone.
-    if (body.transition !== undefined) {
-      if (body.transition === null || body.transition === 'cut') {
-        patch.transition = undefined;
-        patch.transition_duration_sec = undefined;
-      } else {
-        const parsed = SceneTransitionSchema.safeParse(body.transition);
-        if (!parsed.success) {
-          return reply.status(400).send({ error: `invalid transition: ${body.transition}`, code: 'invalid_request' });
+    const persistMetadata = async (currentStoryboard: typeof sb) => {
+      // Only update fields actually provided. Empty strings are honoured
+      // for description (user might want to clear it); name has a min(1)
+      // validation in SceneSchema so reject empty.
+      const patch: Partial<Scene> = {};
+      if (typeof body.name === 'string') {
+        if (body.name.trim().length === 0) {
+          return reply.status(400).send({ error: 'name cannot be empty', code: 'invalid_request' });
         }
-        patch.transition = parsed.data;
+        patch.name = body.name.trim();
       }
+      if (typeof body.description === 'string') patch.description = body.description;
+      if (body.type) patch.type = body.type;
+
+      // Transition fields — `null` clears the value, undefined leaves it alone.
+      if (body.transition !== undefined) {
+        if (body.transition === null || body.transition === 'cut') {
+          patch.transition = undefined;
+          patch.transition_duration_sec = undefined;
+        } else {
+          const parsed = SceneTransitionSchema.safeParse(body.transition);
+          if (!parsed.success) {
+            return reply.status(400).send({ error: `invalid transition: ${body.transition}`, code: 'invalid_request' });
+          }
+          patch.transition = parsed.data;
+        }
+      }
+      if (body.transition_duration_sec !== undefined) {
+        if (body.transition_duration_sec === null) {
+          patch.transition_duration_sec = undefined;
+        } else if (
+          typeof body.transition_duration_sec !== 'number' ||
+          body.transition_duration_sec < 0.1 ||
+          body.transition_duration_sec > 5
+        ) {
+          return reply.status(400).send({ error: 'transition_duration_sec must be 0.1–5', code: 'invalid_request' });
+        } else {
+          patch.transition_duration_sec = body.transition_duration_sec;
+        }
+      }
+
+      // Frame style / background — `null` clears the per-scene override and
+      // makes the scene fall back to the storyboard default; `undefined` leaves
+      // the existing value alone.
+      if (body.frame_style !== undefined) {
+        patch.frame_style = body.frame_style === null ? undefined : body.frame_style;
+      }
+      if (body.frame_background !== undefined) {
+        const bg = body.frame_background;
+        if (bg === null) {
+          patch.frame_background = undefined;
+        } else if (bg === 'brand' || bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(bg)) {
+          patch.frame_background = bg as 'brand' | 'transparent' | `#${string}`;
+        } else {
+          return reply.status(400).send({
+            error: 'frame_background must be "brand", "transparent", or a #RRGGBB hex',
+            code: 'invalid_request',
+          });
+        }
+      }
+
+      const updated = updateScene(currentStoryboard, sceneId, patch);
+      await saveStoryboard(entry.path, updated);
+      const next = updated.scenes.find((candidate) => candidate.id === sceneId);
+      return {
+        sceneId,
+        name: next?.name,
+        description: next?.description,
+        type: next?.type,
+        transition: next?.transition,
+        transition_duration_sec: next?.transition_duration_sec,
+        frame_style: next?.frame_style,
+        frame_background: next?.frame_background,
+      };
+    };
+
+    const appliesAnalyzedMetadata = ['name', 'description', 'type'].some((field) =>
+      Object.prototype.hasOwnProperty.call(body, field));
+    if (!scene.recording?.source || !appliesAnalyzedMetadata) {
+      return persistMetadata(sb);
     }
-    if (body.transition_duration_sec !== undefined) {
-      if (body.transition_duration_sec === null) {
-        patch.transition_duration_sec = undefined;
-      } else if (
-        typeof body.transition_duration_sec !== 'number' ||
-        body.transition_duration_sec < 0.1 ||
-        body.transition_duration_sec > 5
-      ) {
-        return reply.status(400).send({ error: 'transition_duration_sec must be 0.1–5', code: 'invalid_request' });
-      } else {
-        patch.transition_duration_sec = body.transition_duration_sec;
-      }
+    if (
+      typeof body.recordingVersion !== 'string'
+      || !RECORDING_VERSION_PATTERN.test(body.recordingVersion)
+    ) {
+      return reply.status(409).send({
+        error: 'Run Re-analyze again before applying scene metadata.',
+        code: 'recording_version_required',
+      });
     }
 
-    // Frame style / background — `null` clears the per-scene override and
-    // makes the scene fall back to the storyboard default; `undefined` leaves
-    // the existing value alone.
-    if (body.frame_style !== undefined) {
-      patch.frame_style = body.frame_style === null ? undefined : body.frame_style;
-    }
-    if (body.frame_background !== undefined) {
-      const bg = body.frame_background;
-      if (bg === null) {
-        patch.frame_background = undefined;
-      } else if (bg === 'brand' || bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(bg)) {
-        patch.frame_background = bg as 'brand' | 'transparent' | `#${string}`;
-      } else {
-        return reply.status(400).send({
-          error: 'frame_background must be "brand", "transparent", or a #RRGGBB hex',
-          code: 'invalid_request',
+    try {
+      return await deps.agentRecordingCoordinator.withManualUploadReservation(
+        id,
+        [sceneId],
+        async () => {
+          const current = await loadVersionedSceneRecording(
+            entry.path,
+            sceneId,
+            fingerprintRecording,
+          );
+          if (current.version.sha256 !== body.recordingVersion) {
+            throw new RecordingVersionConflictError();
+          }
+          return persistMetadata(current.storyboard);
+        },
+      );
+    } catch (error) {
+      if (error instanceof RecordingVersionConflictError) {
+        return reply.status(409).send({
+          error: 'The recording changed since this proposal was created. Run Re-analyze again.',
+          code: error.code,
         });
       }
+      throw error;
     }
-
-    const updated = updateScene(sb, sceneId, patch);
-    await saveStoryboard(entry.path, updated);
-    const next = updated.scenes.find((s) => s.id === sceneId);
-    return {
-      sceneId,
-      name: next?.name,
-      description: next?.description,
-      type: next?.type,
-      transition: next?.transition,
-      transition_duration_sec: next?.transition_duration_sec,
-      frame_style: next?.frame_style,
-      frame_background: next?.frame_background,
-    };
   });
 }

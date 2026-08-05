@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import { registerSetupRoutes } from './setup.js';
+import { probeModelAssignments } from '../services/setup/probes.js';
+import type { ModelRouter } from '../services/llm/model-router.js';
 
 const ready = {
   state: 'ready' as const,
@@ -16,7 +18,7 @@ const ready = {
 function deps() {
   return {
     tts: {} as never,
-    llm: {} as never,
+    router: { describe: vi.fn() } as never,
     vpaHome: '/tmp/vpa',
     capRuntime: {
       getStatus: vi.fn(async () => ready),
@@ -70,5 +72,52 @@ describe('Cap setup routes', () => {
     expect(conflict.statusCode).toBe(409);
     const failure = await app.inject({ method: 'POST', url: '/api/setup/cap/install', payload: { confirmed: true } });
     expect(failure.statusCode).toBe(500);
+  });
+});
+
+describe('task-model setup probes', () => {
+  it('describes all three assignments independently without running completions', async () => {
+    const describeRole = vi.fn(async (role: 'video-understanding' | 'writing' | 'general') => {
+      if (role === 'writing') {
+        return {
+          role,
+          scope: 'global' as const,
+          ready: false as const,
+          code: 'model_assignment_missing' as const,
+          message: 'No writing model is assigned.',
+        };
+      }
+      return {
+        role,
+        scope: 'global' as const,
+        entry_id: `${role}-model`,
+        provider: role === 'video-understanding' ? 'gemini' as const : 'fake' as const,
+        model: `test-${role}`,
+        name: role === 'video-understanding' ? 'Vision' : 'General',
+        capabilities: { text: true, video: role === 'video-understanding' },
+        ready: true as const,
+      };
+    });
+
+    const results = await probeModelAssignments(
+      { describe: describeRole } as unknown as Pick<ModelRouter, 'describe'>,
+    );
+
+    expect(results.map((result) => result.id)).toEqual([
+      'model-routing-video-understanding',
+      'model-routing-writing',
+      'model-routing-general',
+    ]);
+    expect(results).toContainEqual(expect.objectContaining({
+      role: 'writing',
+      status: 'fail',
+      code: 'model_assignment_missing',
+    }));
+    expect(describeRole).toHaveBeenCalledTimes(3);
+    expect(describeRole.mock.calls.map(([role]) => role)).toEqual([
+      'video-understanding',
+      'writing',
+      'general',
+    ]);
   });
 });

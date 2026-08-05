@@ -1,7 +1,15 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
+import { Link } from 'react-router-dom';
+import { ApiError, settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
+import { ModelAssignments } from '../components/ModelAssignments.js';
+import {
+  boundedMessage,
+  isEffectiveProjectRoutingQuery,
+  modelEditDraft,
+  MODEL_ASSIGNMENT_ROWS,
+} from '../lib/model-routing.js';
 
 type Provider = ModelEntry['provider'];
 
@@ -30,89 +38,199 @@ const card: React.CSSProperties = {
   transition: 'border-color 150ms ease',
 };
 
-const activeCard: React.CSSProperties = {
-  ...card,
-  border: '2px solid var(--accent)',
-  background: 'var(--accent-bg)',
-};
+interface ModelReferences {
+  globalRoles: Array<'video-understanding' | 'writing' | 'general'>;
+  projects: Array<{
+    id: string;
+    name: string;
+    roles: Array<'video-understanding' | 'writing' | 'general'>;
+  }>;
+  truncated: boolean;
+}
 
-const badge: React.CSSProperties = {
-  fontSize: 10,
-  padding: '3px 8px',
-  borderRadius: 999,
-  fontWeight: 600,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5,
-};
+function roleLabel(role: ModelReferences['globalRoles'][number]): string {
+  return MODEL_ASSIGNMENT_ROWS.find(([candidate]) => candidate === role)?.[1] ?? role;
+}
+
+function parseModelReferences(value: unknown): ModelReferences | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  const knownRole = (role: unknown): role is ModelReferences['globalRoles'][number] =>
+    role === 'video-understanding' || role === 'writing' || role === 'general';
+  if (!Array.isArray(candidate.globalRoles) || !candidate.globalRoles.every(knownRole)) return undefined;
+  if (typeof candidate.truncated !== 'boolean' || !Array.isArray(candidate.projects)) return undefined;
+  const projects = candidate.projects.flatMap((project) => {
+    if (!project || typeof project !== 'object') return [];
+    const record = project as Record<string, unknown>;
+    if (typeof record.id !== 'string' || typeof record.name !== 'string'
+      || !Array.isArray(record.roles) || !record.roles.every(knownRole)) return [];
+    return [{ id: record.id, name: record.name, roles: record.roles }];
+  });
+  if (projects.length !== candidate.projects.length) return undefined;
+  return { globalRoles: candidate.globalRoles, projects, truncated: candidate.truncated };
+}
 
 function ModelCard({
   entry,
-  onActivate,
   onDelete,
-  activating,
+  onUpdate,
+  deleteError,
+  deleteMessage,
 }: {
   entry: ModelEntry;
-  onActivate: () => void;
   onDelete: () => void;
-  activating: boolean;
+  onUpdate: (patch: { name?: string; model?: string; endpoint?: string; apiKey?: string }) => Promise<void>;
+  deleteError?: ModelReferences;
+  deleteMessage?: string;
 }) {
   const meta = providerMeta(entry.provider);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(() => modelEditDraft(entry));
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (editing) return;
+    setDraft(modelEditDraft(entry));
+  }, [editing, entry.endpoint, entry.model, entry.name]);
+
+  async function save() {
+    setSaving(true);
+    setError('');
+    try {
+      const savedDraft = {
+        name: draft.name.trim(),
+        model: draft.model.trim(),
+        endpoint: draft.endpoint.trim(),
+        apiKey: '',
+      };
+      await onUpdate({
+        name: savedDraft.name,
+        model: savedDraft.model,
+        ...(meta.needsEndpoint ? { endpoint: savedDraft.endpoint } : {}),
+        ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}),
+      });
+      setDraft(savedDraft);
+      setEditing(false);
+    } catch (saveError) {
+      setError(boundedMessage(saveError instanceof Error ? saveError.message : 'Could not save this model. Try again.'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div style={entry.active ? activeCard : card}>
-      <div>
-        <div style={{ fontWeight: 600, fontSize: 15 }}>
-          {entry.name}
-          {entry.active && (
-            <span style={{ ...badge, marginLeft: 8, background: 'var(--accent)', color: '#fff' }}>
-              Active
-            </span>
+    <div className="model-library-card">
+      {editing ? (
+        <div className="model-library-card__editor">
+          <label>
+            Display name
+            <input
+              value={draft.name}
+              onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+            />
+          </label>
+          <label>
+            Model name / ID
+            <input
+              value={draft.model}
+              onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+            />
+          </label>
+          {meta.needsEndpoint && (
+            <label>
+              API endpoint
+              <input
+                value={draft.endpoint}
+                onChange={(event) => setDraft((current) => ({ ...current, endpoint: event.target.value }))}
+              />
+            </label>
           )}
-        </div>
-        <div style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 4 }}>
-          {meta.label} &mdash; <code style={{ fontSize: 12 }}>{entry.model}</code>
-          {entry.endpoint && (
-            <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--fg-muted)' }}>
-              @ {entry.endpoint}
-            </span>
+          {meta.needsApiKey && (
+            <label>
+              Replace API key
+              <input
+                type="password"
+                value={draft.apiKey}
+                placeholder={entry.hasApiKey ? 'Leave blank to keep the saved key' : 'Add an API key'}
+                onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
+              />
+            </label>
           )}
+          {error && <p className="model-library-card__error" role="alert">{error}</p>}
+          <div className="model-library-card__actions">
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(modelEditDraft(entry));
+                setEditing(false);
+                setError('');
+              }}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn--accent"
+              onClick={() => void save()}
+              disabled={saving || !draft.name.trim() || !draft.model.trim()}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
         </div>
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        {!entry.active && (
-          <button
-            onClick={onActivate}
-            disabled={activating}
-            style={{
-              padding: '6px 14px',
-              borderRadius: 6,
-              border: '1px solid var(--accent)',
-              background: 'transparent',
-              color: 'var(--accent)',
-              cursor: 'pointer',
-              fontSize: 13,
-            }}
-          >
-            {activating ? 'Switching...' : 'Use This'}
-          </button>
-        )}
-        {!entry.active && (
-          <button
-            onClick={onDelete}
-            title="Remove this model configuration"
-            style={{
-              padding: '6px 10px',
-              borderRadius: 6,
-              border: '1px solid var(--danger, #c44)',
-              background: 'transparent',
-              color: 'var(--danger, #c44)',
-              cursor: 'pointer',
-              fontSize: 13,
-            }}
-          >
-            Remove
-          </button>
-        )}
-      </div>
+      ) : (
+        <>
+          <div className="model-library-card__summary">
+            <div className="model-library-card__titleline">
+              <strong>{entry.name}</strong>
+              <span className={`model-readiness model-readiness--${entry.ready ? 'ready' : 'attention'}`}>
+                {entry.ready ? 'Ready' : 'Needs attention'}
+              </span>
+              {entry.capabilities.text && <span className="model-capability">Text</span>}
+              {entry.capabilities.video && <span className="model-capability model-capability--video">Video</span>}
+            </div>
+            <div className="model-library-card__identity">
+              {meta.label} <span aria-hidden>·</span> <code>{entry.model}</code>
+              {entry.endpoint && <span className="model-library-card__endpoint">{entry.endpoint}</span>}
+            </div>
+            {!entry.ready && (
+              <p className="model-library-card__readiness">
+                {entry.readinessMessage ?? 'Check this model configuration, then check its status again.'}
+              </p>
+            )}
+          </div>
+          <div className="model-library-card__actions">
+            <button type="button" onClick={() => setEditing(true)}>Edit</button>
+            <button type="button" className="model-library-card__remove" onClick={onDelete}>
+              Remove
+            </button>
+          </div>
+        </>
+      )}
+      {error && !editing && <p className="model-library-card__error" role="alert">{error}</p>}
+      {deleteError && (
+        <div className="model-library-card__references" role="alert">
+          <strong>Reassign this model before deleting it.</strong>
+          {deleteError.globalRoles.length > 0 && (
+            <p>
+              Global jobs: {deleteError.globalRoles.map(roleLabel).join(', ')}.{' '}
+              <a href="#model-assignments">Update global assignments</a>
+            </p>
+          )}
+          {deleteError.projects.map((project) => (
+            <p key={project.id}>
+              {project.name}: {project.roles.map(roleLabel).join(', ')}.{' '}
+              <Link to={`/project/${encodeURIComponent(project.id)}#project-ai-models-title`}>
+                Open project AI models
+              </Link>
+            </p>
+          ))}
+          {deleteError.truncated && <p>More project references were omitted. Reassign those projects too.</p>}
+        </div>
+      )}
+      {deleteMessage && <p className="model-library-card__error" role="alert">{deleteMessage}</p>}
     </div>
   );
 }
@@ -604,6 +722,16 @@ function AddVoiceProfileForm({ onAdded }: { onAdded: () => void }) {
 export function Settings() {
   const qc = useQueryClient();
   const ui = useUi();
+  const [deleteErrors, setDeleteErrors] = useState<Record<string, ModelReferences>>({});
+  const [deleteMessages, setDeleteMessages] = useState<Record<string, string>>({});
+  const invalidateModelRouting = useCallback(async () => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
+      qc.invalidateQueries({
+        predicate: (query) => isEffectiveProjectRoutingQuery(query.queryKey),
+      }),
+    ]);
+  }, [qc]);
 
   // Models
   const { data: models, isLoading, error } = useQuery({
@@ -611,14 +739,69 @@ export function Settings() {
     queryFn: () => settingsApi.listModels(),
   });
 
-  const activateMutation = useMutation({
-    mutationFn: (id: string) => settingsApi.activateModel(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
+  const routingQuery = useQuery({
+    queryKey: ['settings', 'model-routing'],
+    queryFn: () => settingsApi.getModelRouting(),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => settingsApi.deleteModel(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
+    onMutate: (id) => {
+      setDeleteErrors((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setDeleteMessages((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    },
+    onSuccess: async (_data, id) => {
+      setDeleteErrors((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setDeleteMessages((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
+        invalidateModelRouting(),
+      ]);
+    },
+    onError: (deleteError, id) => {
+      if (!(deleteError instanceof ApiError) || deleteError.status !== 409) {
+        const reason = deleteError instanceof Error ? deleteError.message : 'The server did not accept the request.';
+        setDeleteMessages((current) => ({
+          ...current,
+          [id]: boundedMessage(`Could not remove this model. Check the connection, then try again. ${reason}`),
+        }));
+        return;
+      }
+      const payload = deleteError.payload;
+      if (!payload || typeof payload !== 'object' || !('code' in payload) || payload.code !== 'model_in_use'
+        || !('references' in payload)) {
+        setDeleteMessages((current) => ({
+          ...current,
+          [id]: 'Could not remove this model. Reload the page, then try again.',
+        }));
+        return;
+      }
+      const references = parseModelReferences(payload.references);
+      if (!references) {
+        setDeleteMessages((current) => ({
+          ...current,
+          [id]: 'Could not read the model references. Reload the page, then try again.',
+        }));
+        return;
+      }
+      setDeleteErrors((current) => ({ ...current, [id]: references }));
+    },
   });
 
   // Voice Profiles
@@ -644,18 +827,56 @@ export function Settings() {
       <header style={{ marginBottom: 32 }}>
         <h1>Settings</h1>
         <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: 0 }}>
-          Manage LLM models and TTS voice configurations
+          Assign AI specialists to production jobs and manage their connections.
         </p>
       </header>
 
-      {/* Models section */}
-      <section>
+      <section id="model-assignments" className="settings-model-assignments">
         <div className="section-header" style={{ marginBottom: 18 }}>
-          <span className="section-label">Models</span>
+          <span className="section-label">Model assignments</span>
         </div>
+        <p className="settings-section-intro">
+          Choose which model takes responsibility for each stable production job.
+        </p>
+        {routingQuery.isLoading && <p className="hint">Loading model assignments…</p>}
+        {routingQuery.error && (
+          <p className="model-routing-load-error" role="alert">
+            Could not load model assignments. Check that VPA is running, then reload this page.
+          </p>
+        )}
+        {models && routingQuery.data && (
+          <ModelAssignments
+            mode="global"
+            models={models}
+            routing={routingQuery.data}
+            onUpdate={async (update) => {
+              const next = await settingsApi.updateModelRouting(update);
+              qc.setQueryData(['settings', 'model-routing'], next);
+              await qc.invalidateQueries({
+                predicate: (query) => isEffectiveProjectRoutingQuery(query.queryKey),
+              });
+              return next;
+            }}
+          />
+        )}
+      </section>
+
+      {/* The catalog stays visually quiet: assignments above explain why an
+          entry exists before this library exposes provider maintenance. */}
+      <section id="model-library" className="settings-model-library">
+        <div className="section-header" style={{ marginBottom: 12 }}>
+          <span className="section-label">Model library</span>
+        </div>
+        <p className="settings-section-intro">
+          Add and maintain the provider connections available to the assignments above.
+        </p>
 
         {isLoading && <p className="hint">Loading models...</p>}
-        {error && <p style={{ color: 'var(--danger)' }}>Failed to load models.</p>}
+        {error && (
+          <p className="model-routing-load-error" role="alert">
+            Could not load the model library. Check that VPA is running, then reload this page.
+          </p>
+        )}
 
         {models && (
           <>
@@ -668,7 +889,15 @@ export function Settings() {
               <ModelCard
                 key={m.id}
                 entry={m}
-                onActivate={() => activateMutation.mutate(m.id)}
+                deleteError={deleteErrors[m.id]}
+                deleteMessage={deleteMessages[m.id]}
+                onUpdate={async (patch) => {
+                  await settingsApi.updateModel(m.id, patch);
+                  await Promise.all([
+                    qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
+                    invalidateModelRouting(),
+                  ]);
+                }}
                 onDelete={async () => {
                   const ok = await ui.confirm({
                     title: 'Delete this model configuration?',
@@ -678,10 +907,14 @@ export function Settings() {
                   });
                   if (ok) deleteMutation.mutate(m.id);
                 }}
-                activating={activateMutation.isPending && activateMutation.variables === m.id}
               />
             ))}
-            <AddModelForm onAdded={() => qc.invalidateQueries({ queryKey: ['settings', 'models'] })} />
+            <AddModelForm onAdded={() => {
+              void Promise.all([
+                qc.invalidateQueries({ queryKey: ['settings', 'models'] }),
+                invalidateModelRouting(),
+              ]);
+            }} />
           </>
         )}
       </section>

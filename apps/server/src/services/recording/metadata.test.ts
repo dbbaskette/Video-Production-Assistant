@@ -1,11 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { createFakeProbe, probeVideo } from './metadata.js';
+import { createFakeProbe, probeVideo, sha256File } from './metadata.js';
 import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
 describe('recording metadata', () => {
+  describe('sha256File', () => {
+    it('hashes a file as a stream', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'vpa-hash-'));
+      const file = join(dir, 'recording.mp4');
+      try {
+        await writeFile(file, 'video bytes');
+        await expect(sha256File(file)).resolves.toBe(
+          '96b050b919f3fca2fc8b6923537136a197ad13c583beb1438d1a12ccbc999c42',
+        );
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('createFakeProbe', () => {
     it('returns expected metadata shape', async () => {
       const probe = createFakeProbe();

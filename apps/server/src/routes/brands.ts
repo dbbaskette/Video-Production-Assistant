@@ -7,7 +7,7 @@ import { jobQueue } from '../lib/job-queue.js';
 import { listBrands, readBrand, deleteBrand, updateBrandDoc } from '../services/brand/store.js';
 import { runBrandExtractJob, runBrandGenerateJob } from '../services/brand-generation/index.js';
 import type { ExtractInput } from '../services/document-extract/index.js';
-import type { LlmClient } from '../services/llm/index.js';
+import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import { DesignMdFrontMatter, ProjectTrackerSchema, ProjectSchema } from '@vpa/shared';
 import { forkBrand } from '../services/brand/fork.js';
 import { setDefault } from '../services/brand/registry.js';
@@ -19,7 +19,7 @@ export interface BrandRouteOptions {
   registryFile: string;
   workspaceRoot: string;
   trackerPath?: string;
-  llm: LlmClient;
+  router: ModelRouter;
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.md', '.markdown', '.txt']);
@@ -70,7 +70,7 @@ export async function registerBrandRoutes(
   app: FastifyInstance,
   opts: BrandRouteOptions,
 ): Promise<void> {
-  const { paths, registryFile, workspaceRoot, llm } = opts;
+  const { paths, registryFile, workspaceRoot, router } = opts;
 
   // Track slugs that have an active extract job (to prevent duplicates before brand is persisted)
   const pendingSlugs = new Set<string>();
@@ -149,9 +149,37 @@ export async function registerBrandRoutes(
       return reply.code(409).send({ error: `Brand "${slug}" already exists` });
     }
 
-    // Create job
-    const job = jobQueue.create('brand.extract');
+    // Reserve before the first await after the duplicate check so concurrent
+    // requests cannot both pass validation for the same slug.
     pendingSlugs.add(slug);
+    let general;
+    try {
+      general = await router.resolveText('general');
+    } catch (error) {
+      pendingSlugs.delete(slug);
+      if (error instanceof ModelRoutingError) {
+        return reply.code(error.statusCode).send({
+          error: error.message,
+          code: error.code,
+          role: error.role,
+        });
+      }
+      req.log.error({ errorName: 'BrandRoutingError' }, 'Brand model routing failed');
+      return reply.code(503).send({
+        error: 'The assigned model for general is unavailable. Check its configuration in global model settings.',
+        code: 'model_unavailable',
+        role: 'general',
+      });
+    }
+
+    // Create job
+    let job: ReturnType<typeof jobQueue.create>;
+    try {
+      job = jobQueue.create('brand.extract');
+    } catch (error) {
+      pendingSlugs.delete(slug);
+      throw error;
+    }
 
     // Fire-and-forget extract
     runBrandExtractJob({
@@ -160,13 +188,16 @@ export async function registerBrandRoutes(
       paths,
       registryFile,
       workspaceRoot,
-      llm,
+      llm: general.client,
       slug,
       brandName: name,
       sources,
-    }).catch((err) => {
-      jobQueue.fail(job.id, String(err));
-      pendingSlugs.delete(slug);
+    }).catch(() => {
+      jobQueue.fail(job.id, 'Brand extraction failed. Review the source and general model configuration, then try again.');
+    }).finally(() => {
+      // Extraction intentionally retains the reservation while the job waits
+      // for user input, but a failed job is terminal and must release it.
+      if (jobQueue.get(job.id)?.status === 'failed') pendingSlugs.delete(slug);
     });
 
     return reply.code(202).send({ job_id: job.id, slug });
@@ -192,6 +223,25 @@ export async function registerBrandRoutes(
         });
       }
 
+      let general;
+      try {
+        general = await router.resolveText('general');
+      } catch (error) {
+        if (error instanceof ModelRoutingError) {
+          return reply.code(error.statusCode).send({
+            error: error.message,
+            code: error.code,
+            role: error.role,
+          });
+        }
+        req.log.error({ errorName: 'BrandRoutingError' }, 'Brand model routing failed');
+        return reply.code(503).send({
+          error: 'The assigned model for general is unavailable. Check its configuration in global model settings.',
+          code: 'model_unavailable',
+          role: 'general',
+        });
+      }
+
       const job = jobQueue.create('brand.generate');
 
       runBrandGenerateJob({
@@ -200,15 +250,15 @@ export async function registerBrandRoutes(
         paths,
         registryFile,
         workspaceRoot,
-        llm,
+        llm: general.client,
         slug,
         brandName: parsed.data.name,
         frontMatter: parsed.data,
       }).then(() => {
         // Brand is in the registry now — safe to remove from pending
         pendingSlugs.delete(slug);
-      }).catch((err) => {
-        jobQueue.fail(job.id, String(err));
+      }).catch(() => {
+        jobQueue.fail(job.id, 'Brand generation failed. Your existing brand was not changed.');
         pendingSlugs.delete(slug);
       });
 
@@ -415,13 +465,32 @@ export async function registerBrandRoutes(
         return reply.code(409).send({ error: 'No cached extraction available; resubmit sources' });
       }
 
+      let general;
+      try {
+        general = await router.resolveText('general');
+      } catch (error) {
+        if (error instanceof ModelRoutingError) {
+          return reply.code(error.statusCode).send({
+            error: error.message,
+            code: error.code,
+            role: error.role,
+          });
+        }
+        req.log.error({ errorName: 'BrandRoutingError' }, 'Brand model routing failed');
+        return reply.code(503).send({
+          error: 'The assigned model for general is unavailable. Check its configuration in global model settings.',
+          code: 'model_unavailable',
+          role: 'general',
+        });
+      }
+
       const job = jobQueue.create('brand.regenerate');
 
       (async () => {
         try {
           jobQueue.setStatus(job.id, 'running');
           const sysPrompt = await loadPrompt(workspaceRoot, 'brand-extract-tokens');
-          const tokens = await extractTokens(llm, {
+          const tokens = await extractTokens(general.client, {
             systemPrompt: sysPrompt,
             sourceMarkdown: cached,
             brandName: current.registry.name,
@@ -436,14 +505,14 @@ export async function registerBrandRoutes(
             paths,
             registryFile,
             workspaceRoot,
-            llm,
+            llm: general.client,
             slug,
             brandName: current.registry.name,
             frontMatter: nextFm,
             isUpdate: true,
           });
-        } catch (err: any) {
-          jobQueue.fail(job.id, err.message ?? String(err));
+        } catch {
+          jobQueue.fail(job.id, 'Brand regeneration failed. Your existing brand was not changed.');
         }
       })();
 

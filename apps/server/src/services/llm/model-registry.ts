@@ -1,49 +1,111 @@
 /**
  * Model registry — persists configured model entries in ~/.vpa/models.json.
  *
- * Each entry represents a configured LLM provider + model + endpoint.
- * Exactly one entry is marked active at a time.
+ * Version 2 stores role assignments separately from the configured catalog.
  */
 
 import { readFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { z } from 'zod';
+import {
+  ModelProviderSchema,
+  type ModelCapabilities,
+  type ModelTaskRole,
+} from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
+import { capabilitiesForProvider, configuredReadiness } from './factory.js';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type ModelProvider = 'fake' | 'gemini' | 'anthropic' | 'claude-code' | 'codex-cli' | 'openai-compat';
+export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 
 export interface ModelEntry {
   id: string;
-  name: string;           // display name, e.g. "Gemini Flash"
+  name: string;
   provider: ModelProvider;
-  model: string;          // model identifier sent to the API
-  endpoint?: string;      // only for openai-compat
-  apiKey?: string;        // stored locally — never sent to the browser
-  active: boolean;
+  model: string;
+  endpoint?: string;
+  apiKey?: string;
 }
 
 export interface ModelsFile {
+  version: 2;
   models: ModelEntry[];
+  assignments: Partial<Record<ModelTaskRole, string>>;
 }
 
-// ---------------------------------------------------------------------------
-// Seed defaults — built from env vars on first run
-// ---------------------------------------------------------------------------
+export interface SanitizedModelEntry extends Omit<ModelEntry, 'apiKey'> {
+  hasApiKey: boolean;
+  capabilities: ModelCapabilities;
+  ready: boolean;
+  readinessMessage?: string;
+}
+
+export const ModelEntrySchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(200),
+  provider: ModelProviderSchema,
+  model: z.string().min(1).max(500),
+  endpoint: z.string().max(2_048).optional(),
+  apiKey: z.string().max(20_000).optional(),
+}).strict();
+
+export const ModelEntryUpdateSchema = ModelEntrySchema
+  .omit({ id: true, provider: true })
+  .partial()
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, {
+    message: 'At least one editable model field is required.',
+  });
+export type ModelEntryUpdate = z.infer<typeof ModelEntryUpdateSchema>;
+
+const AssignmentSchema = z.object({
+  'video-understanding': z.string().min(1).max(200).optional(),
+  writing: z.string().min(1).max(200).optional(),
+  general: z.string().min(1).max(200).optional(),
+}).strict();
+
+const Version2ModelsFileSchema = z.object({
+  version: z.literal(2),
+  models: z.array(ModelEntrySchema),
+  assignments: AssignmentSchema,
+}).strict();
+
+const LegacyModelEntrySchema = ModelEntrySchema.extend({ active: z.boolean().optional() });
+
+const LegacyModelsFileSchema = z.object({
+  version: z.literal(1).optional(),
+  models: z.array(LegacyModelEntrySchema),
+}).passthrough();
+
+const DiskModelsFileSchema = z.union([Version2ModelsFileSchema, LegacyModelsFileSchema]);
+
+type LegacyModelsFile = z.infer<typeof LegacyModelsFileSchema>;
+
+export type ModelRegistryErrorCode =
+  | 'invalid_model'
+  | 'invalid_assignment'
+  | 'model_exists'
+  | 'model_not_found'
+  | 'persistence_failed';
+
+export class ModelRegistryError extends Error {
+  constructor(
+    readonly code: ModelRegistryErrorCode,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'ModelRegistryError';
+  }
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
 
 function seedFromEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
-  const entries: ModelEntry[] = [];
-
-  // Always include fake
-  entries.push({
-    id: 'fake',
-    name: 'Fake (deterministic)',
-    provider: 'fake',
-    model: 'fake',
-    active: false,
-  });
+  const entries: ModelEntry[] = [
+    { id: 'fake', name: 'Fake (deterministic)', provider: 'fake', model: 'fake' },
+  ];
 
   if (env.GEMINI_API_KEY) {
     entries.push({
@@ -52,7 +114,6 @@ function seedFromEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
       provider: 'gemini',
       model: env.GEMINI_MODEL || env.VPA_LLM_MODEL || 'gemini-2.5-flash-lite',
       apiKey: env.GEMINI_API_KEY,
-      active: false,
     });
   }
 
@@ -63,157 +124,247 @@ function seedFromEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
       provider: 'anthropic',
       model: env.ANTHROPIC_MODEL || env.VPA_LLM_MODEL || 'claude-sonnet-4-20250514',
       apiKey: env.ANTHROPIC_API_KEY,
-      active: false,
     });
   }
 
-  // Claude Code — always available if the CLI is installed
-  entries.push({
-    id: 'claude-code',
-    name: 'Claude Code (CLI)',
-    provider: 'claude-code',
-    model: env.CLAUDE_MODEL || 'sonnet',
-    active: false,
-  });
-
-  entries.push({
-    id: 'codex-cli',
-    name: 'Codex CLI',
-    provider: 'codex-cli',
-    model: env.CODEX_MODEL || 'default',
-    active: false,
-  });
-
-  // Mark the env-configured provider as active, or default to fake
-  const envProvider = env.VPA_LLM_PROVIDER ?? 'fake';
-  const activeEntry = entries.find((e) => e.provider === envProvider) ?? entries[0]!;
-  activeEntry.active = true;
+  entries.push(
+    { id: 'claude-code', name: 'Claude Code (CLI)', provider: 'claude-code', model: env.CLAUDE_MODEL || 'sonnet' },
+    { id: 'codex-cli', name: 'Codex CLI', provider: 'codex-cli', model: env.CODEX_MODEL || 'default' },
+  );
 
   return entries;
 }
 
-// ---------------------------------------------------------------------------
-// Registry class
-// ---------------------------------------------------------------------------
+function initialDataFromEnv(env: NodeJS.ProcessEnv): ModelsFile {
+  const models = seedFromEnv(env);
+  const textProvider = env.VPA_LLM_PROVIDER ?? 'fake';
+  const textEntry = models.find((entry) => entry.provider === textProvider) ?? models[0]!;
+  const videoEntry = models.find((entry) =>
+    entry.provider === 'gemini' && configuredReadiness(entry).ready,
+  );
+
+  return {
+    version: 2,
+    models,
+    assignments: {
+      writing: textEntry.id,
+      general: textEntry.id,
+      ...(videoEntry ? { 'video-understanding': videoEntry.id } : {}),
+    },
+  };
+}
+
+function migrateLegacy(legacy: LegacyModelsFile): ModelsFile {
+  const models = legacy.models.map(({ active: _active, ...entry }) => entry);
+  const previouslyActive = legacy.models.find((entry) => entry.active);
+  const readyGemini = models.find((entry) =>
+    entry.provider === 'gemini' && configuredReadiness(entry).ready,
+  );
+
+  return {
+    version: 2,
+    models,
+    assignments: {
+      ...(previouslyActive ? { writing: previouslyActive.id, general: previouslyActive.id } : {}),
+      ...(readyGemini ? { 'video-understanding': readyGemini.id } : {}),
+    },
+  };
+}
+
+function cloneModelsFile(data: ModelsFile): ModelsFile {
+  return Version2ModelsFileSchema.parse({
+    version: 2,
+    models: data.models.map((entry) => ({ ...entry })),
+    assignments: { ...data.assignments },
+  });
+}
+
+function mergeEnvEntries(
+  current: ModelsFile,
+  env: NodeJS.ProcessEnv,
+): { candidate: ModelsFile; changed: boolean } {
+  const candidate = cloneModelsFile(current);
+  const existingIds = new Set(candidate.models.map((entry) => entry.id));
+  const seeded = seedFromEnv(env);
+  const seededById = new Map(seeded.map((entry) => [entry.id, entry] as const));
+  let changed = false;
+
+  for (const entry of seeded) {
+    if (!existingIds.has(entry.id)) {
+      candidate.models.push(entry);
+      changed = true;
+    }
+  }
+
+  for (const entry of candidate.models) {
+    const fromEnv = seededById.get(entry.id);
+    if (!fromEnv) continue;
+    if (entry.model !== fromEnv.model) {
+      entry.model = fromEnv.model;
+      changed = true;
+    }
+    if (fromEnv.apiKey && entry.apiKey !== fromEnv.apiKey) {
+      entry.apiKey = fromEnv.apiKey;
+      changed = true;
+    }
+  }
+
+  return { candidate: Version2ModelsFileSchema.parse(candidate), changed };
+}
 
 export class ModelRegistry {
-  private filePath: string;
-  private data: ModelsFile = { models: [] };
+  private data: ModelsFile = { version: 2, models: [], assignments: {} };
+  private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(filePath: string) {
-    this.filePath = filePath;
-  }
+  constructor(
+    private readonly filePath: string,
+    private readonly persist: typeof atomicWriteFile = atomicWriteFile,
+  ) {}
 
   async load(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, 'utf8');
-      this.data = JSON.parse(raw) as ModelsFile;
-      // Merge any new env-configured entries that don't exist yet
-      this.mergeEnvEntries(env);
-    } catch {
-      // File doesn't exist yet — seed from env
-      this.data = { models: seedFromEnv(env) };
-      await this.save();
-    }
-  }
-
-  /** Merge env-configured entries that are missing from the persisted file,
-   *  and re-sync env-controlled fields (model id, API key) for the built-in
-   *  seeded entries. User-added entries (e.g. openai-compat) keep their own
-   *  config and are never overwritten by env.
-   */
-  private mergeEnvEntries(env: NodeJS.ProcessEnv): void {
-    const existingIds = new Set(this.data.models.map((m) => m.id));
-    const seeded = seedFromEnv(env);
-    const seededById = new Map(seeded.map((s) => [s.id, s] as const));
-    let changed = false;
-
-    for (const entry of seeded) {
-      if (!existingIds.has(entry.id)) {
-        entry.active = false; // don't override the user's active choice
-        this.data.models.push(entry);
-        changed = true;
-      }
+      raw = await readFile(this.filePath, 'utf8');
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+      const candidate = initialDataFromEnv(env);
+      await this.persistCandidate(candidate);
+      this.data = candidate;
+      return;
     }
 
-    // .env is the source of truth for the seeded built-in entries. If the
-    // user edits GEMINI_MODEL / ANTHROPIC_MODEL / CLAUDE_MODEL / CODEX_MODEL /
-    // API keys,
-    // those changes should win over whatever was persisted at first seed —
-    // otherwise models.json silently goes stale and the UI lies about which
-    // model the request actually hits.
-    for (const entry of this.data.models) {
-      const fromEnv = seededById.get(entry.id);
-      if (!fromEnv) continue;  // user-added entry, leave alone
-      if (fromEnv.model && entry.model !== fromEnv.model) {
-        entry.model = fromEnv.model;
-        changed = true;
-      }
-      if (fromEnv.apiKey && entry.apiKey !== fromEnv.apiKey) {
-        entry.apiKey = fromEnv.apiKey;
-        changed = true;
-      }
+    const parsed = DiskModelsFileSchema.parse(JSON.parse(raw));
+    const migrated = parsed.version === 2 ? parsed : migrateLegacy(parsed);
+    const merged = mergeEnvEntries(migrated, env);
+    // A valid v2 catalog is already the durable source of truth. Publish that
+    // exact disk state before attempting optional environment enrichment so a
+    // failed enrichment save cannot make runtime assignments disappear.
+    if (parsed.version === 2) this.data = cloneModelsFile(parsed);
+    if (parsed.version !== 2 || merged.changed) {
+      await this.persistCandidate(merged.candidate);
     }
-
-    if (changed) void this.save();
+    this.data = merged.candidate;
   }
 
-  list(): Array<Omit<ModelEntry, 'apiKey'> & { hasApiKey: boolean }> {
-    return this.data.models.map(({ apiKey, ...rest }) => ({
-      ...rest,
-      hasApiKey: !!apiKey,
-    }));
-  }
-
-  getActive(): ModelEntry | undefined {
-    return this.data.models.find((m) => m.active);
+  list(): SanitizedModelEntry[] {
+    return this.data.models.map(({ apiKey, ...entry }) => {
+      const readiness = configuredReadiness({ ...entry, apiKey });
+      return {
+        ...entry,
+        hasApiKey: Boolean(apiKey),
+        capabilities: capabilitiesForProvider(entry.provider),
+        ready: readiness.ready,
+        ...(readiness.message ? { readinessMessage: readiness.message } : {}),
+      };
+    });
   }
 
   getById(id: string): ModelEntry | undefined {
-    return this.data.models.find((m) => m.id === id);
+    const entry = this.data.models.find((candidate) => candidate.id === id);
+    return entry ? { ...entry } : undefined;
   }
 
-  async add(entry: Omit<ModelEntry, 'active'>): Promise<ModelEntry> {
-    if (this.data.models.some((m) => m.id === entry.id)) {
-      throw new Error(`Model "${entry.id}" already exists`);
-    }
-    const full: ModelEntry = { ...entry, active: this.data.models.length === 0 };
-    this.data.models.push(full);
-    await this.save();
-    return full;
+  getAssignment(role: ModelTaskRole): string | undefined {
+    return this.data.assignments[role];
   }
 
-  async update(id: string, patch: Partial<Omit<ModelEntry, 'id'>>): Promise<ModelEntry> {
-    const entry = this.data.models.find((m) => m.id === id);
-    if (!entry) throw new Error(`Model "${id}" not found`);
-    Object.assign(entry, patch);
-    await this.save();
-    return entry;
+  getAssignments(): Partial<Record<ModelTaskRole, string>> {
+    return { ...this.data.assignments };
   }
 
-  async activate(id: string): Promise<ModelEntry> {
-    const target = this.data.models.find((m) => m.id === id);
-    if (!target) throw new Error(`Model "${id}" not found`);
-    for (const m of this.data.models) m.active = false;
-    target.active = true;
-    await this.save();
-    return target;
+  async setAssignments(patch: Partial<Record<ModelTaskRole, string | null>>): Promise<void> {
+    await this.mutate((candidate) => {
+      for (const id of Object.values(patch)) {
+        if (id !== null && id !== undefined && !candidate.models.some((entry) => entry.id === id)) {
+          throw new ModelRegistryError('invalid_assignment', 'The assignment references an unknown model.');
+        }
+      }
+      for (const [role, id] of Object.entries(patch) as Array<[ModelTaskRole, string | null | undefined]>) {
+        if (id === null) delete candidate.assignments[role];
+        else if (id !== undefined) candidate.assignments[role] = id;
+      }
+      return { candidate, result: undefined };
+    });
+  }
+
+  async add(entry: ModelEntry): Promise<ModelEntry> {
+    const parsed = this.parseEntry(entry);
+    return this.mutate((candidate) => {
+      if (candidate.models.some((existing) => existing.id === parsed.id)) {
+        throw new ModelRegistryError('model_exists', 'A model with this ID already exists.');
+      }
+      candidate.models.push({ ...parsed });
+      return { candidate, result: { ...parsed } };
+    });
+  }
+
+  async update(id: string, patch: ModelEntryUpdate): Promise<ModelEntry> {
+    const parsedPatch = this.parseUpdate(patch);
+    return this.mutate((candidate) => {
+      const index = candidate.models.findIndex((entry) => entry.id === id);
+      if (index === -1) {
+        throw new ModelRegistryError('model_not_found', 'Model configuration was not found.');
+      }
+      const updated = this.parseEntry({ ...candidate.models[index]!, ...parsedPatch });
+      candidate.models[index] = updated;
+      return { candidate, result: { ...updated } };
+    });
   }
 
   async remove(id: string): Promise<void> {
-    const idx = this.data.models.findIndex((m) => m.id === id);
-    if (idx === -1) throw new Error(`Model "${id}" not found`);
-    const wasActive = this.data.models[idx]!.active;
-    this.data.models.splice(idx, 1);
-    // If we removed the active one, activate the first remaining
-    if (wasActive && this.data.models.length > 0) {
-      this.data.models[0]!.active = true;
-    }
-    await this.save();
+    await this.mutate((candidate) => {
+      const index = candidate.models.findIndex((entry) => entry.id === id);
+      if (index === -1) {
+        throw new ModelRegistryError('model_not_found', 'Model configuration was not found.');
+      }
+      candidate.models.splice(index, 1);
+      for (const [role, assignedId] of Object.entries(candidate.assignments) as Array<[ModelTaskRole, string]>) {
+        if (assignedId === id) delete candidate.assignments[role];
+      }
+      return { candidate, result: undefined };
+    });
   }
 
-  private async save(): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
-    await atomicWriteFile(this.filePath, JSON.stringify(this.data, null, 2) + '\n');
+  private parseEntry(entry: unknown): ModelEntry {
+    const parsed = ModelEntrySchema.safeParse(entry);
+    if (!parsed.success) {
+      throw new ModelRegistryError('invalid_model', 'Model configuration is invalid.');
+    }
+    return parsed.data;
+  }
+
+  private parseUpdate(patch: unknown): ModelEntryUpdate {
+    const parsed = ModelEntryUpdateSchema.safeParse(patch);
+    if (!parsed.success) {
+      throw new ModelRegistryError('invalid_model', 'Model configuration update is invalid.');
+    }
+    return parsed.data;
+  }
+
+  private mutate<T>(
+    build: (candidate: ModelsFile) => { candidate: ModelsFile; result: T },
+  ): Promise<T> {
+    const operation = this.mutationQueue.then(async () => {
+      const outcome = build(cloneModelsFile(this.data));
+      const candidate = Version2ModelsFileSchema.parse(outcome.candidate);
+      await this.persistCandidate(candidate);
+      this.data = candidate;
+      return outcome.result;
+    });
+    this.mutationQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async persistCandidate(candidate: ModelsFile): Promise<void> {
+    try {
+      await mkdir(dirname(this.filePath), { recursive: true });
+      await this.persist(this.filePath, JSON.stringify(candidate, null, 2) + '\n');
+    } catch (error) {
+      throw new ModelRegistryError(
+        'persistence_failed',
+        'Model settings could not be saved.',
+        { cause: error },
+      );
+    }
   }
 }

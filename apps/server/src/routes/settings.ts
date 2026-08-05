@@ -1,124 +1,138 @@
-import type { FastifyInstance } from 'fastify';
-import { ModelRegistry, type ModelProvider } from '../services/llm/model-registry.js';
-import { createLlmFromEntry } from '../services/llm/factory.js';
-import type { SwappableLlm } from '../services/llm/swappable.js';
-import { RetryingLlm } from '../services/llm/retrying.js';
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { ModelRoutingUpdateSchema } from '@vpa/shared';
+import {
+  ModelEntrySchema,
+  ModelEntryUpdateSchema,
+  ModelRegistry,
+  ModelRegistryError,
+} from '../services/llm/model-registry.js';
+import type { ModelRouter } from '../services/llm/model-router.js';
+import type { ModelRoutingCoordinator } from '../services/llm/model-routing-coordinator.js';
+import type { ProjectStore } from '../services/project/store.js';
 
 interface SettingsDeps {
   registry: ModelRegistry;
-  llm: SwappableLlm;
+  router: ModelRouter;
+  store: ProjectStore;
+  coordinator: ModelRoutingCoordinator;
+}
+
+const INVALID_MODEL_REQUEST = {
+  error: 'Model configuration request is invalid.',
+  code: 'invalid_request',
+} as const;
+
+function registryFailure(
+  reply: FastifyReply,
+  error: unknown,
+) {
+  if (error instanceof ModelRegistryError) {
+    switch (error.code) {
+      case 'invalid_model':
+      case 'invalid_assignment':
+        return reply.code(400).send({
+          error: error.code === 'invalid_assignment'
+            ? 'The selected model assignment is invalid.'
+            : INVALID_MODEL_REQUEST.error,
+          code: error.code === 'invalid_assignment' ? 'invalid_model_assignment' : 'invalid_request',
+        });
+      case 'model_exists':
+        return reply.code(409).send({ error: 'A model with this ID already exists.', code: 'model_exists' });
+      case 'model_not_found':
+        return reply.code(404).send({ error: 'Model configuration was not found.', code: 'model_not_found' });
+      case 'persistence_failed':
+        return reply.code(500).send({
+          error: 'Model settings could not be saved. Try again.',
+          code: 'settings_persistence_failed',
+        });
+    }
+  }
+  return reply.code(500).send({
+    error: 'Model settings could not be saved. Try again.',
+    code: 'settings_persistence_failed',
+  });
 }
 
 export async function registerSettingsRoutes(
   app: FastifyInstance,
   deps: SettingsDeps,
 ): Promise<void> {
-  const { registry, llm } = deps;
-
-  /** Build a retry-wrapped client to hand to the SwappableLlm. */
-  const wrap = (entry: Parameters<typeof createLlmFromEntry>[0]) =>
-    new RetryingLlm(createLlmFromEntry(entry), undefined, (m) => app.log.warn(m));
+  const { registry, router, coordinator } = deps;
 
   // ──────────────────── GET /api/settings/models ────────────────────
   app.get('/api/settings/models', async (_req, reply) => {
     return reply.send(registry.list());
   });
 
-  // ──────────────────── POST /api/settings/models ───────────────────
-  app.post<{
-    Body: {
-      id: string;
-      name: string;
-      provider: ModelProvider;
-      model: string;
-      endpoint?: string;
-      apiKey?: string;
-    };
-  }>('/api/settings/models', async (req, reply) => {
-    const { id, name, provider, model, endpoint, apiKey } = req.body;
+  app.get('/api/settings/model-routing', async (_req, reply) => {
+    return reply.send({
+      assignments: registry.getAssignments(),
+      resolved: await router.describeAll(),
+    });
+  });
 
-    if (!id || !name || !provider || !model) {
-      return reply.code(400).send({ error: 'id, name, provider, and model are required' });
+  app.put('/api/settings/model-routing', async (req, reply) => {
+    const parsed = ModelRoutingUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'Model assignment request is invalid.',
+        code: 'invalid_request',
+      });
     }
 
     try {
-      const entry = await registry.add({ id, name, provider, model, endpoint, apiKey });
+      await coordinator.setGlobalAssignments(parsed.data.assignments);
+      return reply.send({
+        assignments: registry.getAssignments(),
+        resolved: await router.describeAll(),
+      });
+    } catch (error) {
+      return registryFailure(reply, error);
+    }
+  });
+
+  // ──────────────────── POST /api/settings/models ───────────────────
+  app.post('/api/settings/models', async (req, reply) => {
+    const parsed = ModelEntrySchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send(INVALID_MODEL_REQUEST);
+
+    try {
+      const entry = await registry.add(parsed.data);
       return reply.code(201).send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
-    } catch (err: any) {
-      return reply.code(409).send({ error: err.message });
+    } catch (error) {
+      return registryFailure(reply, error);
     }
   });
 
   // ──────────────────── PUT /api/settings/models/:id ────────────────
-  app.put<{
-    Params: { id: string };
-    Body: {
-      name?: string;
-      model?: string;
-      endpoint?: string;
-      apiKey?: string;
-    };
-  }>('/api/settings/models/:id', async (req, reply) => {
+  app.put<{ Params: { id: string } }>('/api/settings/models/:id', async (req, reply) => {
+    const parsed = ModelEntryUpdateSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send(INVALID_MODEL_REQUEST);
     try {
-      const entry = await registry.update(req.params.id, req.body);
-      // If this is the active model, re-swap the LLM client
-      if (entry.active) {
-        llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
-      }
+      const entry = await registry.update(req.params.id, parsed.data);
       return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
-    } catch (err: any) {
-      return reply.code(404).send({ error: err.message });
+    } catch (error) {
+      return registryFailure(reply, error);
     }
   });
-
-  // ──────────────────── POST /api/settings/models/:id/activate ──────
-  app.post<{ Params: { id: string } }>(
-    '/api/settings/models/:id/activate',
-    async (req, reply) => {
-      try {
-        const entry = await registry.activate(req.params.id);
-        llm.swap(wrap(entry), `${entry.name} (${entry.model})`);
-        app.log.info(`Switched LLM to: ${entry.name} (${entry.provider}/${entry.model})`);
-        return reply.send({ ...entry, apiKey: undefined, hasApiKey: !!entry.apiKey });
-      } catch (err: any) {
-        return reply.code(404).send({ error: err.message });
-      }
-    },
-  );
 
   // ──────────────────── DELETE /api/settings/models/:id ──────────────
   app.delete<{ Params: { id: string } }>(
     '/api/settings/models/:id',
     async (req, reply) => {
       try {
-        const wasActive = registry.getById(req.params.id)?.active ?? false;
-        await registry.remove(req.params.id);
-        // If we removed the active one, swap to the new active
-        if (wasActive) {
-          const next = registry.getActive();
-          if (next) {
-            llm.swap(wrap(next), `${next.name} (${next.model})`);
-            app.log.info(`Switched LLM to: ${next.name} after removing active model`);
-          }
+        const references = await coordinator.deleteModel(req.params.id);
+        if (references) {
+          return reply.code(409).send({
+            code: 'model_in_use',
+            error: 'Reassign this model before deleting it.',
+            references,
+          });
         }
         return reply.code(204).send();
-      } catch (err: any) {
-        return reply.code(404).send({ error: err.message });
+      } catch (error) {
+        return registryFailure(reply, error);
       }
     },
   );
-
-  // ──────────────────── GET /api/settings/models/active ─────────────
-  app.get('/api/settings/models/active', async (_req, reply) => {
-    const active = registry.getActive();
-    if (!active) return reply.code(404).send({ error: 'No active model' });
-    return reply.send({
-      id: active.id,
-      name: active.name,
-      provider: active.provider,
-      model: active.model,
-      endpoint: active.endpoint,
-      label: llm.getLabel(),
-    });
-  });
 }

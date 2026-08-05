@@ -1,4 +1,6 @@
 export * from './project.js';
+export * from './model-routing.js';
+export * from './video-understanding.js';
 export * from './api.js';
 export * from './job.js';
 export * from './design-md.js';
