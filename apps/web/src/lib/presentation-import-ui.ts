@@ -65,7 +65,7 @@ function stableFailureDetail(job: PresentationJob): string {
     case 'invalid_pdf':
       return 'Choose a valid PDF and upload it again';
     case 'page_limit_exceeded':
-      return 'Choose a PDF with 200 slides or fewer';
+      return 'Choose a PDF with fewer slides';
     case 'source_not_available':
       return 'Upload the original PDF again to retry';
     case 'processing_failed':
@@ -73,7 +73,7 @@ function stableFailureDetail(job: PresentationJob): string {
     case 'storyboard_commit_failed':
       return 'Slides could not be added; try the import again';
     case 'invalid_import_state':
-      return 'The import could not resume safely; try the import again';
+      return 'This import cannot be retried safely. Remove it and upload again after resolving any existing presentation conflict';
     case 'interrupted_import':
       return 'The import was interrupted; try the import again';
     case 'invalid_source':
@@ -149,7 +149,6 @@ function isRetryableImportFailure(code: string | undefined): boolean {
   switch (code) {
     case 'processing_failed':
     case 'storyboard_commit_failed':
-    case 'invalid_import_state':
     case 'interrupted_import':
       return true;
     case 'encrypted_pdf':
@@ -158,6 +157,7 @@ function isRetryableImportFailure(code: string | undefined): boolean {
     case 'source_not_available':
     case 'invalid_source':
     case 'committed_state_pending':
+    case 'invalid_import_state':
     case undefined:
       return false;
     default:

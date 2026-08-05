@@ -113,11 +113,11 @@ describe('presentationProgress', () => {
   it.each([
     ['encrypted_pdf', 'Use an unlocked PDF and upload it again'],
     ['invalid_pdf', 'Choose a valid PDF and upload it again'],
-    ['page_limit_exceeded', 'Choose a PDF with 200 slides or fewer'],
+    ['page_limit_exceeded', 'Choose a PDF with fewer slides'],
     ['source_not_available', 'Upload the original PDF again to retry'],
     ['processing_failed', 'The presentation could not be processed; try the import again'],
     ['storyboard_commit_failed', 'Slides could not be added; try the import again'],
-    ['invalid_import_state', 'The import could not resume safely; try the import again'],
+    ['invalid_import_state', 'This import cannot be retried safely. Remove it and upload again after resolving any existing presentation conflict'],
     ['interrupted_import', 'The import was interrupted; try the import again'],
     ['invalid_source', 'Upload the PDF again to start a new import'],
     ['committed_state_pending', 'Slides may already be saved; refresh to check the import status'],
@@ -191,7 +191,7 @@ describe('presentationActions', () => {
     ['committed_state_pending', 'commit-pending', ['remove']],
     ['processing_failed', 'uncommitted', ['retry-import', 'remove']],
     ['storyboard_commit_failed', 'commit-pending', ['retry-import', 'remove']],
-    ['invalid_import_state', 'uncommitted', ['retry-import', 'remove']],
+    ['invalid_import_state', 'uncommitted', ['remove']],
     ['interrupted_import', 'uncommitted', ['retry-import', 'remove']],
     ['unknown_import_failure', 'uncommitted', ['remove']],
   ] as const)('classifies stable/unknown import failure %s conservatively', (code, deterministicCommit, expected) => {
