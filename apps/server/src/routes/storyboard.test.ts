@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
 import { ProjectStore } from '../services/project/store.js';
-import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
+import { saveStoryboard, loadStoryboard, mutateStoryboard } from '../services/storyboard/index.js';
 import { __clearFrameManifestCache } from '../services/frame/manifest.js';
 import { registerStoryboardRoutes } from './storyboard.js';
 import type { Storyboard } from '@vpa/shared';
@@ -148,9 +148,51 @@ describe('storyboard routes', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    const scene = body.scenes.find((s: any) => s.id === 'scene-aaa');
+    const scene = body.scenes.find((s: { id: string }) => s.id === 'scene-aaa');
     expect(scene.name).toBe('Updated Intro');
     expect(scene.description).toBe('Updated intro desc');
+  });
+
+  it('queues a scene edit behind an import append without losing either mutation', async () => {
+    const sb = makeSampleStoryboard(projectId, 'test-proj');
+    await saveStoryboard(projectPath, sb);
+    let releaseImport!: () => void;
+    let importEntered!: () => void;
+    const importEnteredPromise = new Promise<void>((resolve) => { importEntered = resolve; });
+    const releaseImportPromise = new Promise<void>((resolve) => { releaseImport = resolve; });
+    const importedScene = {
+      id: 'scene-imported',
+      name: 'Imported slide',
+      description: 'Imported atomically',
+      type: 'slide' as const,
+    };
+    const importMutation = mutateStoryboard(projectPath, async (current) => {
+      importEntered();
+      await releaseImportPromise;
+      if (!current) throw new Error('expected storyboard');
+      return { ...current, scenes: [...current.scenes, importedScene] };
+    });
+    await importEnteredPromise;
+
+    const edit = ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/storyboard/scenes/scene-aaa`,
+      payload: { name: 'Edited while importing' },
+    });
+    const releaseTimer = setTimeout(releaseImport, 50);
+    try {
+      const response = await edit;
+      expect(response.statusCode).toBe(200);
+      await importMutation;
+    } finally {
+      clearTimeout(releaseTimer);
+      releaseImport();
+      await importMutation.catch(() => undefined);
+    }
+
+    const final = await loadStoryboard(projectPath);
+    expect(final?.scenes.map(({ id }) => id)).toEqual(['scene-aaa', 'scene-bbb', 'scene-imported']);
+    expect(final?.scenes.find(({ id }) => id === 'scene-aaa')?.name).toBe('Edited while importing');
   });
 
   it('PUT scene returns 404 for nonexistent scene', async () => {

@@ -29,6 +29,7 @@ describe('agent recording server lifecycle', () => {
       projectsDefault,
       webOrigin: 'http://localhost:5173',
       llm: { provider: 'fake' },
+      presentation: { maxBytes: 100 * 1024 * 1024, maxPages: 200 },
     };
     const rehearse = vi.fn(async (
       projectId: string,

@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
 import { ModelRouter, ModelRoutingError } from '../services/llm/model-router.js';
-import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
+import { loadStoryboard, saveStoryboard, mutateStoryboard, updateScene } from '../services/storyboard/index.js';
 import { generateScript } from '../services/script/index.js';
 import { convertToDialog } from '../services/script/convert-to-dialog.js';
 import { generateScriptFromVideoBrief } from '../services/script/video-grounded.js';
@@ -42,6 +42,12 @@ type GenerationStage =
   | 'writing'
   | 'dialog'
   | 'persistence';
+
+class UserMutationError extends Error {
+  constructor(readonly code: 'not_found' | 'scene_not_found', message: string) {
+    super(message);
+  }
+}
 
 const VIDEO_SCRIPT_FAILED_MESSAGE =
   'Video-grounded script generation failed. Your existing script was not changed.';
@@ -370,15 +376,19 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(400).send({ error: 'intent must be a string', code: 'invalid_request' });
     }
     const projectPath = await resolveProjectPath(store, id);
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-    const scene = sb.scenes.find((s) => s.id === sceneId);
-    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
-
-    // Trim and treat empty as "cleared".
     const trimmed = body.intent.trim();
-    const updated = updateScene(sb, sceneId, { intent: trimmed.length > 0 ? trimmed : undefined });
-    await saveStoryboard(projectPath, updated);
+    try {
+      await mutateStoryboard(projectPath, (current) => {
+        if (!current) throw new UserMutationError('not_found', 'No storyboard found');
+        if (!current.scenes.some((scene) => scene.id === sceneId)) {
+          throw new UserMutationError('scene_not_found', `Scene not found: ${sceneId}`);
+        }
+        return updateScene(current, sceneId, { intent: trimmed.length > 0 ? trimmed : undefined });
+      });
+    } catch (error) {
+      if (!(error instanceof UserMutationError)) throw error;
+      return reply.status(404).send({ error: error.message, code: error.code });
+    }
     return { sceneId, intent: trimmed.length > 0 ? trimmed : null };
   });
 
@@ -393,28 +403,26 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
 
     const projectPath = await resolveProjectPath(store, id);
 
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
-    const scene = sb.scenes.find((s) => s.id === sceneId);
-    if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
-
-    // Wipe TTS-derived artefacts: any rendered audio chunks pointed at the
-    // PREVIOUS script's paragraphs, so re-using them would play the wrong
-    // narration over the new wording. Same rationale (and same field list)
-    // as POST /script/generate. The user has to regenerate TTS on the
-    // Narration tab — Generate All becomes a one-click recovery.
-    const narration = {
-      ...(scene.narration ?? {}),
-      script,
-      monologueScript: script,
-      chunks: undefined,
-      audio: undefined,
-      subtitles: undefined,
-      timings: undefined,
-    };
-    const updated = updateScene(sb, sceneId, { narration });
-    await saveStoryboard(projectPath, updated);
+    try {
+      await mutateStoryboard(projectPath, (current) => {
+        if (!current) throw new UserMutationError('not_found', 'No storyboard found');
+        const scene = current.scenes.find((candidate) => candidate.id === sceneId);
+        if (!scene) throw new UserMutationError('scene_not_found', `Scene not found: ${sceneId}`);
+        const narration = {
+          ...(scene.narration ?? {}),
+          script,
+          monologueScript: script,
+          chunks: undefined,
+          audio: undefined,
+          subtitles: undefined,
+          timings: undefined,
+        };
+        return updateScene(current, sceneId, { narration });
+      });
+    } catch (error) {
+      if (!(error instanceof UserMutationError)) throw error;
+      return reply.status(404).send({ error: error.message, code: error.code });
+    }
 
     return { sceneId, script };
   });

@@ -23,6 +23,7 @@ async function buildTestServer() {
     projectsDefault: projects,
     webOrigin: 'http://localhost:5173',
     llm: { provider: 'fake' as const },
+    presentation: { maxBytes: 100 * 1024 * 1024, maxPages: 200 },
   };
   let rejectProjectWrites = false;
   const store = new ProjectStore({

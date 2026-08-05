@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
 import { ProjectStore } from '../services/project/store.js';
-import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
+import { saveStoryboard, loadStoryboard, mutateStoryboard } from '../services/storyboard/index.js';
 import type { LlmClient, LlmCompleteOptions } from '../services/llm/index.js';
 import {
   ModelRoutingError,
@@ -755,6 +755,54 @@ describe('script routes', () => {
     const updated = await loadStoryboard(projectPath);
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
     expect(scene?.narration?.script).toBe(customScript);
+  });
+
+  it('queues user-authored intent and script edits behind an import append', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    await saveStoryboard(projectPath, sb);
+    const importEntered = deferred();
+    const releaseImport = deferred();
+    const importedScene = {
+      id: 'scene-imported',
+      name: 'Imported slide',
+      description: 'Imported atomically',
+      type: 'slide' as const,
+    };
+    const importMutation = mutateStoryboard(projectPath, async (current) => {
+      importEntered.resolve();
+      await releaseImport.promise;
+      if (!current) throw new Error('expected storyboard');
+      return { ...current, scenes: [...current.scenes, importedScene] };
+    });
+    await importEntered.promise;
+
+    const intentEdit = ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/intent`,
+      payload: { intent: 'Show the imported workflow' },
+    });
+    const scriptEdit = ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/script`,
+      payload: { script: 'The final user-authored narration.' },
+    });
+    const releaseTimer = setTimeout(() => releaseImport.resolve(), 50);
+    try {
+      const [intentResponse, scriptResponse] = await Promise.all([intentEdit, scriptEdit]);
+      expect(intentResponse.statusCode).toBe(200);
+      expect(scriptResponse.statusCode).toBe(200);
+      await importMutation;
+    } finally {
+      clearTimeout(releaseTimer);
+      releaseImport.resolve();
+      await importMutation.catch(() => undefined);
+    }
+
+    const final = await loadStoryboard(projectPath);
+    const edited = final?.scenes.find(({ id }) => id === 'scene-01');
+    expect(final?.scenes.some(({ id }) => id === 'scene-imported')).toBe(true);
+    expect(edited?.intent).toBe('Show the imported workflow');
+    expect(edited?.narration?.script).toBe('The final user-authored narration.');
   });
 
   it('PUT script returns 400 without script field', async () => {

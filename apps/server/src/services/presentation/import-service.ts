@@ -1,0 +1,422 @@
+import { copyFile, mkdir, rename, rm, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import {
+  PresentationJobSchema,
+  PresentationManifestSchema,
+  SceneSchema,
+  type PresentationJob,
+  type PresentationManifest,
+  type PresentationPageRecord,
+  type Project,
+  type Scene,
+  type Storyboard,
+} from '@vpa/shared';
+import { atomicWriteFile } from '../../lib/fs-atomic.js';
+import { sha256File } from '../recording/metadata.js';
+import { projectFiles } from '../project/paths.js';
+import { createStoryboard, mutateStoryboard } from '../storyboard/index.js';
+import { PresentationJobStore } from './job-store.js';
+import { createSlideAssets } from './media.js';
+import { inspectPdf, PresentationPdfError } from './pdf.js';
+
+const MAX_TEXT_CHARS_PER_PAGE = 20_000;
+const JobIdSchema = z.string().uuid();
+
+export interface RegisterPresentationUploadInput {
+  project: Project;
+  id: string;
+  filename: string;
+  stagedSourcePath: string;
+  sizeBytes: number;
+  generateNarration: boolean;
+}
+
+export type PresentationImportErrorCode =
+  | 'invalid_source'
+  | 'source_not_available'
+  | 'processing_failed'
+  | 'storyboard_commit_failed'
+  | 'invalid_import_state'
+  | 'encrypted_pdf'
+  | 'invalid_pdf'
+  | 'page_limit_exceeded';
+
+export class PresentationImportError extends Error {
+  constructor(readonly code: PresentationImportErrorCode, message: string) {
+    super(message);
+    this.name = 'PresentationImportError';
+  }
+}
+
+type MutateStoryboard = typeof mutateStoryboard;
+
+export interface PresentationImportServiceOptions {
+  jobs: PresentationJobStore;
+  maxPages: number;
+  warn: (fields: Record<string, unknown>, message: string) => void;
+  inspectPdf?: typeof inspectPdf;
+  createSlideAssets?: typeof createSlideAssets;
+  mutateStoryboard?: MutateStoryboard;
+  persist?: typeof atomicWriteFile;
+  hashFile?: typeof sha256File;
+  copySource?: typeof copyFile;
+  moveFiles?: typeof rename;
+  removeFiles?: typeof rm;
+  createId?: typeof randomUUID;
+  now?: () => string;
+}
+
+function requireId(id: string): string {
+  if (!JobIdSchema.safeParse(id).success) {
+    throw new PresentationImportError('invalid_source', 'Invalid presentation source');
+  }
+  return id;
+}
+
+function displayName(filename: string): string {
+  const normalized = filename.replaceAll('\\', '/');
+  const basename = normalized.slice(normalized.lastIndexOf('/') + 1).trim();
+  return (basename || 'Presentation.pdf').slice(0, 255);
+}
+
+function pageStem(pageNumber: number): string {
+  return `page-${String(pageNumber).padStart(4, '0')}`;
+}
+
+function publicPdfMessage(code: PresentationImportErrorCode): string {
+  if (code === 'encrypted_pdf') return 'Password-protected PDFs are not supported';
+  if (code === 'page_limit_exceeded') return 'The PDF has too many pages';
+  return 'The file is not a valid PDF';
+}
+
+export class PresentationImportService {
+  private readonly inspect: typeof inspectPdf;
+  private readonly createAssets: typeof createSlideAssets;
+  private readonly mutate: MutateStoryboard;
+  private readonly persist: typeof atomicWriteFile;
+  private readonly hash: typeof sha256File;
+  private readonly copy: typeof copyFile;
+  private readonly move: typeof rename;
+  private readonly removeFiles: typeof rm;
+  private readonly createId: typeof randomUUID;
+  private readonly now: () => string;
+
+  constructor(private readonly options: PresentationImportServiceOptions) {
+    this.inspect = options.inspectPdf ?? inspectPdf;
+    this.createAssets = options.createSlideAssets ?? createSlideAssets;
+    this.mutate = options.mutateStoryboard ?? mutateStoryboard;
+    this.persist = options.persist ?? atomicWriteFile;
+    this.hash = options.hashFile ?? sha256File;
+    this.copy = options.copySource ?? copyFile;
+    this.move = options.moveFiles ?? rename;
+    this.removeFiles = options.removeFiles ?? rm;
+    this.createId = options.createId ?? randomUUID;
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  private paths(projectPath: string, id: string) {
+    const validId = requireId(id);
+    const files = projectFiles(projectPath);
+    const stagingRoot = path.join(files.presentationStagingDir, validId);
+    return {
+      stagingRoot,
+      source: path.join(stagingRoot, 'source.pdf'),
+      final: path.join(files.presentationsDir, validId),
+    };
+  }
+
+  private async failJob(
+    projectPath: string,
+    id: string,
+    code: PresentationImportErrorCode,
+    message: string,
+    pageCount: number,
+  ): Promise<void> {
+    try {
+      await this.options.jobs.update(projectPath, id, {
+        status: 'failed',
+        stage: 'failed',
+        page_count: pageCount,
+        error: { code, message },
+      });
+    } catch {
+      // Preserve the bounded import failure even if job persistence also fails.
+    }
+  }
+
+  private warn(fields: Record<string, unknown>, message: string): void {
+    try {
+      this.options.warn(fields, message);
+    } catch {
+      // Diagnostics are private and must not change behavior.
+    }
+  }
+
+  async registerUpload(input: RegisterPresentationUploadInput): Promise<PresentationJob> {
+    const paths = this.paths(input.project.path, input.id);
+    if (path.resolve(input.stagedSourcePath) !== path.resolve(paths.source)
+      || !Number.isSafeInteger(input.sizeBytes)
+      || input.sizeBytes <= 0) {
+      throw new PresentationImportError('invalid_source', 'Invalid presentation source');
+    }
+    await this.hash(paths.source);
+    const now = this.now();
+    const job = PresentationJobSchema.parse({
+      schema_version: 1,
+      id: input.id,
+      project_id: input.project.id,
+      filename: displayName(input.filename),
+      status: 'processing',
+      stage: 'processing-slides',
+      generate_narration: input.generateNarration,
+      page_count: 0,
+      processed_pages: 0,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      created_at: now,
+      updated_at: now,
+    });
+    return this.options.jobs.create(input.project.path, job);
+  }
+
+  async process(project: Project, id: string): Promise<PresentationJob> {
+    const job = await this.options.jobs.read(project.path, id);
+    if (!job || job.project_id !== project.id || job.status === 'ready') {
+      throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+    }
+    const paths = this.paths(project.path, id);
+    const taskRoot = path.join(paths.stagingRoot, `task-${this.createId()}`);
+    const bundle = path.join(taskRoot, 'bundle');
+    const rawPages = path.join(taskRoot, 'raw-pages');
+    let pageCount = 0;
+    let finalMoved = false;
+    let storyboardCommitted = false;
+    let inspection: Awaited<ReturnType<typeof inspectPdf>> | undefined;
+
+    await this.options.jobs.update(project.path, id, {
+      status: 'processing',
+      stage: 'processing-slides',
+      page_count: 0,
+      processed_pages: 0,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      error: undefined,
+    });
+
+    try {
+      inspection = await this.inspect(paths.source, {
+        maxPages: this.options.maxPages,
+        maxTextCharsPerPage: MAX_TEXT_CHARS_PER_PAGE,
+      });
+      pageCount = inspection.pageCount;
+      if (pageCount < 1 || inspection.pages.length !== pageCount) {
+        throw new PresentationPdfError('invalid_pdf', 'The file is not a valid PDF');
+      }
+
+      await mkdir(bundle, { recursive: true });
+      await this.copy(paths.source, path.join(bundle, 'source.pdf'));
+      const proposedPages: PresentationPageRecord[] = [];
+      const proposedScenes: Scene[] = [];
+      const proposedIds = new Set<string>();
+
+      for (const page of inspection.pages) {
+        const stem = pageStem(page.pageNumber);
+        const rawPagePath = path.join(rawPages, `${stem}.png`);
+        const imagePath = path.join(bundle, 'pages', `${stem}.png`);
+        const clipPath = path.join(bundle, 'clips', `${stem}.mp4`);
+        await page.render(rawPagePath);
+        await this.createAssets({ rawPagePath, imagePath, clipPath });
+
+        let sceneId: string;
+        do sceneId = `scene-${this.createId().slice(0, 8)}`;
+        while (proposedIds.has(sceneId));
+        proposedIds.add(sceneId);
+
+        const heading = page.heading?.trim();
+        const name = heading && heading.length <= 200 ? heading : `Slide ${page.pageNumber}`;
+        const extractedText = page.text.slice(0, MAX_TEXT_CHARS_PER_PAGE);
+        const description = extractedText.trim().slice(0, 4_000);
+        const image = `presentations/${id}/pages/${stem}.png`;
+        const clip = `presentations/${id}/clips/${stem}.mp4`;
+        proposedScenes.push(SceneSchema.parse({
+          id: sceneId,
+          name,
+          description,
+          type: 'slide',
+          recording: { source: clip, source_kind: 'presentation', duration_sec: 1 },
+          presentation_source: {
+            presentation_id: id,
+            page_number: page.pageNumber,
+            page_count: pageCount,
+            image,
+            hold_duration_sec: 5,
+          },
+        }));
+        proposedPages.push({
+          page_number: page.pageNumber,
+          scene_id: sceneId,
+          image,
+          clip,
+          extracted_text: extractedText,
+          baseline: { name, description, narration_script: null },
+          analysis_status: job.generate_narration ? 'pending' : 'not-requested',
+          script_status: job.generate_narration ? 'pending' : 'not-requested',
+        });
+        await this.options.jobs.update(project.path, id, {
+          page_count: pageCount,
+          processed_pages: page.pageNumber,
+        });
+      }
+      await inspection.close();
+      inspection = undefined;
+
+      const sourceHash = await this.hash(paths.source);
+      const sourceSize = (await stat(paths.source)).size;
+      const provisionalManifest = PresentationManifestSchema.parse({
+        schema_version: 1,
+        id,
+        project_id: project.id,
+        display_name: job.filename,
+        source_sha256: sourceHash,
+        size_bytes: sourceSize,
+        page_count: pageCount,
+        created_at: job.created_at,
+        updated_at: this.now(),
+        generate_narration: job.generate_narration,
+        pages: proposedPages,
+      });
+
+      await this.options.jobs.update(project.path, id, { stage: 'creating-scenes' });
+      let finalManifest: PresentationManifest | undefined;
+      await this.mutate(project.path, async (current) => {
+        const base = current ?? createStoryboard(project, []);
+        if (base.scenes.some((scene) => scene.presentation_source?.presentation_id === id)) {
+          throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+        }
+
+        const occupied = new Set(base.scenes.map(({ id: sceneId }) => sceneId));
+        const scenes = proposedScenes.map((scene, index) => {
+          let sceneId = scene.id;
+          while (occupied.has(sceneId)) sceneId = `scene-${this.createId().slice(0, 8)}`;
+          occupied.add(sceneId);
+          proposedPages[index] = { ...proposedPages[index]!, scene_id: sceneId };
+          return SceneSchema.parse({ ...scene, id: sceneId });
+        });
+        finalManifest = PresentationManifestSchema.parse({
+          ...provisionalManifest,
+          updated_at: this.now(),
+          pages: proposedPages,
+        });
+        await this.persist(path.join(bundle, 'manifest.json'), JSON.stringify(finalManifest, null, 2));
+        await this.removeFiles(paths.final, { recursive: true, force: true });
+        await mkdir(path.dirname(paths.final), { recursive: true });
+        await this.move(bundle, paths.final);
+        finalMoved = true;
+        return { ...base, scenes: [...base.scenes, ...scenes] } satisfies Storyboard;
+      });
+      storyboardCommitted = true;
+
+      if (!finalManifest) throw new Error('Manifest was not created');
+      finalManifest = PresentationManifestSchema.parse({ ...finalManifest, updated_at: this.now() });
+      await this.persist(
+        path.join(paths.final, 'manifest.json'),
+        JSON.stringify(finalManifest, null, 2),
+      );
+      try {
+        await this.removeFiles(paths.stagingRoot, { recursive: true, force: true });
+      } catch {
+        this.warn(
+          { errorName: 'PresentationStagingCleanupError', presentationId: id },
+          'Presentation staging files could not be fully removed',
+        );
+      }
+      return this.options.jobs.update(project.path, id, {
+        status: job.generate_narration ? 'processing' : 'ready',
+        stage: job.generate_narration ? 'drafting-narration' : 'ready',
+        page_count: pageCount,
+        processed_pages: pageCount,
+        remaining_scene_count: pageCount,
+        error: undefined,
+      });
+    } catch (error) {
+      if (inspection) await inspection.close().catch(() => undefined);
+      await this.removeFiles(taskRoot, { recursive: true, force: true }).catch(() => undefined);
+      if (error instanceof PresentationPdfError) {
+        await this.removeFiles(paths.stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+        const code = error.code;
+        const message = publicPdfMessage(code);
+        await this.failJob(project.path, id, code, message, pageCount);
+        throw new PresentationImportError(code, message);
+      }
+      if (error instanceof PresentationImportError && error.code === 'invalid_import_state') {
+        await this.failJob(project.path, id, error.code, error.message, pageCount);
+        throw error;
+      }
+      const code = finalMoved && !storyboardCommitted ? 'storyboard_commit_failed' : 'processing_failed';
+      const message = finalMoved && !storyboardCommitted
+        ? 'Presentation scenes could not be saved'
+        : 'Presentation processing failed';
+      await this.failJob(project.path, id, code, message, pageCount);
+      throw new PresentationImportError(code, message);
+    }
+  }
+
+  async retryImport(project: Project, id: string): Promise<PresentationJob> {
+    const job = await this.options.jobs.read(project.path, id);
+    if (!job || job.project_id !== project.id || job.status !== 'failed') {
+      throw new PresentationImportError('source_not_available', 'The original PDF is not available for retry');
+    }
+    const paths = this.paths(project.path, id);
+    let inspection: Awaited<ReturnType<typeof inspectPdf>> | undefined;
+    try {
+      inspection = await this.inspect(paths.source, {
+        maxPages: this.options.maxPages,
+        maxTextCharsPerPage: MAX_TEXT_CHARS_PER_PAGE,
+      });
+      if (inspection.pageCount < 1) throw new Error('empty PDF');
+      await inspection.close();
+    } catch {
+      await inspection?.close().catch(() => undefined);
+      await this.removeFiles(paths.stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+      const message = 'The original PDF is not available for retry';
+      await this.failJob(project.path, id, 'source_not_available', message, job.page_count);
+      throw new PresentationImportError('source_not_available', message);
+    }
+    return this.process(project, id);
+  }
+
+  list(projectPath: string): Promise<PresentationJob[]> {
+    return this.options.jobs.list(projectPath);
+  }
+
+  get(projectPath: string, id: string): Promise<PresentationJob | null> {
+    return this.options.jobs.read(projectPath, id);
+  }
+
+  async remove(project: Project, id: string): Promise<void> {
+    const paths = this.paths(project.path, id);
+    await this.mutate(project.path, (current) => {
+      const base = current ?? createStoryboard(project, []);
+      return {
+        ...base,
+        scenes: base.scenes.filter((scene) => scene.presentation_source?.presentation_id !== id),
+      };
+    });
+
+    const deletionResults = await Promise.allSettled([
+      this.removeFiles(paths.final, { recursive: true, force: true }),
+      this.removeFiles(paths.stagingRoot, { recursive: true, force: true }),
+    ]);
+    if (deletionResults.some(({ status }) => status === 'rejected')) {
+      this.warn(
+        { errorName: 'PresentationAssetDeletionError', presentationId: id },
+        'Presentation assets could not be fully removed',
+      );
+    }
+    await this.options.jobs.delete(project.path, id);
+  }
+}

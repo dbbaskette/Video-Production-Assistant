@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { z } from 'zod';
@@ -6,7 +6,7 @@ import { SceneSchema, type Scene } from '@vpa/shared';
 import type { ProjectStore } from '../services/project/store.js';
 import {
   loadStoryboard,
-  saveStoryboard,
+  mutateStoryboard,
   addScene,
   updateScene,
   removeScene,
@@ -47,6 +47,26 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
   return entry.path;
 }
 
+class StoryboardMutationError extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function requireStoryboard(current: import('@vpa/shared').Storyboard | null) {
+  if (!current) throw new StoryboardMutationError(404, 'not_found', 'No storyboard found');
+  return current;
+}
+
+function sendMutationError(reply: FastifyReply, error: unknown) {
+  if (!(error instanceof StoryboardMutationError)) throw error;
+  return reply.status(error.statusCode).send({ error: error.message, code: error.code });
+}
+
 export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store } = deps;
   const assetsDir = deps.assetsDir ?? defaultAssetsDir();
@@ -65,17 +85,13 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
     const { id } = req.params as { id: string };
     const projectPath = await resolveProjectPath(store, id);
     const storyboard = req.body as import('@vpa/shared').Storyboard;
-    await saveStoryboard(projectPath, storyboard);
-    return storyboard;
+    return mutateStoryboard(projectPath, () => storyboard);
   });
 
   // POST /api/projects/:id/storyboard/scenes — add a scene
   app.post('/api/projects/:id/storyboard/scenes', async (req, reply) => {
     const { id } = req.params as { id: string };
     const projectPath = await resolveProjectPath(store, id);
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
     const input = req.body as Partial<Scene> & { name: string; description: string };
     const scene: Scene = SceneSchema.parse({
       id: input.id ?? `scene-${randomUUID().slice(0, 8)}`,
@@ -84,9 +100,11 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
       type: input.type ?? 'desktop',
     });
 
-    const updated = addScene(sb, scene);
-    await saveStoryboard(projectPath, updated);
-    return updated;
+    try {
+      return await mutateStoryboard(projectPath, (current) => addScene(requireStoryboard(current), scene));
+    } catch (error) {
+      return sendMutationError(reply, error);
+    }
   });
 
   // PUT /api/projects/:id/storyboard/reorder — reorder scenes
@@ -94,21 +112,23 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
   app.put('/api/projects/:id/storyboard/reorder', async (req, reply) => {
     const { id } = req.params as { id: string };
     const projectPath = await resolveProjectPath(store, id);
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
     const { orderedIds } = req.body as { orderedIds: string[] };
     if (!Array.isArray(orderedIds)) {
       return reply.status(400).send({ error: 'orderedIds must be an array', code: 'invalid_request' });
     }
 
     try {
-      const updated = reorderScenes(sb, orderedIds);
-      await saveStoryboard(projectPath, updated);
-      return updated;
+      return await mutateStoryboard(projectPath, (current) => {
+        const storyboard = requireStoryboard(current);
+        try {
+          return reorderScenes(storyboard, orderedIds);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new StoryboardMutationError(400, 'reorder_failed', message);
+        }
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return reply.status(400).send({ error: msg, code: 'reorder_failed' });
+      return sendMutationError(reply, err);
     }
   });
 
@@ -116,16 +136,18 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
   app.put('/api/projects/:id/storyboard/scenes/:sceneId', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     const projectPath = await resolveProjectPath(store, id);
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
     try {
-      const updated = updateScene(sb, sceneId, req.body as Partial<Scene>);
-      await saveStoryboard(projectPath, updated);
-      return updated;
+      return await mutateStoryboard(projectPath, (current) => {
+        const storyboard = requireStoryboard(current);
+        try {
+          return updateScene(storyboard, sceneId, req.body as Partial<Scene>);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new StoryboardMutationError(404, 'scene_not_found', message);
+        }
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return reply.status(404).send({ error: msg, code: 'scene_not_found' });
+      return sendMutationError(reply, err);
     }
   });
 
@@ -133,16 +155,18 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
   app.delete('/api/projects/:id/storyboard/scenes/:sceneId', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
     const projectPath = await resolveProjectPath(store, id);
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
     try {
-      const updated = removeScene(sb, sceneId);
-      await saveStoryboard(projectPath, updated);
-      return updated;
+      return await mutateStoryboard(projectPath, (current) => {
+        const storyboard = requireStoryboard(current);
+        try {
+          return removeScene(storyboard, sceneId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new StoryboardMutationError(404, 'scene_not_found', message);
+        }
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return reply.status(404).send({ error: msg, code: 'scene_not_found' });
+      return sendMutationError(reply, err);
     }
   });
 
@@ -170,65 +194,42 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
       }
     }
 
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    const cachePaths: string[] = [];
+    let updated;
+    try {
+      updated = await mutateStoryboard(projectPath, (current) => {
+        const storyboard = requireStoryboard(current);
+        const newDefaults = { ...(storyboard.defaults ?? {}) };
+        if ('frame_style' in body) {
+          if (body.frame_style === null) delete newDefaults.frame_style;
+          else newDefaults.frame_style = body.frame_style;
+        }
+        if ('frame_background' in body) {
+          if (body.frame_background === null) delete newDefaults.frame_background;
+          else newDefaults.frame_background = body.frame_background;
+        }
+        if ('tts_expressiveness' in body) {
+          if (body.tts_expressiveness === null) delete newDefaults.tts_expressiveness;
+          else newDefaults.tts_expressiveness = body.tts_expressiveness;
+        }
 
-    const currentDefaults = sb.defaults ?? {};
-
-    // Apply field updates: null means clear, undefined means leave untouched
-    const newDefaults = { ...currentDefaults };
-    if ('frame_style' in body) {
-      if (body.frame_style === null) {
-        delete newDefaults.frame_style;
-      } else {
-        newDefaults.frame_style = body.frame_style;
-      }
+        const frameChanged = 'frame_style' in body || 'frame_background' in body;
+        const scenes = frameChanged
+          ? storyboard.scenes.map((scene) => {
+              if (!scene.frame_render) return scene;
+              cachePaths.push(join(projectPath, scene.frame_render));
+              const cleared = { ...scene };
+              delete cleared.frame_render;
+              return cleared;
+            })
+          : storyboard.scenes;
+        return { ...storyboard, defaults: newDefaults, scenes };
+      });
+    } catch (error) {
+      return sendMutationError(reply, error);
     }
-    if ('frame_background' in body) {
-      if (body.frame_background === null) {
-        delete newDefaults.frame_background;
-      } else {
-        newDefaults.frame_background = body.frame_background;
-      }
-    }
-    if ('tts_expressiveness' in body) {
-      if (body.tts_expressiveness === null) {
-        delete newDefaults.tts_expressiveness;
-      } else {
-        newDefaults.tts_expressiveness = body.tts_expressiveness;
-      }
-    }
-
-    // Persist the new defaults first
-    const withNewDefaults = { ...sb, defaults: newDefaults };
-    await saveStoryboard(projectPath, withNewDefaults);
-
-    // Cache busting is ONLY relevant to frame settings. A non-frame default
-    // (e.g. tts_expressiveness) must not nuke every scene's cached
-    // frame_render — that would force expensive re-renders for an unrelated
-    // change.
-    if (!('frame_style' in body) && !('frame_background' in body)) {
-      return withNewDefaults;
-    }
-
-    // A frame default changed → invalidate ALL scene frame_render caches
-    // (simpler and safer than tracking which scenes inherit).
-    for (const scene of withNewDefaults.scenes) {
-      if (scene.frame_render) {
-        const cachePath = join(projectPath, scene.frame_render);
-        await rm(cachePath, { force: true });
-      }
-    }
-    const cleared = {
-      ...withNewDefaults,
-      scenes: withNewDefaults.scenes.map((s) => {
-        if (!s.frame_render) return s;
-        const { frame_render: _ignored, ...rest } = s;
-        return rest as typeof s;
-      }),
-    };
-    await saveStoryboard(projectPath, cleared);
-    return cleared;
+    for (const cachePath of cachePaths) await rm(cachePath, { force: true });
+    return updated;
   });
 
   // PATCH /api/projects/:id/scenes/:sceneId/frame — update per-scene frame settings
@@ -253,36 +254,30 @@ export async function registerStoryboardRoutes(app: FastifyInstance, deps: Deps)
       }
     }
 
-    const sb = await loadStoryboard(projectPath);
-    if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
-
-    const scene = sb.scenes.find((s) => s.id === sceneId);
-    if (!scene) {
-      return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
+    let frameRenderPath: string | undefined;
+    let updated;
+    try {
+      updated = await mutateStoryboard(projectPath, (current) => {
+        const storyboard = requireStoryboard(current);
+        const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
+        if (!scene) {
+          throw new StoryboardMutationError(404, 'scene_not_found', `Scene not found: ${sceneId}`);
+        }
+        if (scene.frame_render) frameRenderPath = join(projectPath, scene.frame_render);
+        const patch: Partial<Scene> = { frame_render: undefined };
+        if ('frame_style' in body) patch.frame_style = body.frame_style ?? undefined;
+        if ('frame_background' in body) patch.frame_background = body.frame_background ?? undefined;
+        const updatedScene: Scene = { ...scene, ...patch, frame_render: undefined, id: sceneId };
+        return {
+          ...storyboard,
+          scenes: storyboard.scenes.map((candidate) => candidate.id === sceneId ? updatedScene : candidate),
+        };
+      });
+    } catch (error) {
+      return sendMutationError(reply, error);
     }
-
-    // Cache busting: if the scene has a frame_render, delete the file and clear the field
-    if (scene.frame_render) {
-      const frameRenderPath = join(projectPath, scene.frame_render);
-      await rm(frameRenderPath, { force: true });
-    }
-
-    // Build the scene patch — null values clear fields, undefined leaves them untouched
-    const patch: Partial<Scene> = { frame_render: undefined };
-    if ('frame_style' in body) {
-      patch.frame_style = body.frame_style ?? undefined;
-    }
-    if ('frame_background' in body) {
-      patch.frame_background = body.frame_background ?? undefined;
-    }
-
-    // When clearing frame_render we must explicitly pass undefined so spread overwrites existing
-    const updatedScene: Scene = { ...scene, ...patch, frame_render: undefined, id: sceneId };
-    const scenes = sb.scenes.map((s) => (s.id === sceneId ? updatedScene : s));
-    const updated = { ...sb, scenes };
-    await saveStoryboard(projectPath, updated);
-
-    return updatedScene;
+    if (frameRenderPath) await rm(frameRenderPath, { force: true });
+    return updated.scenes.find((scene) => scene.id === sceneId)!;
   });
 
 }

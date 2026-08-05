@@ -20,6 +20,19 @@ export interface ServerConfig {
   projectsDefault: string; // expanded absolute path
   webOrigin: string;
   llm: LlmConfig;
+  presentation: {
+    maxBytes: number;
+    maxPages: number;
+  };
+}
+
+function positiveSafeInteger(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+  const raw = env[key];
+  const value = Number(raw ?? fallback);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${key}: ${raw}`);
+  }
+  return value;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -28,6 +41,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.VPA_SERVER_PORT ?? 3000);
   const host = env.VPA_SERVER_HOST ?? '127.0.0.1';
   const webOrigin = env.VPA_WEB_ORIGIN ?? 'http://localhost:5173';
+  const presentation = {
+    maxBytes: positiveSafeInteger(env, 'VPA_PRESENTATION_MAX_BYTES', 100 * 1024 * 1024),
+    maxPages: positiveSafeInteger(env, 'VPA_PRESENTATION_MAX_PAGES', 200),
+  };
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid VPA_SERVER_PORT: ${env.VPA_SERVER_PORT}`);
@@ -63,5 +80,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 
   const llm: LlmConfig = { provider: llmProvider, apiKey: llmApiKey, model: llmModel };
 
-  return { port, host, vpaHome, projectsDefault, webOrigin, llm };
+  return { port, host, vpaHome, projectsDefault, webOrigin, llm, presentation };
 }
