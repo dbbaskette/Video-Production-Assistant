@@ -27,6 +27,8 @@ import {
   type ModelRoutingResponse,
   type ModelRoutingUpdate,
   type ResolvedModelSummary,
+  PresentationJobSchema,
+  type PresentationJob,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -72,10 +74,249 @@ async function request<T>(
 }
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public payload: unknown) {
+  readonly code: string;
+
+  constructor(
+    message: string,
+    public status: number,
+    public payload: unknown,
+    code?: string,
+  ) {
     super(message);
+    this.name = 'ApiError';
+    this.code = code ?? boundedErrorPayload(payload)?.code ?? 'http_error';
   }
 }
+
+const PRESENTATION_UPLOAD_TIMEOUT_MS = 5 * 60 * 1_000;
+
+interface BoundedErrorPayload {
+  error: string;
+  code: string;
+}
+
+function boundedErrorPayload(value: unknown): BoundedErrorPayload | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.error !== 'string'
+    || candidate.error.length < 1
+    || candidate.error.length > 300
+    || typeof candidate.code !== 'string'
+    || !/^[a-z0-9][a-z0-9_-]{0,119}$/.test(candidate.code)
+  ) {
+    return null;
+  }
+  return { error: candidate.error, code: candidate.code };
+}
+
+function invalidPresentationResponse(status: number): ApiError {
+  return new ApiError(
+    'The server returned an invalid presentation response',
+    status,
+    null,
+    'invalid_response',
+  );
+}
+
+async function presentationResponse<T>(
+  method: string,
+  path: string,
+  options: { body?: BodyInit; timeoutMs?: number; timeoutMessage?: string },
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, options.timeoutMs ?? 120_000);
+  try {
+    const response = await fetch(`${BASE}${path}`, {
+      method,
+      body: options.body,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      let value: unknown;
+      try {
+        value = text ? JSON.parse(text) : undefined;
+      } catch {
+        value = undefined;
+      }
+      const bounded = boundedErrorPayload(value);
+      throw new ApiError(
+        bounded?.error ?? `HTTP ${response.status}`,
+        response.status,
+        bounded,
+        bounded?.code ?? 'http_error',
+      );
+    }
+    const result = await consume(response);
+    if (timedOut) {
+      throw new ApiError(
+        options.timeoutMessage ?? 'Request timed out',
+        408,
+        null,
+        'request_timeout',
+      );
+    }
+    return result;
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiError(
+        options.timeoutMessage ?? 'Request timed out',
+        408,
+        null,
+        'request_timeout',
+      );
+    }
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('Unable to reach the server', 0, null, 'network_error');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function presentationJson(
+  method: string,
+  path: string,
+  options?: { body?: BodyInit; timeoutMs?: number; timeoutMessage?: string },
+): Promise<{ value: unknown; status: number }> {
+  return presentationResponse(method, path, options ?? {}, async (response) => {
+    const text = await response.text().catch(() => {
+      throw invalidPresentationResponse(response.status);
+    });
+    if (!text) throw invalidPresentationResponse(response.status);
+    try {
+      return { value: JSON.parse(text), status: response.status };
+    } catch {
+      throw invalidPresentationResponse(response.status);
+    }
+  });
+}
+
+function encodedIdentifier(value: string, label: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new TypeError(`${label} is required`);
+  }
+  return encodeURIComponent(value);
+}
+
+function hasExactKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
+}
+
+function parsePresentationJob(
+  value: unknown,
+  status: number,
+  expectedProjectId?: string,
+  expectedPresentationId?: string,
+): PresentationJob {
+  const parsed = PresentationJobSchema.safeParse(value);
+  if (
+    !parsed.success
+    || (expectedProjectId !== undefined && parsed.data.project_id !== expectedProjectId)
+    || (expectedPresentationId !== undefined && parsed.data.id !== expectedPresentationId)
+  ) {
+    throw invalidPresentationResponse(status);
+  }
+  return parsed.data;
+}
+
+export const presentationsApi = {
+  async upload(
+    projectId: string,
+    file: File,
+    generateNarration: boolean,
+  ): Promise<PresentationJob> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const form = new FormData();
+    form.append('file', file);
+    form.append('generate_narration', String(generateNarration));
+    const { value, status } = await presentationJson(
+      'POST',
+      `/api/projects/${project}/presentations`,
+      {
+        body: form,
+        timeoutMs: PRESENTATION_UPLOAD_TIMEOUT_MS,
+        timeoutMessage: 'Presentation upload timed out',
+      },
+    );
+    if (!hasExactKeys(value, ['presentation_id', 'job'])) {
+      throw invalidPresentationResponse(status);
+    }
+    const job = parsePresentationJob(value.job, status, projectId);
+    if (value.presentation_id !== job.id) throw invalidPresentationResponse(status);
+    return job;
+  },
+
+  async list(projectId: string): Promise<PresentationJob[]> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const { value, status } = await presentationJson('GET', `/api/projects/${project}/presentations`);
+    if (!hasExactKeys(value, ['presentations']) || !Array.isArray(value.presentations)) {
+      throw invalidPresentationResponse(status);
+    }
+    return value.presentations.map((item) => parsePresentationJob(item, status, projectId));
+  },
+
+  async get(projectId: string, presentationId: string): Promise<PresentationJob> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const presentation = encodedIdentifier(presentationId, 'Presentation ID');
+    const { value, status } = await presentationJson(
+      'GET',
+      `/api/projects/${project}/presentations/${presentation}`,
+    );
+    return parsePresentationJob(value, status, projectId, presentationId);
+  },
+
+  async retryImport(projectId: string, presentationId: string): Promise<PresentationJob> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const presentation = encodedIdentifier(presentationId, 'Presentation ID');
+    const { value, status } = await presentationJson(
+      'POST',
+      `/api/projects/${project}/presentations/${presentation}/retry-import`,
+    );
+    return parsePresentationJob(value, status, projectId, presentationId);
+  },
+
+  async retryNarration(projectId: string, presentationId: string): Promise<PresentationJob> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const presentation = encodedIdentifier(presentationId, 'Presentation ID');
+    const { value, status } = await presentationJson(
+      'POST',
+      `/api/projects/${project}/presentations/${presentation}/retry-narration`,
+    );
+    return parsePresentationJob(value, status, projectId, presentationId);
+  },
+
+  async remove(projectId: string, presentationId: string): Promise<void> {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const presentation = encodedIdentifier(presentationId, 'Presentation ID');
+    await presentationResponse(
+      'DELETE',
+      `/api/projects/${project}/presentations/${presentation}?confirmed=true`,
+      {},
+      async (response) => {
+        if (response.status !== 204 || (await response.text()) !== '') {
+          throw invalidPresentationResponse(response.status);
+        }
+      },
+    );
+  },
+
+  imageUrl(projectId: string, presentationId: string, pageNumber: number): string {
+    const project = encodedIdentifier(projectId, 'Project ID');
+    const presentation = encodedIdentifier(presentationId, 'Presentation ID');
+    if (!Number.isSafeInteger(pageNumber) || pageNumber <= 0) {
+      throw new TypeError('Page number must be a positive safe integer');
+    }
+    return `${BASE}/api/projects/${project}/presentations/${presentation}/pages/${pageNumber}/image`;
+  },
+};
 
 export const api = {
   async listProjects(): Promise<ListProjectsResponse> {
