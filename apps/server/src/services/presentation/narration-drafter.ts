@@ -231,11 +231,14 @@ function validateWriterOutput(output: unknown): string {
   }
   const deliverable = String.raw`(?:(?:the|your|my)\s+)?(?:(?:draft|final)\s+)?(?:narration|script)`;
   const reorderedDeliverable = String.raw`(?:(?:the|your|my)\s+)?(?:narration|script)\s+(?:draft|version)`;
-  const preambleEnd = String.raw`(?::|[-—]\s*|\.(?:\s|$))`;
+  const genericDeliverable = String.raw`(?:(?:the|your|my)\s+)?(?:(?:draft|final)(?:\s+version)?|version)`;
+  const preambleEnd = String.raw`(?::|[-—][ \t]*|\.(?:\s|$)|\r?\n|$)`;
   const metaPreambles = [
-    new RegExp(String.raw`^\s*(?:here(?:'s| is)|below is)\s+${deliverable}\s*${preambleEnd}`, 'i'),
+    new RegExp(String.raw`^\s*(?:here(?:'s| is)|below is)\s+(?:${deliverable}|${genericDeliverable})\s*${preambleEnd}`, 'i'),
     new RegExp(String.raw`^\s*(?:${deliverable}|${reorderedDeliverable})\s+(?:is\s+)?(?:as\s+)?(?:follows|below)\s*${preambleEnd}`, 'i'),
     new RegExp(String.raw`^\s*(?:draft|final)\s+(?:narration|script)\s*${preambleEnd}`, 'i'),
+    new RegExp(String.raw`^\s*${genericDeliverable}\s+(?:is\s+)?(?:as\s+)?(?:follows|below)[ \t]*${preambleEnd}`, 'i'),
+    new RegExp(String.raw`^\s*${genericDeliverable}[ \t]*[:—-]`, 'i'),
   ];
   if (metaPreambles.some((pattern) => pattern.test(script))) {
     throw new PresentationNarrationError();
@@ -246,11 +249,17 @@ function validateWriterOutput(output: unknown): string {
   if (/\bthis slide\b/i.test(script) || /\bas an ai\b/i.test(script)) {
     throw new PresentationNarrationError();
   }
-  const stageDirection = String.raw`(?:pause|beat|silence|music(?:\s+(?:up|down|starts?|stops?|fades?(?:\s+(?:in|out))?))?|sfx|sound effect|softly|quietly|loudly|slowly|quickly|applause|whisper(?:s|ed|ing)?|laugh(?:s|ed|ing)?|chuckle(?:s|d|ing)?|sighs?|emphasis|stage direction|fade(?:s|d|ing)?(?:\s+(?:in|out|to black))?|cut(?:s|ting)?(?:\s+to)?|transition(?:s|ed|ing)?(?:\s+to)?|voiceover|narrator|speaker\s+[a-z])`;
-  if (new RegExp(String.raw`\[(?:${stageDirection})(?:\s+[^\]\r\n]{0,80})?\]`, 'i').test(script)) {
+  const cueTarget = String.raw`[^)\r\n]{1,80}`;
+  const completeParentheticalCue = String.raw`(?:pause|beat|silence|sfx|sound effect|softly|quietly|loudly|slowly|quickly|applause|emphasis|stage direction|voiceover|narrator|speaker\s+[a-z]|whisper(?:s|ed|ing)?(?:\s+(?:softly|quietly))?|laugh(?:s|ed|ing)?|chuckle(?:s|d|ing)?|sighs?|music(?:\s+(?:up|down|starts?|stops?|fades?(?:\s+(?:in|out))?))?|fade(?:s|d|ing)?(?:\s+(?:in|out|to black))?|transition(?:s|ed|ing)?(?:\s+to\s+${cueTarget})?|zoom(?:\s+(?:in|out)(?:\s+on\s+${cueTarget})?)?)`;
+  const lineLeadingParentheticalCue = String.raw`(?:${completeParentheticalCue}|cut(?:\s+to\s+${cueTarget})?|show\s+${cueTarget}|display\s+${cueTarget})`;
+  const bracketedCueHead = String.raw`(?:pause|beat|silence|music|sfx|sound effect|softly|quietly|loudly|slowly|quickly|applause|whisper(?:s|ed|ing)?|laugh(?:s|ed|ing)?|chuckle(?:s|d|ing)?|sighs?|emphasis|stage direction|fade(?:s|d|ing)?|cut(?:s|ting)?|transition(?:s|ed|ing)?|show|display|zoom|voiceover|narrator|speaker\s+[a-z])`;
+  if (new RegExp(String.raw`\[(?:${bracketedCueHead})(?:\s+[^\]\r\n]{0,80})?\]`, 'i').test(script)) {
     throw new PresentationNarrationError();
   }
-  if (new RegExp(String.raw`\((?:${stageDirection})(?:\s+[^)\r\n]{0,80})?\)`, 'i').test(script)) {
+  if (new RegExp(String.raw`\(${completeParentheticalCue}\)`, 'i').test(script)) {
+    throw new PresentationNarrationError();
+  }
+  if (new RegExp(String.raw`^[ \t]*\(${lineLeadingParentheticalCue}\)(?:[ \t]|$)`, 'im').test(script)) {
     throw new PresentationNarrationError();
   }
   return script;

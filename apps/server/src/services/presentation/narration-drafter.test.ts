@@ -652,6 +652,12 @@ describe('PresentationNarrationDrafter', () => {
     ['Narration draft follows: Revenue grew.', 'reordered draft preamble'],
     ['The final script is as follows: Revenue grew.', 'script preamble'],
     ['Final script: Revenue grew.', 'standalone script label'],
+    ['Draft follows.\nRevenue grew.', 'generic draft preamble'],
+    ['Final follows: Revenue grew.', 'generic final preamble'],
+    ['Version below\nRevenue grew.', 'generic version preamble'],
+    ['The final version below.\nRevenue grew.', 'qualified generic preamble'],
+    ['Here is the draft: Revenue grew.', 'introduced generic draft preamble'],
+    ['Below is the final version.\nRevenue grew.', 'introduced generic version preamble'],
     ['As you can see on this slide, revenue grew.', 'this-slide meta commentary'],
     ['Use **strong emphasis** here.', 'strong markdown'],
     ['Use _emphasis_ here.', 'emphasis markdown'],
@@ -668,8 +674,16 @@ describe('PresentationNarrationDrafter', () => {
     ['We pause (whispers softly) before continuing.', 'parenthesized stage direction'],
     ['The result arrives (softly) before the close.', 'terse parenthesized stage direction'],
     ['(fade in) Revenue grew across every region.', 'fade production direction'],
+    ['Revenue grew. (music starts)', 'complete music production direction'],
+    ['(cut to demo)\nRevenue grew.', 'line-leading cut production direction'],
     ['Revenue grew. (transition to chart)', 'transition production direction'],
+    ['(show dashboard) Revenue grew.', 'line-leading show production direction'],
+    ['(display chart) Revenue grew.', 'line-leading display production direction'],
+    ['(zoom in on chart) Revenue grew.', 'line-leading zoom production direction'],
+    ['(pause) Revenue grew.', 'line-leading pause production direction'],
+    ['(beat) Revenue grew.', 'line-leading beat production direction'],
     ['Revenue grew. [music fades out]', 'music production cue'],
+    ['Revenue grew. [show demo]', 'bracketed show production cue'],
   ])('rejects %s writer output before storyboard apply (%s)', async (text) => {
     complete.mockResolvedValue({ text });
 
@@ -685,6 +699,11 @@ describe('PresentationNarrationDrafter', () => {
     'Revenue grew across Europe (including Germany and France) while costs stayed flat.',
     'The script follows a clear arc from customer need to measurable results.',
     'Demand faded in the second quarter (especially in Europe) before recovering.',
+    'The program expanded into new fields (music and culture) this year.',
+    'The components were cut to size (cut to fit before shipping).',
+    'The release remains on schedule (transition planning continues) this quarter.',
+    'The final version below market expectations still improved retention.',
+    'Our draft follows the evidence gathered from customer interviews.',
   ])('accepts ordinary spoken prose without production directions: %s', async (text) => {
     complete.mockResolvedValue({ text });
 
