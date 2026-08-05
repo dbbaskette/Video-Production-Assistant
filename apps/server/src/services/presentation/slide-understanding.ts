@@ -1,14 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
 import {
   lstat,
-  mkdir,
-  mkdtemp,
-  open,
   realpath,
-  rename,
-  rmdir,
-  unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -19,6 +12,12 @@ import {
 } from '@vpa/shared';
 import { z } from 'zod';
 import type { ResolvedVisualModel } from '../llm/model-router.js';
+import {
+  atomicWriteContainedFile,
+  ensureContainedDirectory,
+  readContainedFile,
+  type ContainedOperation,
+} from './contained-filesystem.js';
 import {
   GeminiImageTransport,
   MAX_INLINE_IMAGE_BYTES,
@@ -80,8 +79,9 @@ export interface SlideUnderstandingServiceOptions {
   transport?: GeminiImageTransportLike;
   readPrompt?: () => Promise<string>;
   readTextFile?: (path: string, maxBytes: number) => Promise<string>;
-  persist?: (path: string, data: string) => Promise<void>;
-  writeSnapshot?: (path: string, bytes: Buffer) => Promise<void>;
+  testHooks?: {
+    onContainedOperationReady?: (operation: ContainedOperation) => Promise<void> | void;
+  };
   warn: SlideUnderstandingWarning;
 }
 
@@ -112,13 +112,11 @@ interface BundlePaths {
   artifactPath: string;
 }
 
-interface ImageSnapshot {
-  path: string;
-  directory: DirectoryIdentity;
-  file: FileIdentity;
-  imageSha256: string;
-  assertCurrent(): Promise<void>;
-  cleanup(): Promise<void>;
+interface TargetState {
+  nextGeneration: number;
+  latestCompletedGeneration: number;
+  activeGenerations: number;
+  writeTail?: Promise<void>;
 }
 
 function pageName(pageNumber: number, extension: 'png' | 'json'): string {
@@ -192,14 +190,10 @@ async function assertDirectoryIdentity(expected: DirectoryIdentity): Promise<voi
   }
 }
 
-async function assertFileIdentity(target: string, expected: FileIdentity): Promise<void> {
-  const stat = await currentIdentity(target);
-  if (!stat.isFile() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) {
-    throw new SlideUnderstandingError();
-  }
-}
-
-async function resolveBundlePaths(input: EnsureSlideBriefInput): Promise<BundlePaths> {
+async function resolveBundlePaths(
+  input: EnsureSlideBriefInput,
+  onReady?: (operation: ContainedOperation) => Promise<void> | void,
+): Promise<BundlePaths> {
   const projectPath = path.resolve(input.projectPath);
   if (projectPath !== input.projectPath) throw new SlideUnderstandingError();
   const project = await canonicalDirectory(projectPath);
@@ -209,14 +203,7 @@ async function resolveBundlePaths(input: EnsureSlideBriefInput): Promise<BundleP
   const imagePath = path.join(pages.path, pageName(input.pageNumber, 'png'));
   if (input.imagePath !== imagePath) throw new SlideUnderstandingError();
 
-  const imageStat = await currentIdentity(imagePath);
-  if (!imageStat.isFile() || imageStat.isSymbolicLink() || await realpath(imagePath) !== imagePath) {
-    throw new SlideUnderstandingError();
-  }
-
-  const analysisPath = path.join(bundle.path, 'analysis');
-  await mkdir(analysisPath, { recursive: true });
-  const analysis = await canonicalDirectory(analysisPath);
+  const analysis = await ensureContainedDirectory(bundle, 'analysis', onReady);
   await assertDirectoryIdentity(project);
   await assertDirectoryIdentity(bundle);
   await assertDirectoryIdentity(pages);
@@ -232,156 +219,6 @@ async function resolveBundlePaths(input: EnsureSlideBriefInput): Promise<BundleP
 
 async function readBoundedTextNoFollow(target: string, maxBytes: number): Promise<string> {
   return (await readBoundedFileNoFollow(target, maxBytes)).toString('utf8');
-}
-
-async function writeOwnedFile(target: string, bytes: Buffer, mode: number): Promise<FileIdentity> {
-  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
-  const handle = await open(
-    target,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
-    mode,
-  );
-  let identity: FileIdentity | undefined;
-  let failure: unknown;
-  try {
-    try {
-      await handle.writeFile(bytes);
-      const stat = await handle.stat({ bigint: true });
-      identity = { dev: stat.dev, ino: stat.ino };
-    } catch (error) {
-      const failedStat = await handle.stat({ bigint: true }).catch(() => undefined);
-      if (failedStat) identity = { dev: failedStat.dev, ino: failedStat.ino };
-      failure = error;
-    }
-  } finally {
-    await handle.close();
-  }
-  if (failure) {
-    if (identity) {
-      try {
-        await assertFileIdentity(target, identity);
-        await unlink(target);
-      } catch {
-        // Preserve a replacement whose identity changed.
-      }
-    }
-    throw failure;
-  }
-  return identity!;
-}
-
-async function removeOwnedSnapshotCreation(
-  directory: DirectoryIdentity,
-  snapshotPath: string,
-  file?: FileIdentity,
-): Promise<void> {
-  try {
-    await assertDirectoryIdentity(directory);
-  } catch {
-    return;
-  }
-  if (file) {
-    try {
-      await assertFileIdentity(snapshotPath, file);
-      await unlink(snapshotPath);
-    } catch {
-      return;
-    }
-  } else {
-    try {
-      await lstat(snapshotPath);
-      return;
-    } catch (error) {
-      if (errorCode(error) !== 'ENOENT') return;
-    }
-  }
-  try {
-    await assertDirectoryIdentity(directory);
-    await rmdir(directory.path);
-  } catch {
-    // A changed or non-empty directory is intentionally preserved.
-  }
-}
-
-async function createImageSnapshot(
-  paths: BundlePaths,
-  injectedWrite?: (path: string, bytes: Buffer) => Promise<void>,
-): Promise<ImageSnapshot> {
-  await assertDirectoryIdentity(paths.project);
-  await assertDirectoryIdentity(paths.bundle);
-  await assertDirectoryIdentity(paths.pages);
-  const bytes = await readBoundedFileNoFollow(paths.imagePath, MAX_INLINE_IMAGE_BYTES);
-  await assertDirectoryIdentity(paths.pages);
-  if (bytes.byteLength === 0) throw new SlideUnderstandingError();
-  const imageSha256 = sha256(bytes);
-
-  await assertDirectoryIdentity(paths.analysis);
-  const directoryPath = await mkdtemp(path.join(paths.analysis.path, '.slide-understanding-'));
-  const directory = await canonicalDirectory(directoryPath);
-  await assertDirectoryIdentity(paths.analysis);
-  const snapshotPath = path.join(directory.path, `${randomUUID()}.png`);
-  let file: FileIdentity | undefined;
-  try {
-    if (injectedWrite) {
-      await injectedWrite(snapshotPath, bytes);
-      const stat = await currentIdentity(snapshotPath);
-      if (!stat.isFile() || stat.isSymbolicLink()) throw new SlideUnderstandingError();
-      file = { dev: stat.dev, ino: stat.ino };
-    } else {
-      file = await writeOwnedFile(snapshotPath, bytes, 0o400);
-    }
-    await assertDirectoryIdentity(paths.analysis);
-    await assertDirectoryIdentity(directory);
-    await assertFileIdentity(snapshotPath, file);
-  } catch (error) {
-    await removeOwnedSnapshotCreation(directory, snapshotPath, file);
-    throw error;
-  }
-
-  const snapshot: ImageSnapshot = {
-    path: snapshotPath,
-    directory,
-    file,
-    imageSha256,
-    async assertCurrent() {
-      await assertDirectoryIdentity(paths.analysis);
-      await assertDirectoryIdentity(directory);
-      await assertFileIdentity(snapshotPath, file);
-      if (await realpath(snapshotPath) !== snapshotPath) throw new SlideUnderstandingError();
-    },
-    async cleanup() {
-      try {
-        await assertDirectoryIdentity(directory);
-      } catch {
-        return;
-      }
-      try {
-        await assertFileIdentity(snapshotPath, file);
-      } catch (error) {
-        if (errorCode(error) === 'ENOENT') {
-          try {
-            await assertDirectoryIdentity(directory);
-            await rmdir(directory.path);
-          } catch {
-            // A changed or non-empty directory is intentionally preserved.
-          }
-        }
-        return;
-      }
-      try {
-        await unlink(snapshotPath);
-      } catch {
-        return;
-      }
-      try {
-        await assertDirectoryIdentity(directory);
-        await rmdir(directory.path);
-      } catch {
-        // A changed or non-empty directory is intentionally preserved.
-      }
-    },
-  };
-  return snapshot;
 }
 
 function validateVisualModel(model: ResolvedVisualModel): void {
@@ -472,44 +309,16 @@ function freshnessKey(fields: {
   });
 }
 
-async function atomicWriteContained(
-  target: string,
-  data: string,
-  parent: DirectoryIdentity,
-): Promise<void> {
-  if (Buffer.byteLength(data, 'utf8') > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
-  await assertDirectoryIdentity(parent);
-  const temporary = path.join(parent.path, `.${path.basename(target)}.${randomUUID()}.tmp`);
-  const temporaryIdentity = await writeOwnedFile(temporary, Buffer.from(data, 'utf8'), 0o600);
-  try {
-    await assertDirectoryIdentity(parent);
-    await assertFileIdentity(temporary, temporaryIdentity);
-    await rename(temporary, target);
-    await assertDirectoryIdentity(parent);
-    await assertFileIdentity(target, temporaryIdentity);
-  } catch (error) {
-    try {
-      await assertDirectoryIdentity(parent);
-      await assertFileIdentity(temporary, temporaryIdentity);
-      await unlink(temporary);
-    } catch {
-      // Never remove a path whose directory or file identity changed.
-    }
-    throw error;
-  }
-}
-
 export class SlideUnderstandingService {
   private readonly transport: GeminiImageTransportLike;
   private readonly readPrompt: () => Promise<string>;
-  private readonly readTextFile: (path: string, maxBytes: number) => Promise<string>;
-  private readonly persist?: (path: string, data: string) => Promise<void>;
-  private readonly writeSnapshot?: (path: string, bytes: Buffer) => Promise<void>;
+  private readonly readTextFile?: (path: string, maxBytes: number) => Promise<string>;
+  private readonly onContainedOperationReady?: (
+    operation: ContainedOperation,
+  ) => Promise<void> | void;
   private readonly warn: SlideUnderstandingWarning;
   private readonly inFlight = new Map<string, Promise<PresentationSlideBrief>>();
-  private readonly targetGeneration = new Map<string, number>();
-  private readonly latestCompletedGeneration = new Map<string, number>();
-  private readonly writeTails = new Map<string, Promise<void>>();
+  private readonly targetStates = new Map<string, TargetState>();
 
   constructor(options: SlideUnderstandingServiceOptions) {
     this.transport = options.transport ?? new GeminiImageTransport();
@@ -520,9 +329,8 @@ export class SlideUnderstandingService {
       'prompts',
       'presentation-slide-understanding.md',
     ), MAX_PROMPT_BYTES));
-    this.readTextFile = options.readTextFile ?? readBoundedTextNoFollow;
-    this.persist = options.persist;
-    this.writeSnapshot = options.writeSnapshot;
+    this.readTextFile = options.readTextFile;
+    this.onContainedOperationReady = options.testHooks?.onContainedOperationReady;
     this.warn = options.warn;
   }
 
@@ -545,7 +353,15 @@ export class SlideUnderstandingService {
     await assertDirectoryIdentity(paths.analysis);
     let raw: string;
     try {
-      raw = await this.readTextFile(paths.artifactPath, MAX_CACHE_BYTES);
+      raw = this.readTextFile
+        ? await this.readTextFile(paths.artifactPath, MAX_CACHE_BYTES)
+        : (await readContainedFile(
+          paths.analysis,
+          path.basename(paths.artifactPath),
+          MAX_CACHE_BYTES,
+          'cache-read',
+          this.onContainedOperationReady,
+        )).toString('utf8');
     } catch (error) {
       await assertDirectoryIdentity(paths.analysis);
       if (errorCode(error) === 'ENOENT') return undefined;
@@ -567,40 +383,65 @@ export class SlideUnderstandingService {
     }
   }
 
-  private nextGeneration(target: string): number {
-    const next = (this.targetGeneration.get(target) ?? 0) + 1;
-    this.targetGeneration.set(target, next);
-    return next;
+  private acquireTargetGeneration(target: string): { generation: number; state: TargetState } {
+    const state = this.targetStates.get(target) ?? {
+      nextGeneration: 0,
+      latestCompletedGeneration: 0,
+      activeGenerations: 0,
+    };
+    if (!this.targetStates.has(target)) this.targetStates.set(target, state);
+    state.nextGeneration += 1;
+    state.activeGenerations += 1;
+    return { generation: state.nextGeneration, state };
   }
 
-  private markCompleted(target: string, generation: number): void {
-    this.latestCompletedGeneration.set(
-      target,
-      Math.max(this.latestCompletedGeneration.get(target) ?? 0, generation),
-    );
+  private releaseTargetGeneration(target: string, state: TargetState): void {
+    state.activeGenerations -= 1;
+    this.deleteIdleTargetState(target, state);
+  }
+
+  private deleteIdleTargetState(target: string, state: TargetState): void {
+    if (
+      state.activeGenerations === 0
+      && state.writeTail === undefined
+      && this.targetStates.get(target) === state
+    ) {
+      this.targetStates.delete(target);
+    }
+  }
+
+  private markCompleted(state: TargetState, generation: number): void {
+    state.latestCompletedGeneration = Math.max(state.latestCompletedGeneration, generation);
   }
 
   private async persistIfLatest(
     paths: BundlePaths,
+    state: TargetState,
     generation: number,
     data: string,
   ): Promise<void> {
     const target = paths.artifactPath;
-    const previous = this.writeTails.get(target) ?? Promise.resolve();
+    const previous = state.writeTail ?? Promise.resolve();
     const write = previous.catch(() => undefined).then(async () => {
-      if (this.latestCompletedGeneration.get(target) !== generation) return;
+      if (state.latestCompletedGeneration !== generation) return;
       await assertDirectoryIdentity(paths.analysis);
-      if (this.persist) {
-        await this.persist(target, data);
-        await assertDirectoryIdentity(paths.analysis);
-      } else {
-        await atomicWriteContained(target, data, paths.analysis);
-      }
+      const bytes = Buffer.from(data, 'utf8');
+      if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
+      await atomicWriteContainedFile(
+        paths.analysis,
+        path.basename(target),
+        `.${path.basename(target)}.${randomUUID()}.tmp`,
+        bytes,
+        MAX_ARTIFACT_BYTES,
+        this.onContainedOperationReady,
+      );
+      await assertDirectoryIdentity(paths.analysis);
     });
     const tracked = write.finally(() => {
-      if (this.writeTails.get(target) === tracked) this.writeTails.delete(target);
+      if (state.writeTail === tracked) state.writeTail = undefined;
+      this.deleteIdleTargetState(target, state);
     });
-    this.writeTails.set(target, tracked);
+    state.writeTail = tracked;
     await tracked;
   }
 
@@ -613,43 +454,55 @@ export class SlideUnderstandingService {
     if (!parsedInput.success) throw new SlideUnderstandingError();
     const input = parsedInput.data;
 
-    let snapshot: ImageSnapshot | undefined;
+    let imageBytes: Buffer | undefined;
     try {
-      const paths = await resolveBundlePaths(input);
-      snapshot = await createImageSnapshot(paths, this.writeSnapshot);
+      const paths = await resolveBundlePaths(input, this.onContainedOperationReady);
+      imageBytes = await readContainedFile(
+        paths.pages,
+        path.basename(paths.imagePath),
+        MAX_INLINE_IMAGE_BYTES,
+        'source-read',
+        this.onContainedOperationReady,
+      );
+      if (imageBytes.byteLength === 0 || imageBytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
+        throw new SlideUnderstandingError();
+      }
+      const imageSha256 = sha256(imageBytes);
       const extractedTextSha256 = sha256(input.extractedText);
       const cached = await this.readCache(paths, input);
-      if (cached && isFresh(cached, input, snapshot.imageSha256, extractedTextSha256, model)) {
+      if (cached && isFresh(cached, input, imageSha256, extractedTextSha256, model)) {
         return cached;
       }
 
       const key = freshnessKey({
         bundlePath: paths.bundle.path,
         pageNumber: input.pageNumber,
-        imageSha256: snapshot.imageSha256,
+        imageSha256,
         extractedTextSha256,
         entryId: model.summary.entry_id,
         model: model.model,
       });
       const current = this.inFlight.get(key);
       if (current) {
-        const losingSnapshot = snapshot;
-        snapshot = undefined;
-        await losingSnapshot.cleanup();
+        imageBytes = undefined;
         return await current;
       }
 
-      const generation = this.nextGeneration(paths.artifactPath);
+      const { generation, state } = this.acquireTargetGeneration(paths.artifactPath);
       const generated = this.generateBrief(
         input,
         paths,
-        snapshot,
+        imageBytes,
+        imageSha256,
         extractedTextSha256,
         model,
+        state,
         generation,
       );
+      imageBytes = undefined;
       const tracked = generated.finally(() => {
         if (this.inFlight.get(key) === tracked) this.inFlight.delete(key);
+        this.releaseTargetGeneration(paths.artifactPath, state);
       });
       this.inFlight.set(key, tracked);
       return await tracked;
@@ -658,16 +511,18 @@ export class SlideUnderstandingService {
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');
       throw new SlideUnderstandingError();
     } finally {
-      await snapshot?.cleanup().catch(() => undefined);
+      imageBytes = undefined;
     }
   }
 
   private async generateBrief(
     input: EnsureSlideBriefInput,
     paths: BundlePaths,
-    snapshot: ImageSnapshot,
+    imageBytes: Buffer,
+    imageSha256: string,
     extractedTextSha256: string,
     model: ResolvedVisualModel,
+    state: TargetState,
     generation: number,
   ): Promise<PresentationSlideBrief> {
     try {
@@ -678,7 +533,6 @@ export class SlideUnderstandingService {
       ) {
         throw new SlideUnderstandingError();
       }
-      await snapshot.assertCurrent();
       const output = await this.transport.generateWithImage({
         apiKey: model.apiKey,
         model: model.model,
@@ -688,19 +542,18 @@ export class SlideUnderstandingService {
           'Use the PNG as the visual source of truth. The exact extracted PDF text follows:',
           input.extractedText,
         ].join('\n'),
-        imagePath: snapshot.path,
+        imageBytes,
         imageMimeType: 'image/png',
         responseMimeType: 'application/json',
         maxTokens: SLIDE_MAX_TOKENS,
-        expectedImageSha256: snapshot.imageSha256,
+        expectedImageSha256: imageSha256,
       });
-      await snapshot.assertCurrent();
       const modelFields = ModelProducedBriefSchema.parse(parseSingleJsonObject(output));
       const brief = PresentationSlideBriefSchema.parse({
         schema_version: PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
         presentation_id: input.presentationId,
         page_number: input.pageNumber,
-        image_sha256: snapshot.imageSha256,
+        image_sha256: imageSha256,
         extracted_text_sha256: extractedTextSha256,
         model: {
           entry_id: model.summary.entry_id,
@@ -710,12 +563,22 @@ export class SlideUnderstandingService {
         prompt_version: PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
         ...modelFields,
       });
-      this.markCompleted(paths.artifactPath, generation);
-      await this.persistIfLatest(paths, generation, `${JSON.stringify(brief, null, 2)}\n`);
+      this.markCompleted(state, generation);
+      await this.persistIfLatest(paths, state, generation, `${JSON.stringify(brief, null, 2)}\n`);
       return brief;
     } catch (error) {
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');
       throw new SlideUnderstandingError();
     }
   }
+}
+
+export function inspectSlideUnderstandingResources(
+  service: SlideUnderstandingService,
+): { inFlight: number; targets: number } {
+  const internal = service as unknown as {
+    inFlight: Map<string, unknown>;
+    targetStates: Map<string, unknown>;
+  };
+  return { inFlight: internal.inFlight.size, targets: internal.targetStates.size };
 }

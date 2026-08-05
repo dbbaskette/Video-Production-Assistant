@@ -188,6 +188,33 @@ describe('GeminiImageTransport', () => {
     expect(ctx.fetchRequest).not.toHaveBeenCalled();
   });
 
+  it('sends validated captured bytes without reopening an image pathname', async () => {
+    const ctx = transport();
+    const capturedInput = input({
+      imagePath: undefined,
+      imageBytes,
+    } as unknown as Partial<GenerateWithImageInput>);
+
+    await expect(ctx.instance.generateWithImage(capturedInput)).resolves.toBe('{"visual_summary":"Safe output"}');
+
+    expect(ctx.readFile).not.toHaveBeenCalled();
+    const requestBody = JSON.parse(String(vi.mocked(ctx.fetchRequest).mock.calls[0]![1]?.body));
+    expect(requestBody.contents[0].parts[0].inline_data.data).toBe(imageBytes.toString('base64'));
+  });
+
+  it('rejects a malformed extra image pathname when captured bytes are supplied', async () => {
+    const ctx = transport();
+    const capturedInput = input({
+      imagePath: '',
+      imageBytes,
+    } as unknown as Partial<GenerateWithImageInput>);
+
+    await expect(ctx.instance.generateWithImage(capturedInput)).rejects.toEqual(new GeminiImageTransportError());
+
+    expect(ctx.readFile).not.toHaveBeenCalled();
+    expect(ctx.fetchRequest).not.toHaveBeenCalled();
+  });
+
   it.each([
     { model: '../private?key=x' },
     { systemPrompt: '' },

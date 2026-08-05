@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
   access,
-  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -9,6 +8,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   symlink,
   truncate,
   unlink,
@@ -24,13 +24,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest';
 import type { ResolvedVisualModel } from '../llm/model-router.js';
 import {
-  GeminiImageTransport,
   MAX_INLINE_IMAGE_BYTES,
-  readBoundedFileNoFollow,
   type GenerateWithImageInput,
   type GeminiImageTransportLike,
 } from './gemini-image.js';
 import {
+  inspectSlideUnderstandingResources,
   SlideUnderstandingError,
   SlideUnderstandingService,
   type EnsureSlideBriefInput,
@@ -173,10 +172,11 @@ describe('SlideUnderstandingService', () => {
     const request = generateWithImage.mock.calls[0]![0] as GenerateWithImageInput;
     expect(request.userPrompt).toContain('Analyze slide 1.');
     expect(request.userPrompt).toContain(EXTRACTED_TEXT);
-    expect(request.imagePath).not.toBe(imagePath);
-    expect(request.imagePath.startsWith(path.dirname(artifactPath()))).toBe(true);
-    await expect(access(request.imagePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(request.imageBytes).toEqual(ORIGINAL_IMAGE);
+    expect(request.imagePath).toBeUndefined();
     expect((await readdir(path.dirname(artifactPath()))).sort()).toEqual(['page-0001.json']);
+    expect((await stat(path.dirname(artifactPath()))).mode & 0o777).toBe(0o700);
+    expect((await stat(artifactPath())).mode & 0o777).toBe(0o600);
   });
 
   it.each([
@@ -325,6 +325,7 @@ describe('SlideUnderstandingService', () => {
     const instance = service();
 
     await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
     await expect(instance.ensureBrief(input, model())).resolves.toMatchObject({ page_number: 1 });
 
     expect(generateWithImage).toHaveBeenCalledTimes(2);
@@ -354,12 +355,10 @@ describe('SlideUnderstandingService', () => {
     expect(generateWithImage).not.toHaveBeenCalled();
   });
 
-  it('hashes and sends the same contained snapshot bytes when the source changes during generation', async () => {
+  it('hashes and sends the same captured bytes when the source changes during generation', async () => {
     let sentBytes: Buffer | undefined;
-    let snapshotPath: string | undefined;
     generateWithImage.mockImplementation(async (request: GenerateWithImageInput) => {
-      snapshotPath = request.imagePath;
-      sentBytes = await readFile(request.imagePath);
+      sentBytes = Buffer.from(request.imageBytes!);
       await writeFile(imagePath, Buffer.from('replacement after snapshot'));
       return validModelOutput;
     });
@@ -369,21 +368,146 @@ describe('SlideUnderstandingService', () => {
     expect(sentBytes).toEqual(ORIGINAL_IMAGE);
     expect(brief.image_sha256).toBe(sha256(sentBytes!));
     expect(await readFile(imagePath)).toEqual(Buffer.from('replacement after snapshot'));
-    expect(snapshotPath!.startsWith(path.join(projectPath, 'presentations', PRESENTATION_ID))).toBe(true);
-    await expect(access(snapshotPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(path.dirname(artifactPath()))).sort()).toEqual(['page-0001.json']);
   });
 
-  it('never replaces a valid cache artifact when snapshot creation cannot proceed', async () => {
+  it('reads from the initially opened no-follow source descriptor when its path is replaced', async () => {
+    const replacement = Buffer.from('replacement after source open');
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'source-read') return;
+      await rename(imagePath, `${imagePath}.opened`);
+      await writeFile(imagePath, replacement);
+    });
+    const instance = service({
+      testHooks: { onContainedOperationReady },
+    } as unknown as Partial<SlideUnderstandingServiceOptions>);
+
+    const brief = await instance.ensureBrief(input, model());
+
+    expect(brief.image_sha256).toBe(sha256(ORIGINAL_IMAGE));
+    expect(generateWithImage.mock.calls[0]![0].imageBytes).toEqual(ORIGINAL_IMAGE);
+    expect(await readFile(imagePath)).toEqual(replacement);
+    expect(onContainedOperationReady).toHaveBeenCalledWith('source-read');
+  });
+
+  it('keeps the source read anchored across a pages-parent swap and restore', async () => {
+    const pagesPath = path.dirname(imagePath);
+    const movedPagesPath = `${pagesPath}.opened`;
+    const replacementPagesPath = `${pagesPath}.replacement`;
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'source-read') return;
+      await rename(pagesPath, movedPagesPath);
+      await mkdir(pagesPath);
+      await writeFile(path.join(pagesPath, path.basename(imagePath)), Buffer.from('replacement parent image'));
+      await rename(pagesPath, replacementPagesPath);
+      await rename(movedPagesPath, pagesPath);
+    });
+    try {
+      const instance = service({
+        testHooks: { onContainedOperationReady },
+      } as unknown as Partial<SlideUnderstandingServiceOptions>);
+
+      const brief = await instance.ensureBrief(input, model());
+
+      expect(brief.image_sha256).toBe(sha256(ORIGINAL_IMAGE));
+      expect(generateWithImage.mock.calls[0]![0].imageBytes).toEqual(ORIGINAL_IMAGE);
+      expect(onContainedOperationReady).toHaveBeenCalledWith('source-read');
+    } finally {
+      await rm(replacementPagesPath, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a cache entry from the initially opened descriptor when its pathname is replaced', async () => {
+    const first = await service().ensureBrief(input, model());
+    generateWithImage.mockClear();
+    const replacement = `${JSON.stringify({ ...first, detected_title: 'Replacement cache' })}\n`;
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'cache-read') return;
+      await rename(artifactPath(), `${artifactPath()}.opened`);
+      await writeFile(artifactPath(), replacement);
+    });
+    const instance = service({
+      testHooks: { onContainedOperationReady },
+    } as unknown as Partial<SlideUnderstandingServiceOptions>);
+
+    await expect(instance.ensureBrief(input, model())).resolves.toEqual(first);
+
+    expect(generateWithImage).not.toHaveBeenCalled();
+    expect(await readFile(artifactPath(), 'utf8')).toBe(replacement);
+    expect(onContainedOperationReady).toHaveBeenCalledWith('cache-read');
+  });
+
+  it('writes cache temp and target through the anchored analysis directory after its path is swapped', async () => {
+    const analysisPath = path.dirname(artifactPath());
+    const movedAnalysisPath = `${analysisPath}.opened`;
+    const marker = path.join(analysisPath, 'replacement-marker.txt');
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'cache-write') return;
+      await rename(analysisPath, movedAnalysisPath);
+      await mkdir(analysisPath, { mode: 0o700 });
+      await writeFile(marker, 'must survive');
+    });
+    const instance = service({
+      testHooks: { onContainedOperationReady },
+    } as unknown as Partial<SlideUnderstandingServiceOptions>);
+
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    await expect(access(path.join(analysisPath, path.basename(artifactPath())))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
+    await expect(readFile(path.join(movedAnalysisPath, path.basename(artifactPath())), 'utf8')).resolves.toContain(
+      '"schema_version"',
+    );
+  });
+
+  it('persists through the original analysis directory across a parent swap and restore', async () => {
+    const analysisPath = path.dirname(artifactPath());
+    const movedAnalysisPath = `${analysisPath}.opened`;
+    const replacementAnalysisPath = `${analysisPath}.replacement`;
+    const replacementMarker = path.join(replacementAnalysisPath, 'replacement-marker.txt');
+    const onContainedOperationReady = vi.fn(async (operation: string) => {
+      if (operation !== 'cache-write') return;
+      await rename(analysisPath, movedAnalysisPath);
+      await mkdir(analysisPath, { mode: 0o700 });
+      await writeFile(path.join(analysisPath, 'replacement-marker.txt'), 'must survive');
+      await rename(analysisPath, replacementAnalysisPath);
+      await rename(movedAnalysisPath, analysisPath);
+    });
+    try {
+      await expect(service({
+        testHooks: { onContainedOperationReady },
+      } as unknown as Partial<SlideUnderstandingServiceOptions>).ensureBrief(input, model())).resolves.toMatchObject({
+        page_number: 1,
+      });
+
+      await expect(readFile(artifactPath(), 'utf8')).resolves.toContain('"schema_version"');
+      await expect(readFile(replacementMarker, 'utf8')).resolves.toBe('must survive');
+    } finally {
+      await rm(replacementAnalysisPath, { recursive: true, force: true });
+    }
+  });
+
+  it('removes only its owned cache temp when the final target is a replacement directory', async () => {
+    await mkdir(path.dirname(artifactPath()), { recursive: true });
+    await mkdir(artifactPath());
+    const marker = path.join(artifactPath(), 'replacement-marker.txt');
+    await writeFile(marker, 'must survive');
+
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
+    expect((await readdir(path.dirname(artifactPath()))).filter((entry) => entry.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('never replaces a valid cache artifact when the changed source exceeds the read cap', async () => {
     const instance = service();
     await instance.ensureBrief(input, model());
     const originalArtifact = await readFile(artifactPath(), 'utf8');
-    await writeFile(imagePath, Buffer.from('stale source'));
-    await chmod(path.dirname(artifactPath()), 0o500);
-    try {
-      await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
-    } finally {
-      await chmod(path.dirname(artifactPath()), 0o700);
-    }
+    await truncate(imagePath, MAX_INLINE_IMAGE_BYTES + 1);
+
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
 
     expect(await readFile(artifactPath(), 'utf8')).toBe(originalArtifact);
   });
@@ -448,63 +572,17 @@ describe('SlideUnderstandingService', () => {
     }
   });
 
-  it('rejects a snapshot path replacement because transport verifies the expected image hash', async () => {
-    const replacement = Buffer.from('attacker replacement snapshot bytes');
-    const readSnapshot = vi.fn(async (target: string, maxBytes: number) => {
-      await rm(target);
-      await writeFile(target, replacement, { mode: 0o400 });
-      return readBoundedFileNoFollow(target, maxBytes);
-    });
-    const fetchRequest = vi.fn(async () => new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: validModelOutput }] } }],
-    }), { status: 200 })) as unknown as typeof fetch;
-    const instance = service({
-      transport: new GeminiImageTransport({ fetch: fetchRequest, readFile: readSnapshot }),
-    });
-
-    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
-
-    expect(readSnapshot).toHaveBeenCalledOnce();
-    expect(fetchRequest).not.toHaveBeenCalled();
-  });
-
-  it('does not recursively delete a replacement snapshot directory during cleanup', async () => {
-    let replacementMarker = '';
-    generateWithImage.mockImplementationOnce(async (request: GenerateWithImageInput) => {
-      const snapshotDirectory = path.dirname(request.imagePath);
-      await rename(snapshotDirectory, `${snapshotDirectory}.original`);
-      await mkdir(snapshotDirectory);
-      replacementMarker = path.join(snapshotDirectory, 'replacement-marker.txt');
-      await writeFile(replacementMarker, 'must survive cleanup');
-      return validModelOutput;
-    });
+  it('creates no cleanup-sensitive snapshot path when transport rejects captured bytes', async () => {
+    generateWithImage.mockRejectedValueOnce(new Error('private provider failure'));
 
     await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
 
-    await expect(readFile(replacementMarker, 'utf8')).resolves.toBe('must survive cleanup');
+    expect((await readdir(path.dirname(artifactPath()))).filter((entry) => (
+      entry.startsWith('.slide-understanding-')
+    ))).toEqual([]);
   });
 
-  it('rejects an analysis-parent retarget without writing or cleaning the replacement target', async () => {
-    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'vpa-slide-cache-retarget-')));
-    const marker = path.join(outside, 'replacement-marker.txt');
-    await writeFile(marker, 'must survive');
-    generateWithImage.mockImplementationOnce(async (request: GenerateWithImageInput) => {
-      const analysis = path.dirname(path.dirname(request.imagePath));
-      await rename(analysis, `${analysis}.original`);
-      await symlink(outside, analysis, 'dir');
-      return validModelOutput;
-    });
-    try {
-      await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
-
-      await expect(access(path.join(outside, 'page-0001.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it('immediately cleans losing snapshots for many duplicate same-key callers', async () => {
+  it('immediately releases losing captured buffers for many duplicate same-key callers', async () => {
     const gate = deferred<string>();
     generateWithImage.mockImplementation(() => gate.promise);
     const instance = service();
@@ -512,11 +590,13 @@ describe('SlideUnderstandingService', () => {
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
     const analysisEntries = await readdir(path.dirname(artifactPath()));
 
-    expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toHaveLength(1);
+    expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 1, targets: 1 });
 
     gate.resolve(validModelOutput);
     await Promise.all(calls);
     expect((await readdir(path.dirname(artifactPath()))).sort()).toEqual(['page-0001.json']);
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
   });
 
   it('uses an explicit byte cap for cache reads and rejects an oversized prompt before transport', async () => {
@@ -562,36 +642,6 @@ describe('SlideUnderstandingService', () => {
     );
   });
 
-  it('removes its verified empty snapshot directory when failure finds the owned file already absent', async () => {
-    const analysisPath = path.dirname(artifactPath());
-    const readPrompt = vi.fn(async () => {
-      const snapshotDirectoryName = (await readdir(analysisPath)).find((entry) => (
-        entry.startsWith('.slide-understanding-')
-      ));
-      const snapshotDirectory = path.join(analysisPath, snapshotDirectoryName!);
-      const snapshotFile = path.join(snapshotDirectory, (await readdir(snapshotDirectory))[0]!);
-      await unlink(snapshotFile);
-      return 'Exact versioned visual prompt.';
-    });
-
-    await expect(service({ readPrompt }).ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
-
-    expect((await readdir(analysisPath)).filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
-  });
-
-  it('removes its verified empty snapshot directory when snapshot creation fails before writing', async () => {
-    const writeSnapshot = vi.fn(async () => {
-      throw new Error('private snapshot write failure');
-    });
-    const instance = service({ writeSnapshot } as unknown as Partial<SlideUnderstandingServiceOptions>);
-
-    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
-
-    expect(writeSnapshot).toHaveBeenCalledOnce();
-    const analysisPath = path.dirname(artifactPath());
-    expect((await readdir(analysisPath)).filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
-  });
-
   it('rejects an oversized real source before transport through the capped descriptor reader', async () => {
     await truncate(imagePath, MAX_INLINE_IMAGE_BYTES + 1);
 
@@ -604,7 +654,8 @@ describe('SlideUnderstandingService', () => {
     const unsafe = [
       model('alpha\0beta', 'gamma'),
       model('alpha', 'beta\0gamma'),
-      model(' whitespace'),
+      model('alpha\u001fbeta'),
+      model('alpha\u007fbeta'),
       model('x'.repeat(201)),
       { ...model(), apiKey: 'private\nkey' },
       { ...model(), apiKey: 'x'.repeat(1_025) },
@@ -617,6 +668,29 @@ describe('SlideUnderstandingService', () => {
 
     expect(results.every((result) => result.status === 'rejected')).toBe(true);
     expect(generateWithImage).not.toHaveBeenCalled();
+  });
+
+  it('accepts printable persisted entry IDs containing spaces without weakening concrete model validation', async () => {
+    const routed = model('Gemini Pro');
+
+    await expect(service().ensureBrief(input, routed)).resolves.toMatchObject({
+      model: { entry_id: 'Gemini Pro', model: 'gemini-2.5-pro' },
+    });
+
+    expect(generateWithImage).toHaveBeenCalledOnce();
+  });
+
+  it('releases per-target ordering state after many unique targets settle', async () => {
+    const instance = service();
+    const calls = await Promise.all(Array.from({ length: 24 }, async (_unused, index) => {
+      const pageNumber = index + 1;
+      const pageImagePath = path.join(path.dirname(imagePath), `page-${String(pageNumber).padStart(4, '0')}.png`);
+      await writeFile(pageImagePath, Buffer.from(`page ${pageNumber}`));
+      return instance.ensureBrief({ ...input, pageNumber, imagePath: pageImagePath }, model(`entry-${pageNumber}`));
+    }));
+
+    expect(calls).toHaveLength(24);
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
   });
 
   it('keeps the newest completed freshness generation in the page cache', async () => {
@@ -641,6 +715,31 @@ describe('SlideUnderstandingService', () => {
 
     await expect(instance.ensureBrief(input, model('new-entry', 'gemini-new'))).resolves.toMatchObject({
       detected_title: 'Newer model',
+    });
+    expect(generateWithImage).not.toHaveBeenCalled();
+  });
+
+  it('lets an older successful generation persist when the overlapping newer generation rejects', async () => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    generateWithImage.mockImplementation((request: GenerateWithImageInput) => (
+      request.model === 'gemini-old' ? older.promise : newer.promise
+    ));
+    const instance = service();
+
+    const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    const newerCall = instance.ensureBrief(input, model('new-entry', 'gemini-new'));
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
+    newer.reject(new Error('private newer provider rejection'));
+    await expect(newerCall).rejects.toEqual(new SlideUnderstandingError());
+    older.resolve(JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Older survivor' }));
+    await expect(olderCall).resolves.toMatchObject({ detected_title: 'Older survivor' });
+
+    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
+    generateWithImage.mockClear();
+    await expect(instance.ensureBrief(input, model('old-entry', 'gemini-old'))).resolves.toMatchObject({
+      detected_title: 'Older survivor',
     });
     expect(generateWithImage).not.toHaveBeenCalled();
   });

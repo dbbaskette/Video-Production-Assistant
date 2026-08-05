@@ -15,7 +15,6 @@ const MAX_IMAGE_PATH_CHARS = 4_096;
 const MAX_OUTPUT_TOKENS = 8_192;
 const MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const SAFE_ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 
 export interface GenerateWithImageInput {
@@ -23,7 +22,8 @@ export interface GenerateWithImageInput {
   model: string;
   systemPrompt: string;
   userPrompt: string;
-  imagePath: string;
+  imagePath?: string;
+  imageBytes?: Buffer;
   imageMimeType: 'image/png';
   responseMimeType: 'application/json';
   maxTokens: number;
@@ -75,19 +75,29 @@ export function isValidGeminiTransportIdentity(identity: GeminiTransportIdentity
     && validText(identity.model, MAX_MODEL_CHARS)
     && SAFE_MODEL.test(identity.model)
     && (identity.entryId === undefined || (
-      validText(identity.entryId, 200)
-      && identity.entryId === identity.entryId.trim()
-      && SAFE_ENTRY_ID.test(identity.entryId)
+      typeof identity.entryId === 'string'
+      && identity.entryId.length > 0
+      && identity.entryId.length <= 200
+      && !containsControlCharacter(identity.entryId)
     ));
 }
 
 function validateInput(input: GenerateWithImageInput): void {
+  const suppliedImagePath = input.imagePath !== undefined;
+  const suppliedImageBytes = input.imageBytes !== undefined;
+  const validImagePath = typeof input.imagePath === 'string'
+    && validText(input.imagePath, MAX_IMAGE_PATH_CHARS)
+    && !input.imagePath.includes('\0');
+  const validImageBytes = Buffer.isBuffer(input.imageBytes)
+    && input.imageBytes.byteLength > 0
+    && input.imageBytes.byteLength <= MAX_INLINE_IMAGE_BYTES;
   if (
     !isValidGeminiTransportIdentity(input)
     || !validText(input.systemPrompt, MAX_SYSTEM_PROMPT_CHARS)
     || !validText(input.userPrompt, MAX_USER_PROMPT_CHARS)
-    || !validText(input.imagePath, MAX_IMAGE_PATH_CHARS)
-    || input.imagePath.includes('\0')
+    || suppliedImagePath === suppliedImageBytes
+    || (suppliedImagePath && !validImagePath)
+    || (suppliedImageBytes && !validImageBytes)
     || input.imageMimeType !== 'image/png'
     || input.responseMimeType !== 'application/json'
     || !Number.isSafeInteger(input.maxTokens)
@@ -102,7 +112,8 @@ function validateInput(input: GenerateWithImageInput): void {
 
 export async function readBoundedFileNoFollow(target: string, maxBytes: number): Promise<Buffer> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new GeminiImageTransportError();
-  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  if (typeof constants.O_NOFOLLOW !== 'number') throw new GeminiImageTransportError();
+  const noFollow = constants.O_NOFOLLOW;
   const handle = await open(target, constants.O_RDONLY | noFollow);
   try {
     const before = await handle.stat({ bigint: true });
@@ -218,7 +229,9 @@ export class GeminiImageTransport implements GeminiImageTransportLike {
   async generateWithImage(input: GenerateWithImageInput): Promise<string> {
     try {
       validateInput(input);
-      const bytes = await this.readImageFile(input.imagePath, MAX_INLINE_IMAGE_BYTES);
+      const bytes = input.imageBytes
+        ? Buffer.from(input.imageBytes)
+        : await this.readImageFile(input.imagePath!, MAX_INLINE_IMAGE_BYTES);
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
         throw new GeminiImageTransportError();
       }
