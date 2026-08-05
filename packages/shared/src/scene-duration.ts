@@ -31,14 +31,10 @@ export function preparedNarrationDurationSec(scene: Scene): number | undefined {
   return positiveFinite(total) ? total : undefined;
 }
 
-export function resolveEffectiveSceneDuration(
-  scene: Scene,
-  narrationAudioDuration?: number,
-): EffectiveSceneDuration {
+/** Planning/UI duration derived from persisted storyboard metadata. */
+export function resolvePlannedSceneDuration(scene: Scene): EffectiveSceneDuration {
   if (isFlexiblePresentationScene(scene)) {
-    const narrationDuration = positiveFinite(narrationAudioDuration)
-      ? narrationAudioDuration
-      : preparedNarrationDurationSec(scene);
+    const narrationDuration = preparedNarrationDurationSec(scene);
     if (narrationDuration !== undefined) {
       return { targetSec: narrationDuration, flexible: true, source: 'narration' };
     }

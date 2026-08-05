@@ -396,6 +396,54 @@ describe('presentation scene duration rendering', () => {
     expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
   });
 
+  it('uses the hold when full-project narration is excluded despite valid stored chunk timing', async () => {
+    const sb = presentationStoryboard(false);
+    sb.scenes[0]!.narration = {
+      script: 'Stored narration',
+      chunks: [{
+        index: 0,
+        text: 'Stored narration',
+        audio: 'narration/slide.mp3',
+        durationSec: 8.25,
+      }],
+    };
+    await saveStoryboard(projectPath, sb);
+    const clipPath = join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4');
+    const narrationPath = join(projectPath, 'narration', 'slide.mp3');
+    probeDurations.set(clipPath, 1);
+    probeDurations.set(narrationPath, 8.25);
+
+    await renderFinalVideo(projectPath, { includeNarration: false });
+
+    const muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'))!;
+    expect(muxCall.args.join(' ')).toContain('trim=duration=5.000,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-an']));
+    expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(0);
+  });
+
+  it('uses the hold when stored chunks have timing but no available audio', async () => {
+    const sb = presentationStoryboard(false);
+    sb.scenes[0]!.narration = {
+      script: 'Unavailable narration',
+      chunks: [{
+        index: 0,
+        text: 'Unavailable narration',
+        audio: 'narration/missing.mp3',
+        durationSec: 8.25,
+      }],
+    };
+    await saveStoryboard(projectPath, sb);
+    const overlayPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'overlay.mp4');
+    probeDurations.set(overlayPath, 1);
+
+    const result = await renderSingleScene({ projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' });
+
+    const muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(result.narrationPath).toBeNull();
+    expect(muxCall.args.join(' ')).toContain('trim=duration=5.000,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-an']));
+  });
+
   it('treats presentation mix as replacement in both render paths because slide clips are silent', async () => {
     await saveStoryboard(projectPath, presentationStoryboard(true));
     const clipPath = join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4');

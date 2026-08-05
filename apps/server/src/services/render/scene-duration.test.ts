@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vpa/shared';
-import { RenderError, resolveSceneDuration } from './scene-duration.js';
+import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
 
 const slideScene: Scene = {
   id: 'scene-slide-2',
@@ -29,9 +29,9 @@ const videoScene: Scene = {
   recording: { source: 'recordings/demo.mp4', duration_sec: 30 },
 };
 
-describe('resolveSceneDuration', () => {
+describe('resolveRenderSceneDuration', () => {
   it('uses narration as the flexible duration of a presentation slide', () => {
-    expect(resolveSceneDuration(slideScene, 12.4)).toEqual({
+    expect(resolveRenderSceneDuration(slideScene, 12.4)).toEqual({
       targetSec: 12.4,
       flexible: true,
       source: 'narration',
@@ -39,7 +39,7 @@ describe('resolveSceneDuration', () => {
   });
 
   it('uses the slide hold when narration is unavailable', () => {
-    expect(resolveSceneDuration(slideScene)).toEqual({
+    expect(resolveRenderSceneDuration(slideScene)).toEqual({
       targetSec: 5,
       flexible: true,
       source: 'slide-hold',
@@ -47,7 +47,7 @@ describe('resolveSceneDuration', () => {
   });
 
   it('keeps a normal recording fixed to its meaningful duration', () => {
-    expect(resolveSceneDuration(videoScene)).toEqual({
+    expect(resolveRenderSceneDuration(videoScene)).toEqual({
       targetSec: 30,
       flexible: false,
       source: 'recording',
@@ -56,16 +56,44 @@ describe('resolveSceneDuration', () => {
 
   it('ignores invalid narration durations and returns a bounded render error for missing recording duration', () => {
     for (const duration of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(resolveSceneDuration(slideScene, duration).source).toBe('slide-hold');
+      expect(resolveRenderSceneDuration(slideScene, duration).source).toBe('slide-hold');
     }
-    expect(() => resolveSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
+    expect(() => resolveRenderSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
       .toThrowError(RenderError);
-    expect(() => resolveSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
+    expect(() => resolveRenderSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
       .toThrowError(/^Scene recording duration is unavailable$/);
   });
 
+  it('never infers render duration from stored chunk timing without a valid prepared-audio probe', () => {
+    const sceneWithStoredChunks: Scene = {
+      ...slideScene,
+      narration: {
+        script: 'Stored narration',
+        chunks: [{
+          index: 0,
+          text: 'Stored narration',
+          audio: 'narration/chunk.mp3',
+          durationSec: 8.25,
+        }],
+      },
+    };
+
+    for (const duration of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveRenderSceneDuration(sceneWithStoredChunks, duration)).toEqual({
+        targetSec: 5,
+        flexible: true,
+        source: 'slide-hold',
+      });
+    }
+    expect(resolveRenderSceneDuration(sceneWithStoredChunks, 8.25)).toEqual({
+      targetSec: 8.25,
+      flexible: true,
+      source: 'narration',
+    });
+  });
+
   it('does not infer presentation semantics from a presentation-looking filename', () => {
-    expect(resolveSceneDuration({
+    expect(resolveRenderSceneDuration({
       ...videoScene,
       type: 'slide',
       recording: { source: 'presentations/fake/clips/page-0001.mp4', duration_sec: 30 },

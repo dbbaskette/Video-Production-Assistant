@@ -44,6 +44,41 @@ describe('render failure boundaries', () => {
     expect(serialized).not.toContain(secret);
   });
 
+  it('redacts a credential before bounding a diagnostic even when its value exceeds 5000 characters', () => {
+    const leakedSuffix = 'SECRET_SUFFIX_SHOULD_NOT_LEAK';
+    const longSecret = `${'x'.repeat(6_000)}${leakedSuffix}`;
+
+    const diagnostic = privateRenderDiagnostic(new RenderError(
+      `ffmpeg failed --token ${longSecret} after probing input`,
+    ));
+    const serialized = JSON.stringify(diagnostic);
+
+    expect(serialized).toContain('--token [redacted secret]');
+    expect(serialized).toContain('after probing input');
+    expect(serialized).not.toContain(leakedSuffix);
+    expect(serialized.length).toBeLessThan(2_500);
+  });
+
+  it('redacts quoted and media-like absolute Unix paths containing spaces without consuming prose', () => {
+    const quotedPath = '/Users/alice/Private Project/source clip.mp4';
+    const unquotedPath = '/private/tmp/Render Jobs/final output.mov';
+    const ordinaryProse = 'Render failed / retry later and said "/ retry later", but keep this explanation.';
+
+    const diagnostic = privateRenderDiagnostic(new RenderError(
+      `Could not open "${quotedPath}" or ${unquotedPath}. ${ordinaryProse}`,
+    ));
+    const serialized = JSON.stringify(diagnostic);
+
+    expect(serialized).not.toContain(quotedPath);
+    expect(serialized).not.toContain(unquotedPath);
+    expect(serialized).not.toContain('Private Project');
+    expect(serialized).not.toContain('source clip.mp4');
+    expect(serialized).not.toContain('Render Jobs');
+    expect(serialized).not.toContain('final output.mov');
+    expect(serialized.match(/\[redacted path\]/g)).toHaveLength(2);
+    expect(diagnostic).toMatchObject({ message: expect.stringContaining(ordinaryProse) });
+  });
+
   it('preserves stable precondition codes without exposing scene identifiers', () => {
     expect(publicRenderFailure(new RenderError('Scene not found: private-scene'), 'scene')).toEqual({
       statusCode: 400,

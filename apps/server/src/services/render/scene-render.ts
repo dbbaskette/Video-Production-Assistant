@@ -34,7 +34,7 @@ import {
   createCachingBrandColorResolver,
   defaultBrandColorResolver,
 } from '../frame/resolve.js';
-import { resolveSceneDuration } from './scene-duration.js';
+import { resolveRenderSceneDuration } from './scene-duration.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -282,9 +282,8 @@ async function muxOne(opts: MuxOpts): Promise<void> {
   const args: string[] = ['-y', '-i', opts.videoPath];
   if (opts.audioPath) args.push('-i', opts.audioPath);
 
-  resolveSceneDuration(opts.scene);
   const narrationDuration = opts.audioPath ? await probeDuration(opts.audioPath) : undefined;
-  const resolvedDuration = resolveSceneDuration(opts.scene, narrationDuration);
+  const resolvedDuration = resolveRenderSceneDuration(opts.scene, narrationDuration);
   // Presentation source clips have no audio stream. A scene-level `mix`
   // preference therefore narrows to replacement instead of addressing [0:a].
   const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : opts.audioMode;

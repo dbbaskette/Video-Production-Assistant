@@ -22,7 +22,7 @@ import { resolveLtColors } from '../overlay/colors.js';
 import { buildTransitionClip } from './transition-clip.js';
 import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
 import { ensureSilenceClip } from './silence.js';
-import { RenderError, resolveSceneDuration } from './scene-duration.js';
+import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
 
 export { RenderError };
 
@@ -654,12 +654,12 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   const args: string[] = ['-y', '-i', videoSrc];
   if (audioPath) args.push('-i', audioPath);
 
-  const baseDuration = resolveSceneDuration(scene);
+  const baseDuration = resolveRenderSceneDuration(scene);
   const [videoDuration, narrationDuration] = await Promise.all([
     baseDuration.flexible || audioPath ? probeDuration(videoSrc) : Promise.resolve(baseDuration.targetSec),
     audioPath ? probeDuration(audioPath) : Promise.resolve(undefined),
   ]);
-  const resolvedDuration = resolveSceneDuration(scene, narrationDuration);
+  const resolvedDuration = resolveRenderSceneDuration(scene, narrationDuration);
   // Imported slide clips are intentionally silent. Treat a persisted `mix`
   // preference as replacement for this scene so the graph never references
   // a nonexistent [0:a] stream. Ordinary recordings keep true mix behavior.

@@ -15,7 +15,7 @@ import {
   loadProjectSourceContext,
   sourceDocsNeedSummarization,
 } from '../services/project-source-docs/context.js';
-import { resolveEffectiveSceneDuration, type ResolvedModelSummary } from '@vpa/shared';
+import { resolvePlannedSceneDuration, type ResolvedModelSummary } from '@vpa/shared';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { sha256File } from '../services/recording/metadata.js';
 import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
@@ -243,7 +243,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             sceneDescription: operationScene.description,
             sceneIntent: operationScene.intent,
             durationSec:
-              resolveEffectiveSceneDuration(operationScene).targetSec ?? brief.source.duration_sec,
+              resolvePlannedSceneDuration(operationScene).targetSec ?? brief.source.duration_sec,
             projectObjective: project.objective,
             projectAudience: project.audience,
             sourceContext,
@@ -268,7 +268,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             sceneDescription: operationScene.description,
             sceneIntent: operationScene.intent,
             sceneType: operationScene.type,
-            durationSec: resolveEffectiveSceneDuration(operationScene).targetSec,
+            durationSec: resolvePlannedSceneDuration(operationScene).targetSec,
             projectObjective: project.objective,
             projectAudience: project.audience,
             sourceContext,
@@ -455,7 +455,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       });
     }
 
-    const durationResolution = resolveEffectiveSceneDuration(scene);
+    const durationResolution = resolvePlannedSceneDuration(scene);
     if (durationResolution.flexible) {
       return reply.status(400).send({
         error: 'Presentation narration sets the final scene length and does not need tightening.',
@@ -552,7 +552,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
 
     // Fixed-duration recordings use an explicit override or their source
     // duration. Flexible presentation visuals are polished for quality only.
-    const polishDuration = resolveEffectiveSceneDuration(scene);
+    const polishDuration = resolvePlannedSceneDuration(scene);
     const targetDurationSec = polishDuration.flexible
       ? undefined
       : typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0

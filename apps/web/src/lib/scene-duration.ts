@@ -1,6 +1,6 @@
 import {
   isFlexiblePresentationScene,
-  resolveEffectiveSceneDuration,
+  resolvePlannedSceneDuration,
   type Scene,
 } from '@vpa/shared';
 
@@ -22,7 +22,7 @@ function hasNarrationAudio(scene: Scene): boolean {
 }
 
 function presentationDurationLabel(scene: Scene): string {
-  const duration = resolveEffectiveSceneDuration(scene);
+  const duration = resolvePlannedSceneDuration(scene);
   return hasNarrationAudio(scene)
     ? 'Narration sets final length'
     : `${formatHumanDuration(duration.targetSec!)} hold without narration`;
@@ -45,7 +45,7 @@ export function recordingsDurationLabel(scene: Scene): string | null {
 
 export function lowerThirdTimelineDurationSec(scene: Scene | undefined): number | undefined {
   if (!scene) return undefined;
-  return resolveEffectiveSceneDuration(scene).targetSec;
+  return resolvePlannedSceneDuration(scene).targetSec;
 }
 
 export type ScriptDurationGuidance =
@@ -55,7 +55,7 @@ export type ScriptDurationGuidance =
 
 export function scriptDurationGuidance(scene: Scene | undefined): ScriptDurationGuidance {
   if (!scene) return { mode: 'unavailable' };
-  const duration = resolveEffectiveSceneDuration(scene);
+  const duration = resolvePlannedSceneDuration(scene);
   if (duration.flexible) return { mode: 'flexible', label: 'Narration sets final length' };
   return duration.targetSec === undefined
     ? { mode: 'unavailable' }

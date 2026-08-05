@@ -25,17 +25,32 @@ const SAFE_PUBLIC_HINTS = new Set([
   'Scenes have inconsistent timestamps — concat will retry with re-encode',
 ]);
 
+const MAX_PRIVATE_DIAGNOSTIC_CHARS = 2_000;
+
 function boundedRedactedDiagnostic(value: string): string {
-  return value
-    .slice(-4_000)
+  // Redact the original diagnostic before selecting a bounded tail. Truncating
+  // first can cut off `--token` while retaining the end of a long secret.
+  const redacted = value
     .replace(/(Authorization\s*:\s*Bearer\s+)[^\s]+/gi, '$1[redacted secret]')
     .replace(/\bBearer\s+(?!\[redacted secret\])[^\s]+/gi, 'Bearer [redacted secret]')
     .replace(/(--(?:api[_-]?key|token|secret|password|credential)\s+)[^\s]+/gi, '$1[redacted secret]')
     .replace(/((?:api[_-]?key|token|secret|password|credential)\s*[=:]\s*)[^\s,;]+/gi, '$1[redacted secret]')
+    // Quoting provides an unambiguous boundary for paths containing spaces.
+    .replace(/(["'])(\/(?=[^"'`\r\n]*\/)[^"'`\r\n]+)\1/g, '$1[redacted path]$1')
+    .replace(
+      /(["'])(\/[^"'`\r\n]+?\.(?:mp4|mov|mkv|webm|mp3|wav|aac|m4a|srt|vtt|png|jpe?g|webp|gif|json|ya?ml|txt|md|log))\1/gi,
+      '$1[redacted path]$1',
+    )
+    // Unquoted ffmpeg paths commonly live below these absolute roots. Require
+    // a file-like suffix so ordinary prose such as "/ retry later" survives.
+    .replace(
+      /(^|[\s("'=])\/(?:Users|home|private|tmp|var|Volumes|opt|etc|usr|Library|Applications)\/[^\r\n"'`]*?\.(?:mp4|mov|mkv|webm|mp3|wav|aac|m4a|srt|vtt|png|jpe?g|webp|gif|json|ya?ml|txt|md|log)(?=$|[.\s,;:)])/gim,
+      '$1[redacted path]',
+    )
     .replace(/file:\/\/[^\s"'`]+/gi, '[redacted path]')
     .replace(/[A-Za-z]:\\[^\s"'`]+/g, '[redacted path]')
-    .replace(/(^|[\s("'=])\/(?:[^/\s"'`]+\/)*[^/\s"'`]+/gm, '$1[redacted path]')
-    .slice(0, 2_000);
+    .replace(/(^|[\s("'=])\/(?:[^/\s"'`]+\/)*[^/\s"'`]+/gm, '$1[redacted path]');
+  return redacted.slice(-MAX_PRIVATE_DIAGNOSTIC_CHARS);
 }
 
 export function privateRenderDiagnostic(error: unknown): Record<string, unknown> {

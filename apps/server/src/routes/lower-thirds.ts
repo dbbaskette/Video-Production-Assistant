@@ -15,7 +15,7 @@ import { sourceDocsNeedSummarization } from '../services/project-source-docs/con
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import {
   LowerThirdSchema,
-  resolveEffectiveSceneDuration,
+  resolvePlannedSceneDuration,
   type LowerThird,
   type ResolvedModelSummary,
   type Scene,
@@ -175,7 +175,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
 
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
-    const effectiveDuration = resolveEffectiveSceneDuration(scene);
+    const effectiveDuration = resolvePlannedSceneDuration(scene);
     const videoRequested = body.groundInVideo === true;
     if (videoRequested && !scene.recording?.source) {
       return reply.status(400).send({

@@ -8,9 +8,21 @@ import { z } from 'zod';
 export interface ReviewItem {
   sceneId: string;
   severity: 'info' | 'warn' | 'issue';
-  category: string;
+  category: ReviewCategory;
   message: string;
 }
+
+const ReviewCategorySchema = z.enum([
+  'description',
+  'recording',
+  'script',
+  'narration',
+  'narration_too_long',
+  'pacing',
+  'lower_thirds',
+  'general',
+]);
+export type ReviewCategory = z.infer<typeof ReviewCategorySchema>;
 
 export interface ReviewResult {
   items: ReviewItem[];
@@ -28,17 +40,10 @@ export interface ReviewResult {
 const ReviewItemSchema = z.object({
   sceneId: z.string().min(1).max(120),
   severity: z.enum(['info', 'warn', 'issue']),
-  category: z.string().min(1).max(120),
+  category: ReviewCategorySchema,
   message: z.string().min(1).max(2_000),
 }).strict();
 const ReviewItemsSchema = z.array(ReviewItemSchema).max(500);
-
-function isNarrationLengthFinding(item: ReviewItem): boolean {
-  if (item.category === 'narration_too_long') return true;
-  if (item.category !== 'narration') return false;
-  return /\btoo long\b|\bover target\b|\bdoes not fit\b|\bexceeds\b.{0,80}\b(?:duration|recording|clip|visual)\b/i
-    .test(item.message);
-}
 
 function buildStoryboardContext(sb: Storyboard): string {
   // Empirical TTS rate — measured from existing chunks. Falls back to 150 wpm
@@ -189,7 +194,10 @@ export async function runQualityReview(
     storyboard.scenes.filter(isFlexiblePresentationScene).map((scene) => scene.id),
   );
   const items = parsedItems.filter(
-    (item) => !(flexibleSceneIds.has(item.sceneId) && isNarrationLengthFinding(item)),
+    (item) => !(
+      flexibleSceneIds.has(item.sceneId)
+      && item.category === 'narration_too_long'
+    ),
   );
 
   const info = items.filter((i) => i.severity === 'info').length;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Scene } from './storyboard.js';
 import {
   preparedNarrationDurationSec,
-  resolveEffectiveSceneDuration,
+  resolvePlannedSceneDuration,
 } from './scene-duration.js';
 
 const presentationScene: Scene = {
@@ -38,15 +38,15 @@ describe('effective scene duration', () => {
     };
 
     expect(preparedNarrationDurationSec(scene)).toBe(8.25);
-    expect(resolveEffectiveSceneDuration(scene)).toEqual({
+    expect(resolvePlannedSceneDuration(scene)).toEqual({
       targetSec: 8.25,
       flexible: true,
       source: 'narration',
     });
   });
 
-  it.each([0, -1, Number.NaN])('falls back to the hold for invalid narration duration %s', (duration) => {
-    expect(resolveEffectiveSceneDuration(presentationScene, duration)).toEqual({
+  it('falls back to the hold when no stored narration timing is available', () => {
+    expect(resolvePlannedSceneDuration(presentationScene)).toEqual({
       targetSec: 5,
       flexible: true,
       source: 'slide-hold',
@@ -65,7 +65,7 @@ describe('effective scene duration', () => {
       },
     };
 
-    expect(resolveEffectiveSceneDuration(impostor, 8.25)).toEqual({
+    expect(resolvePlannedSceneDuration(impostor)).toEqual({
       targetSec: 30,
       flexible: false,
       source: 'recording',
