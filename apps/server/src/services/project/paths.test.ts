@@ -45,6 +45,7 @@ describe('paths', () => {
     ['VPA_PRESENTATION_MAX_PAGES', '0'],
     ['VPA_PRESENTATION_MAX_PAGES', '-1'],
     ['VPA_PRESENTATION_MAX_PAGES', '1.5'],
+    ['VPA_PRESENTATION_MAX_PAGES', '201'],
     ['VPA_PRESENTATION_MAX_PAGES', String(Number.MAX_SAFE_INTEGER + 1)],
   ])('rejects unsafe %s=%s', (key, value) => {
     expect(() => loadConfig({ [key]: value } as NodeJS.ProcessEnv)).toThrow(key);

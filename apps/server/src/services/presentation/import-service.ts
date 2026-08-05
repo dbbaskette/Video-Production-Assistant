@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -16,13 +16,15 @@ import {
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { sha256File } from '../recording/metadata.js';
 import { projectFiles } from '../project/paths.js';
-import { createStoryboard, mutateStoryboard } from '../storyboard/index.js';
+import { createStoryboard, loadStoryboard, mutateStoryboard } from '../storyboard/index.js';
 import { PresentationJobStore } from './job-store.js';
 import { createSlideAssets } from './media.js';
 import { inspectPdf, PresentationPdfError } from './pdf.js';
 
 const MAX_TEXT_CHARS_PER_PAGE = 20_000;
+const IMAGE_ONLY_DESCRIPTION = 'Presentation slide awaiting visual analysis.';
 const JobIdSchema = z.string().uuid();
+const lifecycleTails = new Map<string, Promise<void>>();
 
 export interface RegisterPresentationUploadInput {
   project: Project;
@@ -38,6 +40,7 @@ export type PresentationImportErrorCode =
   | 'source_not_available'
   | 'processing_failed'
   | 'storyboard_commit_failed'
+  | 'committed_state_pending'
   | 'invalid_import_state'
   | 'encrypted_pdf'
   | 'invalid_pdf'
@@ -89,6 +92,25 @@ function publicPdfMessage(code: PresentationImportErrorCode): string {
   if (code === 'encrypted_pdf') return 'Password-protected PDFs are not supported';
   if (code === 'page_limit_exceeded') return 'The PDF has too many pages';
   return 'The file is not a valid PDF';
+}
+
+async function serializePresentationLifecycle<T>(
+  projectPath: string,
+  id: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const key = `${path.resolve(projectPath)}\0${requireId(id)}`;
+  const previous = lifecycleTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = new Promise<void>((resolve) => { release = resolve; });
+  lifecycleTails.set(key, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (lifecycleTails.get(key) === tail) lifecycleTails.delete(key);
+  }
 }
 
 export class PresentationImportService {
@@ -154,6 +176,34 @@ export class PresentationImportService {
     }
   }
 
+  private async validateCompleteBundle(
+    bundle: string,
+    presentationId: string,
+  ): Promise<PresentationManifest> {
+    const manifest = PresentationManifestSchema.parse(
+      JSON.parse(await readFile(path.join(bundle, 'manifest.json'), 'utf8')),
+    );
+    if (manifest.id !== presentationId) {
+      throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+    }
+    const prefix = `presentations/${presentationId}/`;
+    const ownedPaths = [
+      path.join(bundle, 'source.pdf'),
+      ...manifest.pages.flatMap((page) => [page.image, page.clip].map((relative) => {
+        if (!relative.startsWith(prefix)) {
+          throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+        }
+        return path.join(bundle, relative.slice(prefix.length));
+      })),
+    ];
+    for (const ownedPath of ownedPaths) {
+      if (!(await stat(ownedPath)).isFile()) {
+        throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+      }
+    }
+    return manifest;
+  }
+
   async registerUpload(input: RegisterPresentationUploadInput): Promise<PresentationJob> {
     const paths = this.paths(input.project.path, input.id);
     if (path.resolve(input.stagedSourcePath) !== path.resolve(paths.source)
@@ -183,8 +233,15 @@ export class PresentationImportService {
   }
 
   async process(project: Project, id: string): Promise<PresentationJob> {
+    return serializePresentationLifecycle(project.path, id, () => this.processUnlocked(project, id));
+  }
+
+  private async processUnlocked(project: Project, id: string): Promise<PresentationJob> {
     const job = await this.options.jobs.read(project.path, id);
-    if (!job || job.project_id !== project.id || job.status === 'ready') {
+    if (!job
+      || job.project_id !== project.id
+      || job.status !== 'processing'
+      || job.stage !== 'processing-slides') {
       throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
     }
     const paths = this.paths(project.path, id);
@@ -239,7 +296,7 @@ export class PresentationImportService {
         const heading = page.heading?.trim();
         const name = heading && heading.length <= 200 ? heading : `Slide ${page.pageNumber}`;
         const extractedText = page.text.slice(0, MAX_TEXT_CHARS_PER_PAGE);
-        const description = extractedText.trim().slice(0, 4_000);
+        const description = extractedText.trim().slice(0, 4_000) || IMAGE_ONLY_DESCRIPTION;
         const image = `presentations/${id}/pages/${stem}.png`;
         const clip = `presentations/${id}/clips/${stem}.mp4`;
         proposedScenes.push(SceneSchema.parse({
@@ -312,6 +369,16 @@ export class PresentationImportService {
           pages: proposedPages,
         });
         await this.persist(path.join(bundle, 'manifest.json'), JSON.stringify(finalManifest, null, 2));
+        finalManifest = await this.validateCompleteBundle(bundle, id);
+        const currentJob = await this.options.jobs.read(project.path, id);
+        if (!currentJob
+          || currentJob.project_id !== project.id
+          || currentJob.status !== 'processing'
+          || currentJob.stage !== 'creating-scenes'
+          || currentJob.page_count !== pageCount
+          || currentJob.processed_pages !== pageCount) {
+          throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+        }
         await this.removeFiles(paths.final, { recursive: true, force: true });
         await mkdir(path.dirname(paths.final), { recursive: true });
         await this.move(bundle, paths.final);
@@ -321,11 +388,26 @@ export class PresentationImportService {
       storyboardCommitted = true;
 
       if (!finalManifest) throw new Error('Manifest was not created');
-      finalManifest = PresentationManifestSchema.parse({ ...finalManifest, updated_at: this.now() });
-      await this.persist(
-        path.join(paths.final, 'manifest.json'),
-        JSON.stringify(finalManifest, null, 2),
-      );
+      const terminalJob = await this.options.jobs.update(project.path, id, {
+        status: job.generate_narration ? 'processing' : 'ready',
+        stage: job.generate_narration ? 'drafting-narration' : 'ready',
+        page_count: pageCount,
+        processed_pages: pageCount,
+        remaining_scene_count: pageCount,
+        error: undefined,
+      });
+      try {
+        finalManifest = PresentationManifestSchema.parse({ ...finalManifest, updated_at: this.now() });
+        await this.persist(
+          path.join(paths.final, 'manifest.json'),
+          JSON.stringify(finalManifest, null, 2),
+        );
+      } catch {
+        this.warn(
+          { errorName: 'PresentationManifestRefreshError', presentationId: id },
+          'Presentation manifest refresh failed after scene commit',
+        );
+      }
       try {
         await this.removeFiles(paths.stagingRoot, { recursive: true, force: true });
       } catch {
@@ -334,15 +416,18 @@ export class PresentationImportService {
           'Presentation staging files could not be fully removed',
         );
       }
-      return this.options.jobs.update(project.path, id, {
-        status: job.generate_narration ? 'processing' : 'ready',
-        stage: job.generate_narration ? 'drafting-narration' : 'ready',
-        page_count: pageCount,
-        processed_pages: pageCount,
-        remaining_scene_count: pageCount,
-        error: undefined,
-      });
+      return terminalJob;
     } catch (error) {
+      if (storyboardCommitted) {
+        this.warn(
+          { errorName: 'PresentationCommittedStatePending', presentationId: id },
+          'Presentation scenes committed before terminal status persistence',
+        );
+        throw new PresentationImportError(
+          'committed_state_pending',
+          'Presentation scenes were saved; status reconciliation is pending',
+        );
+      }
       if (inspection) await inspection.close().catch(() => undefined);
       await this.removeFiles(taskRoot, { recursive: true, force: true }).catch(() => undefined);
       if (error instanceof PresentationPdfError) {
@@ -353,7 +438,6 @@ export class PresentationImportService {
         throw new PresentationImportError(code, message);
       }
       if (error instanceof PresentationImportError && error.code === 'invalid_import_state') {
-        await this.failJob(project.path, id, error.code, error.message, pageCount);
         throw error;
       }
       const code = finalMoved && !storyboardCommitted ? 'storyboard_commit_failed' : 'processing_failed';
@@ -366,6 +450,10 @@ export class PresentationImportService {
   }
 
   async retryImport(project: Project, id: string): Promise<PresentationJob> {
+    return serializePresentationLifecycle(project.path, id, () => this.retryImportUnlocked(project, id));
+  }
+
+  private async retryImportUnlocked(project: Project, id: string): Promise<PresentationJob> {
     const job = await this.options.jobs.read(project.path, id);
     if (!job || job.project_id !== project.id || job.status !== 'failed') {
       throw new PresentationImportError('source_not_available', 'The original PDF is not available for retry');
@@ -386,18 +474,42 @@ export class PresentationImportService {
       await this.failJob(project.path, id, 'source_not_available', message, job.page_count);
       throw new PresentationImportError('source_not_available', message);
     }
-    return this.process(project, id);
+    await this.options.jobs.update(project.path, id, {
+      status: 'processing',
+      stage: 'processing-slides',
+      error: undefined,
+    });
+    return this.processUnlocked(project, id);
   }
 
-  list(projectPath: string): Promise<PresentationJob[]> {
-    return this.options.jobs.list(projectPath);
+  private async withExactRemainingCounts(
+    projectPath: string,
+    jobs: PresentationJob[],
+  ): Promise<PresentationJob[]> {
+    const storyboard = await loadStoryboard(projectPath);
+    const counts = new Map<string, number>();
+    for (const scene of storyboard?.scenes ?? []) {
+      const presentationId = scene.presentation_source?.presentation_id;
+      if (presentationId) counts.set(presentationId, (counts.get(presentationId) ?? 0) + 1);
+    }
+    return jobs.map((job) => ({ ...job, remaining_scene_count: counts.get(job.id) ?? 0 }));
   }
 
-  get(projectPath: string, id: string): Promise<PresentationJob | null> {
-    return this.options.jobs.read(projectPath, id);
+  async list(projectPath: string): Promise<PresentationJob[]> {
+    return this.withExactRemainingCounts(projectPath, await this.options.jobs.list(projectPath));
+  }
+
+  async get(projectPath: string, id: string): Promise<PresentationJob | null> {
+    const job = await this.options.jobs.read(projectPath, id);
+    if (!job) return null;
+    return (await this.withExactRemainingCounts(projectPath, [job]))[0]!;
   }
 
   async remove(project: Project, id: string): Promise<void> {
+    return serializePresentationLifecycle(project.path, id, () => this.removeUnlocked(project, id));
+  }
+
+  private async removeUnlocked(project: Project, id: string): Promise<void> {
     const paths = this.paths(project.path, id);
     await this.mutate(project.path, (current) => {
       const base = current ?? createStoryboard(project, []);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PdfInspection, PdfPageHandle } from './pdf.js';
@@ -8,8 +8,9 @@ import { PresentationPdfError } from './pdf.js';
 import type { createSlideAssets as CreateSlideAssets } from './media.js';
 import { PresentationJobStore } from './job-store.js';
 import { PresentationImportService } from './import-service.js';
-import { createStoryboard, loadStoryboard, mutateStoryboard, saveStoryboard } from '../storyboard/index.js';
+import { createStoryboard, loadStoryboard, mutateStoryboard, removeScene, saveStoryboard } from '../storyboard/index.js';
 import type { Project, Scene } from '@vpa/shared';
+import { atomicWriteFile } from '../../lib/fs-atomic.js';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const PRESENTATION_ONE = '22222222-2222-4222-8222-222222222222';
@@ -19,6 +20,13 @@ function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+async function waitForSignalOrTurn(signal: Promise<void>): Promise<void> {
+  await Promise.race([
+    signal,
+    new Promise<void>((resolve) => setTimeout(resolve, 100)),
+  ]);
 }
 
 function inspection(headings: Array<string | undefined>, texts?: string[]): PdfInspection {
@@ -169,23 +177,214 @@ describe('PresentationImportService', () => {
     expect((await jobs.read(root, PRESENTATION_ONE))?.status).toBe('failed');
   });
 
-  it('keeps a recoverable unreferenced final bundle when storyboard persistence fails', async () => {
+  it('rejects an incomplete bundle immediately before storyboard append', async () => {
+    inspect.mockResolvedValueOnce(inspection(['Missing clip']));
+    createAssets.mockImplementationOnce(async ({ imagePath }) => {
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await writeFile(imagePath, 'image-without-clip');
+    });
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+
+    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'processing_failed',
+    });
+
+    expect(await loadStoryboard(root)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(path.join(root, '.presentation-staging', PRESENTATION_ONE))).toEqual(['source.pdf']);
+  });
+
+  it('honors durable job cancellation immediately before move and append', async () => {
+    inspect.mockResolvedValueOnce(inspection(['Cancelled slide']));
+    let manifestWrites = 0;
     const presentationService = service({
-      mutateStoryboard: async (projectRoot: string, transform: Parameters<typeof mutateStoryboard>[1]) => {
-        await transform(await loadStoryboard(projectRoot));
-        throw new Error('private storyboard disk failure');
+      persist: async (target: string, data: string) => {
+        await atomicWriteFile(target, data);
+        manifestWrites += 1;
+        if (manifestWrites === 1) {
+          await jobs.update(root, PRESENTATION_ONE, {
+            status: 'failed',
+            stage: 'failed',
+            error: { code: 'cancelled', message: 'Import cancelled' },
+          });
+        }
       },
     });
     await stageAndRegister(presentationService);
 
     await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
-      code: 'storyboard_commit_failed',
-      message: 'Presentation scenes could not be saved',
+      code: 'invalid_import_state',
     });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ status: 'failed', stage: 'failed' });
+    expect(await loadStoryboard(root)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps a recoverable unreferenced final bundle when the real queued storyboard save fails', async () => {
+    const snapshotWarning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const presentationService = service({
+      moveFiles: async (source: string, destination: string) => {
+        await rename(source, destination);
+        await chmod(root, 0o500);
+      },
+    });
+    await stageAndRegister(presentationService);
+
+    try {
+      await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+        code: 'storyboard_commit_failed',
+        message: 'Presentation scenes could not be saved',
+      });
+    } finally {
+      await chmod(root, 0o700);
+      snapshotWarning.mockRestore();
+    }
 
     expect(await loadStoryboard(root)).toBeNull();
     await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
     await expect(access(path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf'))).resolves.toBeUndefined();
+  });
+
+  it('serializes removal behind in-flight processing without deleting its source or bundle', async () => {
+    const mediaEntered = deferred();
+    const releaseMedia = deferred();
+    const deleteEntered = deferred();
+    inspect.mockResolvedValueOnce(inspection(['Lifecycle slide']));
+    createAssets.mockImplementationOnce(async ({ imagePath, clipPath }) => {
+      mediaEntered.resolve();
+      await releaseMedia.promise;
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await mkdir(path.dirname(clipPath), { recursive: true });
+      await writeFile(imagePath, 'image');
+      await writeFile(clipPath, 'clip');
+    });
+    const realDelete = jobs.delete.bind(jobs);
+    vi.spyOn(jobs, 'delete').mockImplementation(async (...args) => {
+      deleteEntered.resolve();
+      return realDelete(...args);
+    });
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    const processing = presentationService.process(project, PRESENTATION_ONE);
+    await mediaEntered.promise;
+
+    const removal = presentationService.remove(project, PRESENTATION_ONE);
+    await waitForSignalOrTurn(deleteEntered.promise);
+    releaseMedia.resolve();
+
+    await expect(processing).resolves.toMatchObject({ status: 'ready' });
+    await expect(removal).resolves.toBeUndefined();
+    expect(await presentationService.get(root, PRESENTATION_ONE)).toBeNull();
+    expect((await loadStoryboard(root))?.scenes).toEqual([]);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('serializes duplicate process calls before expensive page work', async () => {
+    const mediaEntered = deferred();
+    const releaseMedia = deferred();
+    let mediaRuns = 0;
+    inspect.mockImplementation(async () => inspection(['Single run']));
+    createAssets.mockImplementation(async ({ imagePath, clipPath }) => {
+      mediaRuns += 1;
+      mediaEntered.resolve();
+      await releaseMedia.promise;
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await mkdir(path.dirname(clipPath), { recursive: true });
+      await writeFile(imagePath, 'image');
+      await writeFile(clipPath, 'clip');
+    });
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+
+    const first = presentationService.process(project, PRESENTATION_ONE);
+    await mediaEntered.promise;
+    const duplicate = presentationService.process(project, PRESENTATION_ONE);
+    const duplicateResult = expect(duplicate).rejects.toMatchObject({ code: 'invalid_import_state' });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    releaseMedia.resolve();
+
+    await expect(first).resolves.toMatchObject({ status: 'ready' });
+    await duplicateResult;
+    expect(mediaRuns).toBe(1);
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+  });
+
+  it('does not downgrade committed scenes when the terminal job write fails', async () => {
+    const terminalJobs = new PresentationJobStore({
+      warn,
+      persist: async (target, data) => {
+        const record = JSON.parse(data) as { stage?: string };
+        if (record.stage === 'ready') throw new Error('private terminal job write failure');
+        await atomicWriteFile(target, data);
+      },
+    });
+    inspect.mockResolvedValueOnce(inspection(['Committed slide']));
+    const presentationService = service({ jobs: terminalJobs });
+    await stageAndRegister(presentationService);
+
+    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'committed_state_pending',
+      message: 'Presentation scenes were saved; status reconciliation is pending',
+    });
+
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+    expect(await terminalJobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'processing',
+      stage: 'creating-scenes',
+    });
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+    await expect(access(path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf'))).resolves.toBeUndefined();
+  });
+
+  it('keeps the committed terminal job ready when the post-commit manifest refresh fails', async () => {
+    let manifestWrites = 0;
+    inspect.mockResolvedValueOnce(inspection(['Committed slide']));
+    const presentationService = service({
+      persist: async (target: string, data: string) => {
+        manifestWrites += 1;
+        if (manifestWrites === 2) throw new Error('private manifest refresh failure');
+        await atomicWriteFile(target, data);
+      },
+    });
+    await stageAndRegister(presentationService);
+
+    await expect(presentationService.process(project, PRESENTATION_ONE)).resolves.toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+    });
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ status: 'ready', stage: 'ready' });
+  });
+
+  it('keeps exact remaining scene counts after individual scene deletion', async () => {
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    await presentationService.process(project, PRESENTATION_ONE);
+    const imported = (await loadStoryboard(root))!.scenes;
+    await mutateStoryboard(root, (current) => removeScene(current!, imported[1]!.id));
+
+    expect(await presentationService.get(root, PRESENTATION_ONE)).toMatchObject({ remaining_scene_count: 2 });
+    expect(await presentationService.list(root)).toEqual([
+      expect.objectContaining({ id: PRESENTATION_ONE, remaining_scene_count: 2 }),
+    ]);
+  });
+
+  it('uses a neutral bounded description for blank image-only slides', async () => {
+    inspect.mockResolvedValueOnce(inspection([undefined], ['   ']));
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+
+    await presentationService.process(project, PRESENTATION_ONE);
+
+    expect((await loadStoryboard(root))?.scenes[0]?.description).toBe(
+      'Presentation slide awaiting visual analysis.',
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'), 'utf8'),
+    ) as { pages: Array<{ baseline: { description: string } }> };
+    expect(manifest.pages[0]?.baseline.description).toBe('Presentation slide awaiting visual analysis.');
   });
 
   it('preserves a concurrent storyboard edit when appending scenes', async () => {

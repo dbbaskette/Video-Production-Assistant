@@ -26,10 +26,15 @@ export interface ServerConfig {
   };
 }
 
-function positiveSafeInteger(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
+function positiveSafeInteger(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
   const raw = env[key];
   const value = Number(raw ?? fallback);
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     throw new Error(`Invalid ${key}: ${raw}`);
   }
   return value;
@@ -43,7 +48,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const webOrigin = env.VPA_WEB_ORIGIN ?? 'http://localhost:5173';
   const presentation = {
     maxBytes: positiveSafeInteger(env, 'VPA_PRESENTATION_MAX_BYTES', 100 * 1024 * 1024),
-    maxPages: positiveSafeInteger(env, 'VPA_PRESENTATION_MAX_PAGES', 200),
+    maxPages: positiveSafeInteger(env, 'VPA_PRESENTATION_MAX_PAGES', 200, 200),
   };
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {

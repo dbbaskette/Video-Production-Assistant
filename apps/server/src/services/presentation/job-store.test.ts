@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PresentationJob } from '@vpa/shared';
@@ -68,18 +68,17 @@ describe('PresentationJobStore', () => {
     expect((await store.list(projectPath)).map(({ id }) => id)).toEqual([JOB_TWO, JOB_ONE]);
   });
 
-  it('uses the injected atomic persistence boundary', async () => {
-    const persist = vi.fn(async (target: string, data: string) => {
-      await import('node:fs/promises').then(({ mkdir }) => mkdir(path.dirname(target), { recursive: true }));
-      await writeFile(target, data, 'utf8');
-    });
-    const atomicStore = new PresentationJobStore({ warn, persist });
+  it('preserves the previous record when the real atomic write cannot create its temporary file', async () => {
+    await store.create(projectPath, job());
+    const jobsDir = path.join(projectPath, 'presentation-jobs');
+    await chmod(jobsDir, 0o500);
+    try {
+      await expect(store.update(projectPath, JOB_ONE, { filename: 'Must not persist.pdf' })).rejects.toThrow();
+    } finally {
+      await chmod(jobsDir, 0o700);
+    }
 
-    await atomicStore.create(projectPath, job());
-
-    expect(persist).toHaveBeenCalledOnce();
-    expect(path.basename(persist.mock.calls[0]![0])).toBe(`${JOB_ONE}.json`);
-    expect(JSON.parse(await readFile(persist.mock.calls[0]![0], 'utf8'))).toEqual(job());
+    expect(await store.read(projectPath, JOB_ONE)).toEqual(job());
   });
 
   it('returns null when a job is missing', async () => {
