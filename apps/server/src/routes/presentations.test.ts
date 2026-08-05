@@ -331,6 +331,21 @@ describe('presentation routes', () => {
     expect(service.remove).toHaveBeenCalledWith(project, PRESENTATION_ID);
   });
 
+  it('returns not_found when a repeated delete sees the public tombstone as absent', async () => {
+    service.remove.mockImplementationOnce(async () => {
+      service.get.mockResolvedValue(null);
+    });
+    const url = `/api/projects/${project.id}/presentations/${PRESENTATION_ID}?confirmed=true`;
+
+    const first = await app.inject({ method: 'DELETE', url });
+    const repeated = await app.inject({ method: 'DELETE', url });
+
+    expect(first.statusCode).toBe(204);
+    expect(repeated.statusCode).toBe(404);
+    expect(repeated.json()).toEqual({ error: 'Presentation not found', code: 'not_found' });
+    expect(service.remove).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects cross-project and malformed lookup results before destructive removal', async () => {
     const unsafeResults = [
       job({ project_id: '44444444-4444-4444-8444-444444444444' }),

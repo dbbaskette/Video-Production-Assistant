@@ -55,6 +55,12 @@ export class PresentationImportError extends Error {
   }
 }
 
+class PresentationImportStateError extends PresentationImportError {
+  constructor(readonly historyRollbackSafe: boolean) {
+    super('invalid_import_state', 'Presentation import cannot be processed');
+  }
+}
+
 type MutateStoryboard = typeof mutateStoryboard;
 
 export type RetryPresentationNarration = (
@@ -297,7 +303,7 @@ export class PresentationImportService {
       || job.project_id !== project.id
       || job.status !== 'processing'
       || job.stage !== 'processing-slides') {
-      throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+      throw new PresentationImportStateError(true);
     }
     const paths = this.paths(project.path, id);
     const taskRoot = path.join(paths.stagingRoot, `task-${this.createId()}`);
@@ -501,7 +507,7 @@ export class PresentationImportService {
         throw new PresentationImportError(code, message);
       }
       if (error instanceof PresentationImportError && error.code === 'invalid_import_state') {
-        throw error;
+        throw new PresentationImportStateError(!finalMoved);
       }
       const code = finalMoved && !storyboardCommitted ? 'storyboard_commit_failed' : 'processing_failed';
       const message = finalMoved && !storyboardCommitted
@@ -545,14 +551,26 @@ export class PresentationImportService {
     try {
       return await this.processUnlocked(project, id);
     } catch (error) {
-      if (error instanceof PresentationImportError && error.code === 'invalid_import_state') {
-        await this.failJob(
-          project.path,
-          id,
-          'invalid_import_state',
-          'Presentation import cannot be processed',
-          job.page_count,
-        );
+      if (error instanceof PresentationImportStateError && error.historyRollbackSafe) {
+        try {
+          await this.options.jobs.update(project.path, id, {
+            status: 'failed',
+            stage: 'failed',
+            page_count: job.page_count,
+            deterministic_commit: job.deterministic_commit,
+            error: {
+              code: 'invalid_import_state',
+              message: 'Presentation import cannot be processed',
+            },
+          });
+        } catch (persistenceError) {
+          this.warn({
+            errorName: safeErrorName(persistenceError),
+            projectId: project.id,
+            presentationId: id,
+          }, 'Presentation retry rollback could not be persisted');
+          throw new PresentationImportError('processing_failed', 'Presentation processing failed');
+        }
       }
       throw error;
     }
@@ -572,12 +590,13 @@ export class PresentationImportService {
   }
 
   async list(projectPath: string): Promise<PresentationJob[]> {
-    return this.withExactRemainingCounts(projectPath, await this.options.jobs.list(projectPath));
+    const publicJobs = (await this.options.jobs.list(projectPath)).filter((job) => !job.deletion_pending);
+    return this.withExactRemainingCounts(projectPath, publicJobs);
   }
 
   async get(projectPath: string, id: string): Promise<PresentationJob | null> {
     const job = await this.options.jobs.read(projectPath, id);
-    if (!job) return null;
+    if (!job || job.deletion_pending) return null;
     return (await this.withExactRemainingCounts(projectPath, [job]))[0]!;
   }
 

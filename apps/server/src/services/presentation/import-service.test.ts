@@ -698,12 +698,69 @@ describe('PresentationImportService', () => {
     expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
       status: 'failed',
       stage: 'failed',
-      deterministic_commit: 'commit-pending',
+      deterministic_commit: 'uncommitted',
       error: {
         code: 'invalid_import_state',
         message: 'Presentation import cannot be processed',
       },
     });
+  });
+
+  it('keeps uncertain history and surfaces a bounded error when retry rollback persistence fails', async () => {
+    let rejectRollback = false;
+    const rollbackJobs = new PresentationJobStore({
+      warn,
+      persist: async (target, data) => {
+        const record = JSON.parse(data) as { error?: { code?: string } };
+        if (rejectRollback && record.error?.code === 'invalid_import_state') {
+          throw new Error('private rollback storage path');
+        }
+        await atomicWriteFile(target, data);
+      },
+    });
+    createAssets.mockRejectedValueOnce(new Error('initial transient failure'));
+    const presentationService = service({ jobs: rollbackJobs });
+    await stageAndRegister(presentationService);
+    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'processing_failed',
+    });
+    await saveStoryboard(root, createStoryboard(project, [{
+      id: 'scene-blocking-retry',
+      name: 'Existing presentation scene',
+      description: 'Blocks a duplicate presentation commit.',
+      type: 'slide',
+      recording: {
+        source: `presentations/${PRESENTATION_ONE}/clips/page-0001.mp4`,
+        source_kind: 'presentation',
+        duration_sec: 1,
+      },
+      presentation_source: {
+        presentation_id: PRESENTATION_ONE,
+        page_number: 1,
+        page_count: 1,
+        image: `presentations/${PRESENTATION_ONE}/pages/page-0001.png`,
+        hold_duration_sec: 5,
+      },
+    }]));
+    rejectRollback = true;
+
+    await expect(presentationService.retryImport(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'processing_failed',
+      message: 'Presentation processing failed',
+    });
+
+    expect(await rollbackJobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'processing',
+      stage: 'creating-scenes',
+      deterministic_commit: 'commit-pending',
+    });
+    expect(warn).toHaveBeenCalledWith({
+      errorName: 'Error',
+      projectId: project.id,
+      presentationId: PRESENTATION_ONE,
+    }, 'Presentation retry rollback could not be persisted');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private rollback storage path');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(root);
   });
 
   it('imports identical bytes under independent presentation UUIDs', async () => {
@@ -729,6 +786,11 @@ describe('PresentationImportService', () => {
     const presentationService = service();
     await stageAndRegister(presentationService);
     await presentationService.process(project, PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_TWO, {
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+    });
     let sceneCountAtAssetDeletion: number | undefined;
     const failingRemove = service({
       removeFiles: vi.fn(async (target: string) => {
@@ -749,11 +811,48 @@ describe('PresentationImportService', () => {
       'Presentation assets could not be fully removed',
     );
     expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+    await expect(failingRemove.get(root, PRESENTATION_ONE)).resolves.toBeNull();
+    await expect(failingRemove.list(root)).resolves.toEqual([
+      expect.objectContaining({ id: PRESENTATION_TWO, status: 'ready' }),
+    ]);
+    await expect(failingRemove.get(root, PRESENTATION_TWO)).resolves.toMatchObject({
+      id: PRESENTATION_TWO,
+      status: 'ready',
+    });
 
-    await service().reconcile([project]);
+    const restartedJobs = new PresentationJobStore({ warn });
+    const restartedService = service({ jobs: restartedJobs });
+    await restartedService.reconcile([project]);
+
+    expect(await restartedJobs.read(root, PRESENTATION_ONE)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(restartedService.get(root, PRESENTATION_TWO)).resolves.toMatchObject({
+      id: PRESENTATION_TWO,
+      status: 'ready',
+    });
+  });
+
+  it('allows locked removal to repeat cleanup for a publicly hidden tombstone', async () => {
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    await presentationService.process(project, PRESENTATION_ONE);
+    const failingRemove = service({
+      removeFiles: async (target: string, options: { recursive: boolean; force: boolean }) => {
+        if (target === path.join(root, 'presentations', PRESENTATION_ONE)) {
+          throw new Error('private transient asset failure');
+        }
+        await rm(target, options);
+      },
+    });
+    await failingRemove.remove(project, PRESENTATION_ONE);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+    await expect(presentationService.get(root, PRESENTATION_ONE)).resolves.toBeNull();
+
+    await presentationService.remove(project, PRESENTATION_ONE);
 
     expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
-    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(presentationService.list(root)).resolves.toEqual([]);
   });
 
   it('rejects a cross-project job before mutating storyboard or owned assets', async () => {
