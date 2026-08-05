@@ -9,8 +9,9 @@ import type { createSlideAssets as CreateSlideAssets } from './media.js';
 import { PresentationJobStore } from './job-store.js';
 import { PresentationImportService } from './import-service.js';
 import { createStoryboard, loadStoryboard, mutateStoryboard, removeScene, saveStoryboard } from '../storyboard/index.js';
-import type { Project, Scene } from '@vpa/shared';
+import type { PresentationJob, PresentationManifest, Project, Scene } from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
+import { projectFiles } from '../project/paths.js';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const PRESENTATION_ONE = '22222222-2222-4222-8222-222222222222';
@@ -109,6 +110,87 @@ describe('PresentationImportService', () => {
       sizeBytes: Buffer.byteLength(bytes),
       generateNarration,
     });
+  }
+
+  async function createPersistedJob(
+    id: string,
+    overrides: Partial<PresentationJob> = {},
+  ): Promise<PresentationJob> {
+    return jobs.create(root, {
+      schema_version: 1,
+      id,
+      project_id: project.id,
+      filename: 'Recovered.pdf',
+      status: 'processing',
+      stage: 'creating-scenes',
+      generate_narration: false,
+      page_count: 1,
+      processed_pages: 1,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      created_at: '2026-08-05T12:00:00.000Z',
+      updated_at: '2026-08-05T12:00:00.000Z',
+      ...overrides,
+    });
+  }
+
+  async function writeCompleteBundle(
+    id: string,
+    overrides: Partial<PresentationManifest> = {},
+  ): Promise<PresentationManifest> {
+    const bundle = path.join(projectFiles(root).presentationsDir, id);
+    const image = `presentations/${id}/pages/page-0001.png`;
+    const clip = `presentations/${id}/clips/page-0001.mp4`;
+    const manifest: PresentationManifest = {
+      schema_version: 1,
+      id,
+      project_id: project.id,
+      display_name: 'Recovered.pdf',
+      source_sha256: 'a'.repeat(64),
+      size_bytes: 20,
+      page_count: 1,
+      created_at: '2026-08-05T12:00:00.000Z',
+      updated_at: '2026-08-05T12:00:00.000Z',
+      generate_narration: false,
+      pages: [{
+        page_number: 1,
+        scene_id: `scene-${id.slice(0, 8)}`,
+        image,
+        clip,
+        extracted_text: 'Recovered text',
+        baseline: { name: 'Recovered slide', description: 'Recovered text', narration_script: null },
+        analysis_status: 'not-requested',
+        script_status: 'not-requested',
+      }],
+      ...overrides,
+    };
+    await mkdir(path.join(bundle, 'pages'), { recursive: true });
+    await mkdir(path.join(bundle, 'clips'), { recursive: true });
+    await writeFile(path.join(bundle, 'source.pdf'), '%PDF recovered');
+    await writeFile(path.join(bundle, 'pages', 'page-0001.png'), 'png');
+    await writeFile(path.join(bundle, 'clips', 'page-0001.mp4'), 'mp4');
+    await writeFile(path.join(bundle, 'manifest.json'), JSON.stringify(manifest));
+    return manifest;
+  }
+
+  function sceneForManifest(manifest: PresentationManifest): Scene {
+    const page = manifest.pages[0]!;
+    return {
+      id: page.scene_id,
+      name: 'User-renamed slide',
+      description: 'User-authored description',
+      type: 'slide',
+      recording: { source: page.clip, source_kind: 'presentation', duration_sec: 1 },
+      presentation_source: {
+        presentation_id: manifest.id,
+        page_number: page.page_number,
+        page_count: manifest.page_count,
+        image: page.image,
+        hold_duration_sec: 12,
+      },
+      narration: { script: 'User-authored narration must survive.' },
+    };
   }
 
   it('imports three ordered slide scenes after existing scenes with deterministic paths and names', async () => {
@@ -478,5 +560,188 @@ describe('PresentationImportService', () => {
       { errorName: 'PresentationAssetDeletionError', presentationId: PRESENTATION_ONE },
       'Presentation assets could not be fully removed',
     );
+  });
+
+  it('reconciles a committed creating-scenes job before interrupted-state handling and preserves user work', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE);
+    const authoredScene = sceneForManifest(manifest);
+    await saveStoryboard(root, createStoryboard(project, [authoredScene]));
+    const presentationService = service();
+
+    await presentationService.reconcile([project]);
+    await presentationService.reconcile([project]);
+
+    const reconciled = await jobs.read(root, PRESENTATION_ONE);
+    expect(reconciled).toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+      page_count: 1,
+      processed_pages: 1,
+      remaining_scene_count: 1,
+    });
+    expect(reconciled).not.toHaveProperty('error');
+    expect((await loadStoryboard(root))?.scenes).toEqual([authoredScene]);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'source.pdf'))).resolves.toBeUndefined();
+    expect(inspect).not.toHaveBeenCalled();
+    expect(createAssets).not.toHaveBeenCalled();
+  });
+
+  it('advances a committed narration import and invokes only the narration restart callback', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE, {
+      generate_narration: true,
+      pages: [{
+        page_number: 1,
+        scene_id: 'scene-narration',
+        image: `presentations/${PRESENTATION_ONE}/pages/page-0001.png`,
+        clip: `presentations/${PRESENTATION_ONE}/clips/page-0001.mp4`,
+        extracted_text: 'Narration text',
+        baseline: { name: 'Narration', description: 'Narration text', narration_script: null },
+        analysis_status: 'pending',
+        script_status: 'pending',
+      }],
+    });
+    await createPersistedJob(PRESENTATION_ONE, { generate_narration: true });
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+    const presentationService = service();
+
+    await presentationService.reconcile([project]);
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'processing',
+      stage: 'drafting-narration',
+    });
+
+    const retryNarration = vi.fn(async (_project: Project, id: string) => jobs.update(root, id, {
+      status: 'ready',
+      stage: 'ready',
+    }));
+    await presentationService.reconcile([project], retryNarration);
+    await presentationService.reconcile([project], retryNarration);
+
+    expect(retryNarration).toHaveBeenCalledTimes(1);
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ status: 'ready', stage: 'ready' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(createAssets).not.toHaveBeenCalled();
+  });
+
+  it('marks only truly uncommitted deterministic stages as interrupted and keeps retained sources retryable', async () => {
+    const ids = [PRESENTATION_ONE, PRESENTATION_TWO, '44444444-4444-4444-8444-444444444444'];
+    const stages = ['uploading', 'processing-slides', 'creating-scenes'] as const;
+    for (let index = 0; index < ids.length; index += 1) {
+      const id = ids[index]!;
+      await createPersistedJob(id, {
+        stage: stages[index],
+        page_count: stages[index] === 'uploading' ? 0 : 1,
+        processed_pages: stages[index] === 'creating-scenes' ? 1 : 0,
+      });
+      const staging = path.join(root, '.presentation-staging', id);
+      await mkdir(staging, { recursive: true });
+      await writeFile(path.join(staging, 'source.pdf'), '%PDF retained');
+    }
+
+    await service().reconcile([project]);
+
+    for (const id of ids) {
+      expect(await jobs.read(root, id)).toMatchObject({
+        status: 'failed',
+        stage: 'failed',
+        error: {
+          code: 'interrupted_import',
+          message: 'Presentation import was interrupted; retry the import',
+        },
+      });
+      await expect(access(path.join(root, '.presentation-staging', id, 'source.pdf'))).resolves.toBeUndefined();
+    }
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('removes orphan staging and only unreferenced never-committed final bundles', async () => {
+    const orphanStagingId = '44444444-4444-4444-8444-444444444444';
+    await mkdir(path.join(root, '.presentation-staging', orphanStagingId), { recursive: true });
+    await writeFile(path.join(root, '.presentation-staging', orphanStagingId, 'source.pdf'), 'orphan');
+
+    await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'interrupted_import', message: 'Interrupted' },
+    });
+    await writeCompleteBundle(PRESENTATION_TWO);
+    await createPersistedJob(PRESENTATION_TWO, { status: 'ready', stage: 'ready' });
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, '.presentation-staging', orphanStagingId))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(path.join(root, 'presentations', PRESENTATION_TWO, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('never deletes a final bundle whose validated manifest scene is live in the storyboard', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+    expect((await loadStoryboard(root))?.scenes[0]?.name).toBe('User-renamed slide');
+  });
+
+  it('preserves a final bundle whenever a validated manifest scene id still appears in the storyboard', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    await saveStoryboard(root, createStoryboard(project, [{
+      id: manifest.pages[0]!.scene_id,
+      name: 'User repurposed scene',
+      description: 'The manifest scene id remains live.',
+      type: 'desktop',
+    }]));
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('isolates malformed job and project state while reconciling other safe jobs', async () => {
+    await mkdir(projectFiles(root).presentationJobsDir, { recursive: true });
+    await writeFile(
+      path.join(projectFiles(root).presentationJobsDir, `${PRESENTATION_ONE}.json`),
+      '{"private_path":"/Users/secret/source.pdf"}',
+    );
+    await createPersistedJob(PRESENTATION_TWO, {
+      stage: 'processing-slides',
+      page_count: 0,
+      processed_pages: 0,
+    });
+
+    const malformedRoot = path.join(root, 'malformed-project');
+    const malformedProject: Project = {
+      ...project,
+      id: '55555555-5555-4555-8555-555555555555',
+      path: malformedRoot,
+      name: 'malformed',
+    };
+    await mkdir(malformedRoot, { recursive: true });
+    await writeFile(path.join(malformedRoot, 'storyboard.yaml'), 'scenes: [private: /Users/secret');
+
+    await service().reconcile([malformedProject, project]);
+
+    expect(await jobs.read(root, PRESENTATION_TWO)).toMatchObject({
+      status: 'failed',
+      error: { code: 'interrupted_import' },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      { errorName: 'InvalidPresentationJobRecord', jobId: PRESENTATION_ONE },
+      'Ignored invalid presentation job record',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('/Users/secret');
   });
 });

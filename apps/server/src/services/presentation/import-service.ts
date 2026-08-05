@@ -1,6 +1,7 @@
-import { copyFile, mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { z } from 'zod';
 import {
   PresentationJobSchema,
@@ -42,6 +43,7 @@ export type PresentationImportErrorCode =
   | 'storyboard_commit_failed'
   | 'committed_state_pending'
   | 'invalid_import_state'
+  | 'interrupted_import'
   | 'encrypted_pdf'
   | 'invalid_pdf'
   | 'page_limit_exceeded';
@@ -54,6 +56,11 @@ export class PresentationImportError extends Error {
 }
 
 type MutateStoryboard = typeof mutateStoryboard;
+
+export type RetryPresentationNarration = (
+  project: Project,
+  presentationId: string,
+) => Promise<PresentationJob>;
 
 export interface PresentationImportServiceOptions {
   jobs: PresentationJobStore;
@@ -86,6 +93,24 @@ function displayName(filename: string): string {
 
 function pageStem(pageNumber: number): string {
   return `page-${String(pageNumber).padStart(4, '0')}`;
+}
+
+function safeErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : '';
+  return /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(name) ? name : 'UnknownError';
+}
+
+function sceneMatchesManifestPage(
+  scene: Scene | undefined,
+  manifest: PresentationManifest,
+  page: PresentationPageRecord,
+): boolean {
+  return scene?.presentation_source?.presentation_id === manifest.id
+    && scene.presentation_source.page_number === page.page_number
+    && scene.presentation_source.page_count === manifest.page_count
+    && scene.presentation_source.image === page.image
+    && scene.recording?.source_kind === 'presentation'
+    && scene.recording.source === page.clip;
 }
 
 function publicPdfMessage(code: PresentationImportErrorCode): string {
@@ -530,5 +555,186 @@ export class PresentationImportService {
       );
     }
     await this.options.jobs.delete(project.path, id);
+  }
+
+  private async reconcileJob(
+    project: Project,
+    id: string,
+    retryNarration?: RetryPresentationNarration,
+  ): Promise<void> {
+    let job = await this.options.jobs.read(project.path, id);
+    if (!job || job.project_id !== project.id) return;
+    const storyboard = await loadStoryboard(project.path);
+
+    if (job.status === 'processing' && job.stage === 'creating-scenes') {
+      let manifest: PresentationManifest | undefined;
+      try {
+        const paths = this.paths(project.path, id);
+        const candidate = await this.validateCompleteBundle(paths.final, id);
+        if (candidate.project_id === project.id) manifest = candidate;
+      } catch {
+        // An incomplete or malformed final bundle is not proof of a commit.
+      }
+
+      if (manifest) {
+        const scenesById = new Map((storyboard?.scenes ?? []).map((scene) => [scene.id, scene]));
+        const fullyCommitted = manifest.pages.every((page) => (
+          sceneMatchesManifestPage(scenesById.get(page.scene_id), manifest!, page)
+        ));
+        if (fullyCommitted) {
+          const remainingSceneCount = (storyboard?.scenes ?? []).filter(
+            (scene) => scene.presentation_source?.presentation_id === id,
+          ).length;
+          job = await this.options.jobs.update(project.path, id, {
+            status: job.generate_narration ? 'processing' : 'ready',
+            stage: job.generate_narration ? 'drafting-narration' : 'ready',
+            page_count: manifest.page_count,
+            processed_pages: manifest.page_count,
+            remaining_scene_count: remainingSceneCount,
+            error: undefined,
+          });
+        }
+      }
+    }
+
+    if (job.status === 'processing'
+      && (job.stage === 'uploading'
+        || job.stage === 'processing-slides'
+        || job.stage === 'creating-scenes')) {
+      job = await this.options.jobs.update(project.path, id, {
+        status: 'failed',
+        stage: 'failed',
+        error: {
+          code: 'interrupted_import',
+          message: 'Presentation import was interrupted; retry the import',
+        },
+      });
+    }
+
+    if (job.status === 'processing' && job.stage === 'drafting-narration' && retryNarration) {
+      await retryNarration(project, id);
+    }
+  }
+
+  private async cleanupOrphanStaging(project: Project): Promise<void> {
+    const stagingDirectory = projectFiles(project.path).presentationStagingDir;
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(stagingDirectory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const id = entry.name;
+      if (!JobIdSchema.safeParse(id).success) {
+        await this.removeFiles(path.join(stagingDirectory, entry.name), { recursive: true, force: true })
+          .catch((error) => this.warn(
+            { errorName: safeErrorName(error), projectId: project.id },
+            'Presentation staging reconciliation failed',
+          ));
+        continue;
+      }
+      try {
+        await serializePresentationLifecycle(project.path, id, async () => {
+          if (!await this.options.jobs.read(project.path, id)) {
+            await this.removeFiles(path.join(stagingDirectory, id), { recursive: true, force: true });
+          }
+        });
+      } catch (error) {
+        this.warn(
+          { errorName: safeErrorName(error), projectId: project.id, presentationId: id },
+          'Presentation staging reconciliation failed',
+        );
+      }
+    }
+  }
+
+  private async cleanupUncommittedBundles(project: Project): Promise<void> {
+    const presentationsDirectory = projectFiles(project.path).presentationsDir;
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(presentationsDirectory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !JobIdSchema.safeParse(entry.name).success) continue;
+      const id = entry.name;
+      try {
+        await serializePresentationLifecycle(project.path, id, async () => {
+          const storyboard = await loadStoryboard(project.path);
+          const job = await this.options.jobs.read(project.path, id);
+          let manifest: PresentationManifest;
+          try {
+            manifest = await this.validateCompleteBundle(path.join(presentationsDirectory, id), id);
+          } catch {
+            // Without a validated manifest, reconciliation cannot prove asset ownership safely.
+            return;
+          }
+          if (manifest.project_id !== project.id) return;
+
+          const scenesById = new Map((storyboard?.scenes ?? []).map((scene) => [scene.id, scene]));
+          const hasLiveManifestScene = manifest.pages.some((page) => scenesById.has(page.scene_id));
+          const jobProvesCommit = job !== null && (
+            job.status === 'ready'
+            || job.status === 'partial'
+            || job.stage === 'ready'
+            || job.stage === 'drafting-narration'
+          );
+          if (!hasLiveManifestScene && !jobProvesCommit) {
+            await this.removeFiles(path.join(presentationsDirectory, id), { recursive: true, force: true });
+          }
+        });
+      } catch (error) {
+        this.warn(
+          { errorName: safeErrorName(error), projectId: project.id, presentationId: id },
+          'Presentation bundle reconciliation failed',
+        );
+      }
+    }
+  }
+
+  private async reconcileProject(
+    project: Project,
+    retryNarration?: RetryPresentationNarration,
+  ): Promise<void> {
+    // A malformed storyboard removes the evidence needed for safe commit recovery or cleanup.
+    await loadStoryboard(project.path);
+    const jobs = await this.options.jobs.list(project.path);
+    for (const job of jobs) {
+      try {
+        await serializePresentationLifecycle(project.path, job.id, () => (
+          this.reconcileJob(project, job.id, retryNarration)
+        ));
+      } catch (error) {
+        this.warn(
+          { errorName: safeErrorName(error), projectId: project.id, presentationId: job.id },
+          'Presentation job reconciliation failed',
+        );
+      }
+    }
+    await this.cleanupOrphanStaging(project);
+    await this.cleanupUncommittedBundles(project);
+  }
+
+  async reconcile(
+    projects: Project[],
+    retryNarration?: RetryPresentationNarration,
+  ): Promise<void> {
+    for (const project of projects) {
+      try {
+        await this.reconcileProject(project, retryNarration);
+      } catch (error) {
+        this.warn(
+          { errorName: safeErrorName(error), projectId: project.id },
+          'Presentation project reconciliation failed',
+        );
+      }
+    }
   }
 }

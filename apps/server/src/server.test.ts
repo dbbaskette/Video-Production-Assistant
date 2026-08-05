@@ -3,10 +3,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentRecordingCoordinator } from './services/agent-recording/coordinator.js';
-import type { AgentRecordingSession, Storyboard } from '@vpa/shared';
+import type { AgentRecordingSession, PresentationJob, Storyboard } from '@vpa/shared';
 import type { ServerConfig } from './config.js';
 import { buildServer } from './server.js';
 import { saveStoryboard } from './services/storyboard/index.js';
+import { PresentationImportService } from './services/presentation/import-service.js';
 
 const SESSION_ID = '64d79770-ee07-4f70-b084-2115dc28e0d3';
 const NOW = '2026-07-31T12:00:00.000Z';
@@ -61,6 +62,7 @@ describe('agent recording server lifecycle', () => {
       expect(built.capInstaller).toBeDefined();
       expect(built.desktopDriver).toBeDefined();
       expect(built.codexRunner).toBeDefined();
+      expect(built.presentationService).toBeInstanceOf(PresentationImportService);
 
       const project = await built.store.create({ name: 'server-agent-demo' });
       const storyboard: Storyboard = {
@@ -94,6 +96,62 @@ describe('agent recording server lifecycle', () => {
       expect(response.statusCode).toBe(202);
       expect(rehearse).toHaveBeenCalledWith(project.id, 'scene-01', update);
       expect(reconcile).toHaveBeenCalledTimes(1);
+    } finally {
+      await built.app.close();
+    }
+  });
+
+  it('registers presentation routes with an injected service and reconciles without import work', async () => {
+    const vpaHome = await mkdtemp(join(tmpdir(), 'vpa-server-presentation-home-'));
+    const projectsDefault = await mkdtemp(join(tmpdir(), 'vpa-server-presentation-projects-'));
+    cleanup.push(vpaHome, projectsDefault);
+    const config: ServerConfig = {
+      port: 3000,
+      host: '127.0.0.1',
+      vpaHome,
+      projectsDefault,
+      webOrigin: 'http://localhost:5173',
+      llm: { provider: 'fake' },
+      presentation: { maxBytes: 64, maxPages: 12 },
+    };
+    const reconcile = vi.fn(async () => undefined);
+    const list = vi.fn(async (): Promise<PresentationJob[]> => []);
+    const presentationService = {
+      reconcile,
+      list,
+      get: vi.fn(),
+      registerUpload: vi.fn(),
+      process: vi.fn(),
+      retryImport: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as PresentationImportService;
+    const agentRecordingCoordinator = {
+      rehearse: vi.fn(),
+      confirmAndRecord: vi.fn(),
+      cancel: vi.fn(),
+      recoverAttachment: vi.fn(),
+      reconcile: vi.fn(async () => undefined),
+    } as unknown as AgentRecordingCoordinator;
+
+    const built = await buildServer({
+      config,
+      presentationService,
+      agentRecordingCoordinator,
+      logger: false,
+    });
+    try {
+      expect(built.presentationService).toBe(presentationService);
+      expect(reconcile).toHaveBeenCalledOnce();
+      expect(reconcile).toHaveBeenCalledWith([], undefined);
+
+      const project = await built.store.create({ name: 'presentation-route-server-test' });
+      const response = await built.app.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/presentations`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ presentations: [] });
+      expect(list).toHaveBeenCalledWith(project.path);
     } finally {
       await built.app.close();
     }

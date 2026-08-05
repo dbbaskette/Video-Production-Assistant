@@ -55,6 +55,7 @@ import { CapInstaller } from './services/cap/installer.js';
 import { createMacOSDesktopPlatform } from './services/desktop-driver/macos.js';
 import { DesktopDriverSessionManager } from './services/desktop-driver/session.js';
 import { registerAgentDesktopRoutes } from './routes/agent-desktop.js';
+import { registerPresentationRoutes } from './routes/presentations.js';
 import { createCodexSceneRunner } from './services/agent-recording/codex-runner.js';
 import {
   createAgentRecordingCoordinator,
@@ -70,6 +71,11 @@ import {
 import type { ServerConfig } from './config.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { PresentationJobStore } from './services/presentation/job-store.js';
+import {
+  PresentationImportService,
+  type RetryPresentationNarration,
+} from './services/presentation/import-service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +101,8 @@ export interface BuildServerOptions {
   cliReadinessProbe?: CliReadinessProbe;
   videoUnderstanding?: VideoUnderstandingService;
   recordingProbe?: typeof probeVideo;
+  presentationService?: PresentationImportService;
+  retryPresentationNarration?: RetryPresentationNarration;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -116,6 +124,14 @@ export async function buildServer(options: BuildServerOptions = {}) {
   const store = new ProjectStore({
     vpaHome: config.vpaHome,
     projectsDefault: config.projectsDefault,
+  });
+  const presentationJobs = new PresentationJobStore({
+    warn: (fields, message) => app.log.warn(fields, message),
+  });
+  const presentationService = options.presentationService ?? new PresentationImportService({
+    jobs: presentationJobs,
+    maxPages: config.presentation.maxPages,
+    warn: (fields, message) => app.log.warn(fields, message),
   });
 
   const bPaths = brandPaths(config.vpaHome, config.vpaHome);
@@ -226,6 +242,12 @@ export async function buildServer(options: BuildServerOptions = {}) {
     router: modelRouter,
   });
   await app.register(async (instance) => registerStoryboardRoutes(instance, { store }));
+  await app.register(async (instance) => registerPresentationRoutes(instance, {
+    store,
+    service: presentationService,
+    maxBytes: config.presentation.maxBytes,
+    retryNarration: options.retryPresentationNarration,
+  }));
   await app.register(async (instance) =>
     registerIdeationRoutes(instance, { store, router: modelRouter, ideationManager }),
   );
@@ -336,6 +358,40 @@ export async function buildServer(options: BuildServerOptions = {}) {
     app.log.error({ err: error }, 'Agent recording reconciliation failed; continuing startup');
   }
 
+  let presentationProjects = [];
+  try {
+    const tracker = await store.readTracker();
+    for (const entry of tracker.projects) {
+      try {
+        presentationProjects.push(await store.readProject(entry.id));
+      } catch (error) {
+        const errorName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(error.name)
+          ? error.name
+          : 'UnknownError';
+        app.log.warn(
+          { errorName, projectId: entry.id },
+          'Presentation project discovery failed during reconciliation',
+        );
+      }
+    }
+  } catch (error) {
+    const errorName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(error.name)
+      ? error.name
+      : 'UnknownError';
+    app.log.warn({ errorName }, 'Presentation project discovery failed during reconciliation');
+  }
+  try {
+    await presentationService.reconcile(
+      presentationProjects,
+      options.retryPresentationNarration,
+    );
+  } catch (error) {
+    const errorName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,79}$/.test(error.name)
+      ? error.name
+      : 'UnknownError';
+    app.log.warn({ errorName }, 'Presentation reconciliation failed; continuing startup');
+  }
+
   return {
     app,
     config,
@@ -345,6 +401,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     desktopDriver,
     codexRunner,
     agentRecordingCoordinator,
+    presentationService,
   };
 }
 
