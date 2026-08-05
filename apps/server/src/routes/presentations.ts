@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, realpath, rm, rmdir, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, realpath, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -31,6 +31,7 @@ export interface PresentationRouteDeps {
   service: PresentationImportService;
   maxBytes: number;
   retryNarration?: (project: Project, presentationId: string) => Promise<PresentationJob>;
+  openFile?: typeof open;
 }
 
 class PresentationRouteError extends Error {
@@ -100,8 +101,9 @@ function sendRouteError(reply: FastifyReply, error: unknown) {
 }
 
 async function drain(source: AsyncIterable<Buffer | Uint8Array>): Promise<void> {
-  for await (const _chunk of source) {
+  for await (const chunk of source) {
     // Multipart streams must be consumed before the request can complete.
+    void chunk;
   }
 }
 
@@ -163,8 +165,10 @@ async function servePageImage(
   project: Project,
   presentationId: string,
   pageNumber: number,
+  openFile: typeof open,
 ) {
   const bundle = path.join(projectFiles(project.path).presentationsDir, presentationId);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     const manifest = PresentationManifestSchema.parse(
       JSON.parse(await readFile(path.join(bundle, 'manifest.json'), 'utf8')),
@@ -174,8 +178,8 @@ async function servePageImage(
     if (!page) throw new Error('missing page');
 
     const bundleRelative = `presentations/${presentationId}/`;
-    const canonicalImage = `${bundleRelative}pages/page-${String(pageNumber).padStart(4, '0')}.png`;
-    if (page.image !== canonicalImage
+    const expectedImage = `${bundleRelative}pages/page-${String(pageNumber).padStart(4, '0')}.png`;
+    if (page.image !== expectedImage
       || !page.image.startsWith(bundleRelative)
       || path.isAbsolute(page.image)
       || page.image.includes('\\')) {
@@ -184,7 +188,8 @@ async function servePageImage(
     const imagePath = path.resolve(project.path, page.image);
     const resolvedBundle = path.resolve(bundle);
     if (!imagePath.startsWith(`${resolvedBundle}${path.sep}`)) throw new Error('outside bundle');
-    if (!(await stat(imagePath)).isFile()) throw new Error('missing image');
+    const imageInfo = await lstat(imagePath);
+    if (!imageInfo.isFile() || imageInfo.isSymbolicLink()) throw new Error('missing image');
     const [realProjectRoot, realBundle, realImage] = await Promise.all([
       realpath(project.path),
       realpath(bundle),
@@ -194,11 +199,19 @@ async function servePageImage(
     if (realBundle !== expectedRealBundle || !realImage.startsWith(`${realBundle}${path.sep}`)) {
       throw new Error('symlinked image');
     }
+    handle = await openFile(realImage, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedInfo = await handle.stat();
+    if (!openedInfo.isFile() || openedInfo.dev !== imageInfo.dev || openedInfo.ino !== imageInfo.ino) {
+      throw new Error('image changed before open');
+    }
 
     reply.header('Content-Type', 'image/png');
     reply.header('X-Content-Type-Options', 'nosniff');
-    return reply.send(createReadStream(imagePath));
+    const stream = handle.createReadStream({ autoClose: true, start: 0 });
+    handle = undefined;
+    return reply.send(stream);
   } catch {
+    await handle?.close().catch(() => undefined);
     throw new PresentationRouteError(404, 'not_found', 'Presentation page image not found');
   }
 }
@@ -211,6 +224,7 @@ export async function registerPresentationRoutes(
     throw new Error('Presentation upload byte limit must be a positive safe integer');
   }
   const maxBytes = Math.min(deps.maxBytes, ABSOLUTE_MAX_UPLOAD_BYTES);
+  const openFile = deps.openFile ?? open;
 
   app.post('/api/projects/:id/presentations', async (request, reply) => {
     let stagingRoot: string | undefined;
@@ -335,9 +349,11 @@ export async function registerPresentationRoutes(
       if (query.confirmed !== 'true') {
         throw new PresentationRouteError(400, 'confirmation_required', 'Deletion requires confirmed=true');
       }
-      if (!await deps.service.get(project.path, presentationId)) {
+      const value = await deps.service.get(project.path, presentationId);
+      if (!value) {
         throw new PresentationRouteError(404, 'not_found', 'Presentation not found');
       }
+      requireJob(value, project, presentationId);
       await deps.service.remove(project, presentationId);
       return reply.status(204).send();
     } catch (error) {
@@ -355,7 +371,7 @@ export async function registerPresentationRoutes(
       const project = await requireProject(deps.store, id);
       const presentationId = requireUuid(rawPresentationId, 'invalid_presentation_id', 'presentation id');
       const pageNumber = requirePageNumber(rawPageNumber);
-      return await servePageImage(reply, project, presentationId, pageNumber);
+      return await servePageImage(reply, project, presentationId, pageNumber, openFile);
     } catch (error) {
       return sendRouteError(reply, error);
     }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PdfInspection, PdfPageHandle } from './pdf.js';
@@ -393,6 +393,120 @@ describe('PresentationImportService', () => {
     expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
   });
 
+  it('serializes reconciliation behind a live process call without marking it interrupted', async () => {
+    const mediaEntered = deferred();
+    const releaseMedia = deferred();
+    const reconciliationFinished = deferred();
+    createAssets.mockImplementationOnce(async ({ imagePath, clipPath }) => {
+      mediaEntered.resolve();
+      await releaseMedia.promise;
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await mkdir(path.dirname(clipPath), { recursive: true });
+      await writeFile(imagePath, 'image');
+      await writeFile(clipPath, 'clip');
+    });
+    inspect.mockResolvedValueOnce(inspection(['Live process']));
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    const processing = presentationService.process(project, PRESENTATION_ONE);
+    await mediaEntered.promise;
+
+    const reconciliation = presentationService.reconcile([project]).finally(reconciliationFinished.resolve);
+    await waitForSignalOrTurn(reconciliationFinished.promise);
+    let reconciled = false;
+    reconciliationFinished.promise.then(() => { reconciled = true; });
+    await Promise.resolve();
+    expect(reconciled).toBe(false);
+    releaseMedia.resolve();
+
+    await expect(processing).resolves.toMatchObject({ status: 'ready', stage: 'ready' });
+    await expect(reconciliation).resolves.toBeUndefined();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+    });
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+  });
+
+  it('serializes reconciliation behind a live retry without marking it interrupted', async () => {
+    const mediaEntered = deferred();
+    const releaseMedia = deferred();
+    const reconciliationFinished = deferred();
+    createAssets.mockImplementationOnce(async ({ imagePath, clipPath }) => {
+      mediaEntered.resolve();
+      await releaseMedia.promise;
+      await mkdir(path.dirname(imagePath), { recursive: true });
+      await mkdir(path.dirname(clipPath), { recursive: true });
+      await writeFile(imagePath, 'image');
+      await writeFile(clipPath, 'clip');
+    });
+    inspect.mockImplementation(async () => inspection(['Live retry']));
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    const source = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(source, '%PDF retained retry source');
+    const presentationService = service();
+    const retrying = presentationService.retryImport(project, PRESENTATION_ONE);
+    await mediaEntered.promise;
+
+    const reconciliation = presentationService.reconcile([project]).finally(reconciliationFinished.resolve);
+    await waitForSignalOrTurn(reconciliationFinished.promise);
+    let reconciled = false;
+    reconciliationFinished.promise.then(() => { reconciled = true; });
+    await Promise.resolve();
+    expect(reconciled).toBe(false);
+    releaseMedia.resolve();
+
+    await expect(retrying).resolves.toMatchObject({ status: 'ready', stage: 'ready' });
+    await expect(reconciliation).resolves.toBeUndefined();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+    });
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+  });
+
+  it('serializes reconciliation behind a live removal and leaves no stale ready job', async () => {
+    const deletionEntered = deferred();
+    const releaseDeletion = deferred();
+    const reconciliationFinished = deferred();
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    await presentationService.process(project, PRESENTATION_ONE);
+    const removingService = service({
+      removeFiles: async (target: string, options: { recursive: boolean; force: boolean }) => {
+        if (target === path.join(root, 'presentations', PRESENTATION_ONE)) {
+          deletionEntered.resolve();
+          await releaseDeletion.promise;
+        }
+        await rm(target, options);
+      },
+    });
+    const removal = removingService.remove(project, PRESENTATION_ONE);
+    await deletionEntered.promise;
+
+    const reconciliation = presentationService.reconcile([project]).finally(reconciliationFinished.resolve);
+    await waitForSignalOrTurn(reconciliationFinished.promise);
+    let reconciled = false;
+    reconciliationFinished.promise.then(() => { reconciled = true; });
+    await Promise.resolve();
+    expect(reconciled).toBe(false);
+    releaseDeletion.resolve();
+
+    await expect(removal).resolves.toBeUndefined();
+    await expect(reconciliation).resolves.toBeUndefined();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
+    expect((await loadStoryboard(root))?.scenes).toEqual([]);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('does not downgrade committed scenes when the terminal job write fails', async () => {
     const terminalJobs = new PresentationJobStore({
       warn,
@@ -415,9 +529,42 @@ describe('PresentationImportService', () => {
     expect(await terminalJobs.read(root, PRESENTATION_ONE)).toMatchObject({
       status: 'processing',
       stage: 'creating-scenes',
+      deterministic_commit: 'commit-pending',
     });
     await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
     await expect(access(path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf'))).resolves.toBeUndefined();
+  });
+
+  it('reconciles a direct terminal job-write failure on the next attempt without rerunning import', async () => {
+    let terminalFailureRemaining = true;
+    const recoveringJobs = new PresentationJobStore({
+      warn,
+      persist: async (target, data) => {
+        const record = JSON.parse(data) as { stage?: string };
+        if (record.stage === 'ready' && terminalFailureRemaining) {
+          terminalFailureRemaining = false;
+          throw new Error('private one-time terminal write failure');
+        }
+        await atomicWriteFile(target, data);
+      },
+    });
+    inspect.mockResolvedValueOnce(inspection(['Committed slide']));
+    const presentationService = service({ jobs: recoveringJobs });
+    await stageAndRegister(presentationService);
+    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'committed_state_pending',
+    });
+
+    await presentationService.reconcile([project]);
+
+    expect(await recoveringJobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+    });
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(createAssets).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the committed terminal job ready when the post-commit manifest refresh fails', async () => {
@@ -518,6 +665,47 @@ describe('PresentationImportService', () => {
     });
   });
 
+  it('restores a retry to a durable failed state when commit validation returns invalid_import_state', async () => {
+    createAssets.mockRejectedValueOnce(new Error('initial transient failure'));
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'processing_failed',
+    });
+    await saveStoryboard(root, createStoryboard(project, [{
+      id: 'scene-blocking-retry',
+      name: 'Existing presentation scene',
+      description: 'Blocks a duplicate presentation commit.',
+      type: 'slide',
+      recording: {
+        source: `presentations/${PRESENTATION_ONE}/clips/page-0001.mp4`,
+        source_kind: 'presentation',
+        duration_sec: 1,
+      },
+      presentation_source: {
+        presentation_id: PRESENTATION_ONE,
+        page_number: 1,
+        page_count: 1,
+        image: `presentations/${PRESENTATION_ONE}/pages/page-0001.png`,
+        hold_duration_sec: 5,
+      },
+    }]));
+
+    await expect(presentationService.retryImport(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'invalid_import_state',
+    });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'commit-pending',
+      error: {
+        code: 'invalid_import_state',
+        message: 'Presentation import cannot be processed',
+      },
+    });
+  });
+
   it('imports identical bytes under independent presentation UUIDs', async () => {
     inspect.mockImplementation(async () => inspection(['Same deck']));
     const presentationService = service();
@@ -536,7 +724,7 @@ describe('PresentationImportService', () => {
     expect(firstManifest.source_sha256).toBe(secondManifest.source_sha256);
   });
 
-  it('removes matching scenes before assets and warns without restoring scenes when asset deletion fails', async () => {
+  it('keeps deletion pending after partial asset removal so reconciliation can finish it', async () => {
     inspect.mockResolvedValueOnce(inspection(['Remove me']));
     const presentationService = service();
     await stageAndRegister(presentationService);
@@ -560,6 +748,76 @@ describe('PresentationImportService', () => {
       { errorName: 'PresentationAssetDeletionError', presentationId: PRESENTATION_ONE },
       'Presentation assets could not be fully removed',
     );
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+
+    await service().reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a cross-project job before mutating storyboard or owned assets', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      project_id: '44444444-4444-4444-8444-444444444444',
+      status: 'ready',
+      stage: 'ready',
+    });
+    const scene = sceneForManifest(manifest);
+    await saveStoryboard(root, createStoryboard(project, [scene]));
+
+    await expect(service().remove(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'invalid_import_state',
+    });
+
+    expect((await loadStoryboard(root))?.scenes).toEqual([scene]);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('rejects a malformed job before mutating storyboard or owned assets', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+    await mkdir(projectFiles(root).presentationJobsDir, { recursive: true });
+    await writeFile(
+      path.join(projectFiles(root).presentationJobsDir, `${PRESENTATION_ONE}.json`),
+      '{"project_id":"private malformed record"}',
+    );
+
+    await expect(service().remove(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'invalid_job',
+    });
+
+    expect((await loadStoryboard(root))?.scenes).toHaveLength(1);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('reconciliation completes a pending deletion when job deletion previously failed', async () => {
+    const presentationService = service();
+    await stageAndRegister(presentationService);
+    await presentationService.process(project, PRESENTATION_ONE);
+    const unrelated = path.join(root, 'presentations', PRESENTATION_TWO, 'keep.txt');
+    await mkdir(path.dirname(unrelated), { recursive: true });
+    await writeFile(unrelated, 'unrelated');
+    const realDelete = jobs.delete.bind(jobs);
+    let failDelete = true;
+    vi.spyOn(jobs, 'delete').mockImplementation(async (projectPath, id) => {
+      if (id === PRESENTATION_ONE && failDelete) {
+        failDelete = false;
+        throw new Error('private job deletion failure');
+      }
+      return realDelete(projectPath, id);
+    });
+
+    await expect(presentationService.remove(project, PRESENTATION_ONE)).rejects.toThrow();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+    expect((await loadStoryboard(root))?.scenes).toEqual([]);
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await presentationService.reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
+    expect((await loadStoryboard(root))?.scenes).toEqual([]);
+    await expect(readFile(unrelated, 'utf8')).resolves.toBe('unrelated');
   });
 
   it('reconciles a committed creating-scenes job before interrupted-state handling and preserves user work', async () => {
@@ -585,6 +843,68 @@ describe('PresentationImportService', () => {
     await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'source.pdf'))).resolves.toBeUndefined();
     expect(inspect).not.toHaveBeenCalled();
     expect(createAssets).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a complete final bundle reached through a symlink outside presentations', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE);
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+    const bundle = path.join(root, 'presentations', PRESENTATION_ONE);
+    const outsideBundle = path.join(root, 'outside-bundle');
+    await rename(bundle, outsideBundle);
+    await symlink(outsideBundle, bundle);
+
+    await service().reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'interrupted_import' },
+    });
+    await expect(access(path.join(outsideBundle, 'source.pdf'))).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['source', 'source.pdf'],
+    ['image', 'pages/page-0001.png'],
+    ['clip', 'clips/page-0001.mp4'],
+  ])('rejects a complete final bundle with a symlinked %s asset', async (_kind, relative) => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE);
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+    const asset = path.join(root, 'presentations', PRESENTATION_ONE, relative);
+    const outsideAsset = path.join(root, `outside-${path.basename(relative)}`);
+    await rm(asset);
+    await writeFile(outsideAsset, 'outside asset');
+    await symlink(outsideAsset, asset);
+
+    await service().reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'interrupted_import' },
+    });
+    await expect(readFile(outsideAsset, 'utf8')).resolves.toBe('outside asset');
+  });
+
+  it('rejects a complete bundle when an owned image escapes through a symlinked parent directory', async () => {
+    const manifest = await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE);
+    await saveStoryboard(root, createStoryboard(project, [sceneForManifest(manifest)]));
+    const pages = path.join(root, 'presentations', PRESENTATION_ONE, 'pages');
+    const outsidePages = path.join(root, 'outside-pages');
+    await rename(pages, outsidePages);
+    await symlink(outsidePages, pages);
+
+    await service().reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'failed',
+      stage: 'failed',
+      error: { code: 'interrupted_import' },
+    });
+    await expect(access(path.join(outsidePages, 'page-0001.png'))).resolves.toBeUndefined();
   });
 
   it('advances a committed narration import and invokes only the narration restart callback', async () => {
@@ -664,16 +984,88 @@ describe('PresentationImportService', () => {
     await createPersistedJob(PRESENTATION_ONE, {
       status: 'failed',
       stage: 'failed',
+      deterministic_commit: 'uncommitted',
       error: { code: 'interrupted_import', message: 'Interrupted' },
     });
     await writeCompleteBundle(PRESENTATION_TWO);
-    await createPersistedJob(PRESENTATION_TWO, { status: 'ready', stage: 'ready' });
+    await createPersistedJob(PRESENTATION_TWO, {
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+    });
 
     await service().reconcile([project]);
 
     await expect(access(path.join(root, '.presentation-staging', orphanStagingId))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(access(path.join(root, 'presentations', PRESENTATION_TWO, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('preserves a valid unreferenced final bundle when its job is missing and warns without paths', async () => {
+    await writeCompleteBundle(PRESENTATION_ONE);
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith({
+      errorName: 'PresentationCommitHistoryUnknown',
+      projectId: project.id,
+      presentationId: PRESENTATION_ONE,
+    }, 'Presentation bundle preserved because commit history is unknown');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(root);
+  });
+
+  it('preserves a historically committed bundle after its current job later becomes failed', async () => {
+    await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'committed',
+      error: { code: 'narration_failed', message: 'Narration failed later' },
+    });
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+  });
+
+  it('preserves an unreferenced bundle once a durable commit attempt may have started', async () => {
+    await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'commit-pending',
+      error: { code: 'storyboard_commit_failed', message: 'Commit outcome requires reconciliation' },
+    });
+
+    await service().reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE, 'manifest.json'))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith({
+      errorName: 'PresentationCommitHistoryUnknown',
+      projectId: project.id,
+      presentationId: PRESENTATION_ONE,
+    }, 'Presentation bundle preserved because commit history is unknown');
+  });
+
+  it('deletes only affirmative uncommitted orphan bundles and remains idempotent', async () => {
+    await writeCompleteBundle(PRESENTATION_ONE);
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      error: { code: 'interrupted_import', message: 'Interrupted before commit' },
+    });
+
+    const presentationService = service();
+    await presentationService.reconcile([project]);
+    await presentationService.reconcile([project]);
+
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      deterministic_commit: 'uncommitted',
+      status: 'failed',
+    });
   });
 
   it('never deletes a final bundle whose validated manifest scene is live in the storyboard', async () => {

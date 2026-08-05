@@ -57,6 +57,36 @@ describe('presentation contracts', () => {
       .toBe(false);
   });
 
+  it('persists deterministic commit history and pending deletion without weakening legacy jobs', () => {
+    const baseJob = {
+      schema_version: 1,
+      id: presentationId,
+      project_id: projectId,
+      filename: 'Lifecycle.pdf',
+      status: 'failed',
+      stage: 'failed',
+      generate_narration: false,
+      page_count: 1,
+      processed_pages: 1,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      created_at: '2026-08-05T12:00:00.000Z',
+      updated_at: '2026-08-05T12:00:01.000Z',
+    };
+
+    expect(PresentationJobSchema.parse(baseJob)).toEqual(baseJob);
+    expect(PresentationJobSchema.parse({
+      ...baseJob,
+      deterministic_commit: 'commit-pending',
+      deletion_pending: true,
+    })).toMatchObject({ deterministic_commit: 'commit-pending', deletion_pending: true });
+    expect(PresentationJobSchema.safeParse({
+      ...baseJob,
+      deterministic_commit: 'maybe',
+    }).success).toBe(false);
+  });
+
   it('requires ordered manifest pages with contiguous one-based page numbers', () => {
     const manifest = {
       schema_version: 1,

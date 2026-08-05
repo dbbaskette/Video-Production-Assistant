@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import Fastify, { type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import FormData from 'form-data';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { PresentationJob, PresentationManifest, Project } from '@vpa/shared';
@@ -330,6 +331,27 @@ describe('presentation routes', () => {
     expect(service.remove).toHaveBeenCalledWith(project, PRESENTATION_ID);
   });
 
+  it('rejects cross-project and malformed lookup results before destructive removal', async () => {
+    const unsafeResults = [
+      job({ project_id: '44444444-4444-4444-8444-444444444444' }),
+      { id: PRESENTATION_ID, project_id: project.id },
+    ];
+    for (const value of unsafeResults) {
+      service.get.mockResolvedValueOnce(value as PresentationJob);
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}?confirmed=true`,
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        error: 'Presentation request failed',
+        code: 'presentation_failed',
+      });
+    }
+    expect(service.remove).not.toHaveBeenCalled();
+  });
+
   it('serves only the normalized PNG selected from a validated manifest page record', async () => {
     const bundle = path.join(projectFiles(project.path).presentationsDir, PRESENTATION_ID);
     const imageRelative = `presentations/${PRESENTATION_ID}/pages/page-0001.png`;
@@ -429,6 +451,70 @@ describe('presentation routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: 'Presentation page image not found', code: 'not_found' });
+  });
+
+  it('opens the canonical image with no-follow semantics and rejects a post-validation symlink swap', async () => {
+    const bundle = path.join(projectFiles(project.path).presentationsDir, PRESENTATION_ID);
+    const imageRelative = `presentations/${PRESENTATION_ID}/pages/page-0001.png`;
+    const imagePath = path.join(bundle, 'pages', 'page-0001.png');
+    const outside = path.join(root, 'swap-target.png');
+    await mkdir(path.dirname(imagePath), { recursive: true });
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await writeFile(outside, 'private outside bytes');
+    const manifest: PresentationManifest = {
+      schema_version: 1,
+      id: PRESENTATION_ID,
+      project_id: project.id,
+      display_name: 'Slides.pdf',
+      source_sha256: 'a'.repeat(64),
+      size_bytes: 4,
+      page_count: 1,
+      created_at: NOW,
+      updated_at: NOW,
+      generate_narration: false,
+      pages: [{
+        page_number: 1,
+        scene_id: 'scene-slide',
+        image: imageRelative,
+        clip: `presentations/${PRESENTATION_ID}/clips/page-0001.mp4`,
+        extracted_text: '',
+        baseline: { name: 'Slide 1', description: '', narration_script: null },
+        analysis_status: 'not-requested',
+        script_status: 'not-requested',
+      }],
+    };
+    await writeFile(path.join(bundle, 'manifest.json'), JSON.stringify(manifest));
+    const openFile: typeof open = vi.fn(async (target, flags) => {
+      await rm(target);
+      await symlink(outside, target);
+      return open(target, flags);
+    });
+    const swapApp = Fastify({ logger: false });
+    await swapApp.register(multipart);
+    await registerPresentationRoutes(swapApp, {
+      store,
+      service: service as unknown as PresentationImportService,
+      maxBytes: 32,
+      openFile,
+    });
+
+    try {
+      const response = await swapApp.inject({
+        method: 'GET',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/pages/1/image`,
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: 'Presentation page image not found', code: 'not_found' });
+      expect(openFile).toHaveBeenCalledWith(
+        expect.stringMatching(/page-0001\.png$/),
+        expect.any(Number),
+      );
+      expect((openFile as ReturnType<typeof vi.fn>).mock.calls[0]![1] & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+      expect(response.body).not.toContain('swap-target.png');
+      expect(response.body).not.toContain('private outside bytes');
+    } finally {
+      await swapApp.close();
+    }
   });
 
   it('consumes detached processing rejection and logs only bounded identifiers and an error class', async () => {

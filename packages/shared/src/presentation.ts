@@ -134,6 +134,8 @@ export const PresentationJobSchema = z.object({
   analyzed_pages: z.number().int().nonnegative().max(200),
   scripted_pages: z.number().int().nonnegative().max(200),
   remaining_scene_count: z.number().int().nonnegative().max(200),
+  deterministic_commit: z.enum(['uncommitted', 'commit-pending', 'committed']).optional(),
+  deletion_pending: z.boolean().optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime(),
   error: z.object({

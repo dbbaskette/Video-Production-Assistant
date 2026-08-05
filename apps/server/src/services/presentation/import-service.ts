@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
@@ -202,31 +202,60 @@ export class PresentationImportService {
   }
 
   private async validateCompleteBundle(
+    projectPath: string,
     bundle: string,
     presentationId: string,
+    location: 'staged' | 'final',
   ): Promise<PresentationManifest> {
-    const manifest = PresentationManifestSchema.parse(
-      JSON.parse(await readFile(path.join(bundle, 'manifest.json'), 'utf8')),
+    const invalid = () => new PresentationImportError(
+      'invalid_import_state',
+      'Presentation import cannot be processed',
     );
-    if (manifest.id !== presentationId) {
-      throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
-    }
-    const prefix = `presentations/${presentationId}/`;
-    const ownedPaths = [
-      path.join(bundle, 'source.pdf'),
-      ...manifest.pages.flatMap((page) => [page.image, page.clip].map((relative) => {
-        if (!relative.startsWith(prefix)) {
-          throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
-        }
-        return path.join(bundle, relative.slice(prefix.length));
-      })),
-    ];
-    for (const ownedPath of ownedPaths) {
-      if (!(await stat(ownedPath)).isFile()) {
-        throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+    try {
+      const bundleInfo = await lstat(bundle);
+      if (!bundleInfo.isDirectory() || bundleInfo.isSymbolicLink()) throw invalid();
+      const canonicalBundle = await realpath(bundle);
+      if (location === 'final') {
+        const presentationsRoot = projectFiles(projectPath).presentationsDir;
+        const rootInfo = await lstat(presentationsRoot);
+        if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw invalid();
+        const canonicalRoot = await realpath(presentationsRoot);
+        if (canonicalBundle !== path.join(canonicalRoot, presentationId)) throw invalid();
       }
+
+      const requireOwnedFile = async (relative: string): Promise<string> => {
+        const lexical = path.join(bundle, relative);
+        const info = await lstat(lexical);
+        if (!info.isFile() || info.isSymbolicLink()) throw invalid();
+        const canonical = await realpath(lexical);
+        const expected = path.join(canonicalBundle, relative);
+        if (canonical !== expected || !canonical.startsWith(`${canonicalBundle}${path.sep}`)) {
+          throw invalid();
+        }
+        return canonical;
+      };
+
+      const manifestPath = await requireOwnedFile('manifest.json');
+      const manifest = PresentationManifestSchema.parse(
+        JSON.parse(await readFile(manifestPath, 'utf8')),
+      );
+      if (manifest.id !== presentationId) throw invalid();
+      const prefix = `presentations/${presentationId}/`;
+      const ownedRelatives = [
+        'source.pdf',
+        ...manifest.pages.flatMap((page) => [page.image, page.clip].map((relative) => {
+          if (!relative.startsWith(prefix)) throw invalid();
+          const ownedRelative = relative.slice(prefix.length);
+          if (ownedRelative.length === 0) throw invalid();
+          return ownedRelative;
+        })),
+      ];
+      for (const relative of ownedRelatives) await requireOwnedFile(relative);
+      return manifest;
+    } catch (error) {
+      if (error instanceof PresentationImportError) throw error;
+      throw invalid();
     }
-    return manifest;
   }
 
   async registerUpload(input: RegisterPresentationUploadInput): Promise<PresentationJob> {
@@ -251,6 +280,7 @@ export class PresentationImportService {
       analyzed_pages: 0,
       scripted_pages: 0,
       remaining_scene_count: 0,
+      deterministic_commit: 'uncommitted',
       created_at: now,
       updated_at: now,
     });
@@ -372,7 +402,10 @@ export class PresentationImportService {
         pages: proposedPages,
       });
 
-      await this.options.jobs.update(project.path, id, { stage: 'creating-scenes' });
+      await this.options.jobs.update(project.path, id, {
+        stage: 'creating-scenes',
+        deterministic_commit: 'commit-pending',
+      });
       let finalManifest: PresentationManifest | undefined;
       await this.mutate(project.path, async (current) => {
         const base = current ?? createStoryboard(project, []);
@@ -394,7 +427,11 @@ export class PresentationImportService {
           pages: proposedPages,
         });
         await this.persist(path.join(bundle, 'manifest.json'), JSON.stringify(finalManifest, null, 2));
-        finalManifest = await this.validateCompleteBundle(bundle, id);
+        try {
+          finalManifest = await this.validateCompleteBundle(project.path, bundle, id, 'staged');
+        } catch {
+          throw new Error('Incomplete staged presentation bundle');
+        }
         const currentJob = await this.options.jobs.read(project.path, id);
         if (!currentJob
           || currentJob.project_id !== project.id
@@ -419,6 +456,7 @@ export class PresentationImportService {
         page_count: pageCount,
         processed_pages: pageCount,
         remaining_scene_count: pageCount,
+        deterministic_commit: 'committed',
         error: undefined,
       });
       try {
@@ -504,7 +542,20 @@ export class PresentationImportService {
       stage: 'processing-slides',
       error: undefined,
     });
-    return this.processUnlocked(project, id);
+    try {
+      return await this.processUnlocked(project, id);
+    } catch (error) {
+      if (error instanceof PresentationImportError && error.code === 'invalid_import_state') {
+        await this.failJob(
+          project.path,
+          id,
+          'invalid_import_state',
+          'Presentation import cannot be processed',
+          job.page_count,
+        );
+      }
+      throw error;
+    }
   }
 
   private async withExactRemainingCounts(
@@ -535,6 +586,13 @@ export class PresentationImportService {
   }
 
   private async removeUnlocked(project: Project, id: string): Promise<void> {
+    let job = await this.options.jobs.read(project.path, id);
+    if (!job || job.id !== id || job.project_id !== project.id) {
+      throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+    }
+    if (!job.deletion_pending) {
+      job = await this.options.jobs.update(project.path, id, { deletion_pending: true });
+    }
     const paths = this.paths(project.path, id);
     await this.mutate(project.path, (current) => {
       const base = current ?? createStoryboard(project, []);
@@ -553,6 +611,7 @@ export class PresentationImportService {
         { errorName: 'PresentationAssetDeletionError', presentationId: id },
         'Presentation assets could not be fully removed',
       );
+      return;
     }
     await this.options.jobs.delete(project.path, id);
   }
@@ -564,13 +623,17 @@ export class PresentationImportService {
   ): Promise<void> {
     let job = await this.options.jobs.read(project.path, id);
     if (!job || job.project_id !== project.id) return;
+    if (job.deletion_pending) {
+      await this.removeUnlocked(project, id);
+      return;
+    }
     const storyboard = await loadStoryboard(project.path);
 
     if (job.status === 'processing' && job.stage === 'creating-scenes') {
       let manifest: PresentationManifest | undefined;
       try {
         const paths = this.paths(project.path, id);
-        const candidate = await this.validateCompleteBundle(paths.final, id);
+        const candidate = await this.validateCompleteBundle(project.path, paths.final, id, 'final');
         if (candidate.project_id === project.id) manifest = candidate;
       } catch {
         // An incomplete or malformed final bundle is not proof of a commit.
@@ -591,6 +654,7 @@ export class PresentationImportService {
             page_count: manifest.page_count,
             processed_pages: manifest.page_count,
             remaining_scene_count: remainingSceneCount,
+            deterministic_commit: 'committed',
             error: undefined,
           });
         }
@@ -671,7 +735,12 @@ export class PresentationImportService {
           const job = await this.options.jobs.read(project.path, id);
           let manifest: PresentationManifest;
           try {
-            manifest = await this.validateCompleteBundle(path.join(presentationsDirectory, id), id);
+            manifest = await this.validateCompleteBundle(
+              project.path,
+              path.join(presentationsDirectory, id),
+              id,
+              'final',
+            );
           } catch {
             // Without a validated manifest, reconciliation cannot prove asset ownership safely.
             return;
@@ -680,15 +749,16 @@ export class PresentationImportService {
 
           const scenesById = new Map((storyboard?.scenes ?? []).map((scene) => [scene.id, scene]));
           const hasLiveManifestScene = manifest.pages.some((page) => scenesById.has(page.scene_id));
-          const jobProvesCommit = job !== null && (
-            job.status === 'ready'
-            || job.status === 'partial'
-            || job.stage === 'ready'
-            || job.stage === 'drafting-narration'
-          );
-          if (!hasLiveManifestScene && !jobProvesCommit) {
-            await this.removeFiles(path.join(presentationsDirectory, id), { recursive: true, force: true });
+          if (hasLiveManifestScene || job?.deterministic_commit === 'committed') return;
+          if (!job || job.deterministic_commit !== 'uncommitted') {
+            this.warn({
+              errorName: 'PresentationCommitHistoryUnknown',
+              projectId: project.id,
+              presentationId: id,
+            }, 'Presentation bundle preserved because commit history is unknown');
+            return;
           }
+          await this.removeFiles(path.join(presentationsDirectory, id), { recursive: true, force: true });
         });
       } catch (error) {
         this.warn(
