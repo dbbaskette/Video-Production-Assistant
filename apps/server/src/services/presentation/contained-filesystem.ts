@@ -38,23 +38,52 @@ export const CONTAINED_HELPER_TERMINATION_GRACE_MS = 250;
 const MAX_PROTOCOL_OUTPUT_BYTES = 17 * 1024 * 1024;
 
 let activePermits = 0;
-const permitQueue: Array<() => void> = [];
+interface PermitWaiter {
+  resolve(): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+  settled: boolean;
+}
+const permitQueue: PermitWaiter[] = [];
 let activeProcesses = 0;
 let maxActiveProcesses = 0;
 let spawned = 0;
 
-async function acquirePermit(): Promise<void> {
+async function acquirePermit(deadlineAt: number): Promise<void> {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('contained filesystem child timed out');
   if (activePermits < MAX_CONTAINED_HELPERS) {
     activePermits += 1;
     return;
   }
-  await new Promise<void>((resolve) => permitQueue.push(resolve));
+  await new Promise<void>((resolve, reject) => {
+    const waiter: PermitWaiter = {
+      resolve,
+      reject,
+      settled: false,
+      timer: setTimeout(() => {
+        if (waiter.settled) return;
+        waiter.settled = true;
+        const index = permitQueue.indexOf(waiter);
+        if (index >= 0) permitQueue.splice(index, 1);
+        reject(new Error('contained filesystem child timed out'));
+      }, remaining),
+    };
+    waiter.timer.unref?.();
+    permitQueue.push(waiter);
+  });
 }
 
 function releasePermit(): void {
-  const next = permitQueue.shift();
-  if (next) next();
-  else activePermits -= 1;
+  while (permitQueue.length > 0) {
+    const next = permitQueue.shift()!;
+    if (next.settled) continue;
+    next.settled = true;
+    clearTimeout(next.timer);
+    next.resolve();
+    return;
+  }
+  activePermits -= 1;
 }
 
 export function inspectContainedFilesystemResources(): {
@@ -97,6 +126,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   renameSync,
   rmdirSync,
@@ -124,7 +154,15 @@ const emit = (payload, wait = true) => {
   writeSync(3, JSON.stringify(payload) + '\n');
   if (!wait) return;
   const acknowledgement = Buffer.allocUnsafe(1);
-  if (readSync(4, acknowledgement, 0, 1, null) !== 1) fail();
+  let count;
+  while (count === undefined) {
+    try {
+      count = readSync(4, acknowledgement, 0, 1, null);
+    } catch (error) {
+      if (error?.code !== 'EINTR') throw error;
+    }
+  }
+  if (count !== 1) fail();
 };
 const readInput = (maxBytes) => {
   const chunks = [];
@@ -158,6 +196,219 @@ const hashDescriptor = (fd, size, maxBytes) => {
   if (readSync(fd, probe, 0, 1, Number(size)) !== 0) throw new Error('installed file grew');
   return hash.digest('hex');
 };
+const TRANSACTION_PREFIX = '.slide-cache-';
+const transactionPrefixFor = (targetName) => TRANSACTION_PREFIX
+  + createHash('sha256').update(targetName).digest('hex').slice(0, 16)
+  + '-';
+const JOURNAL_VERSION = 1;
+const MAX_JOURNAL_BYTES = 4096;
+const markerPath = (namespace, marker) => namespace + '/' + marker;
+const recordIdentity = (stat) => ({ dev: stat.dev.toString(), ino: stat.ino.toString() });
+const sameRecord = (stat, identity) => identity
+  && stat.dev.toString() === identity.dev
+  && stat.ino.toString() === identity.ino;
+const readMarker = (namespace, marker) => {
+  const target = markerPath(namespace, marker);
+  const stat = optionalLstat(target);
+  if (!stat) return undefined;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0n || stat.size > BigInt(MAX_JOURNAL_BYTES)) {
+    throw new Error('transaction journal invalid');
+  }
+  const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    if (!same(opened, stat)) throw new Error('transaction journal replaced');
+    const bytes = Buffer.allocUnsafe(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(fd, bytes, offset, bytes.byteLength - offset, offset);
+      if (count === 0) throw new Error('transaction journal truncated');
+      offset += count;
+    }
+    const after = fstatSync(fd, { bigint: true });
+    if (!same(after, opened) || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) {
+      throw new Error('transaction journal changed');
+    }
+    return { value: JSON.parse(bytes.toString('utf8')), identity: recordIdentity(opened) };
+  } finally {
+    closeSync(fd);
+  }
+};
+const writeMarker = (namespaceFd, namespace, marker, value) => {
+  const target = markerPath(namespace, marker);
+  const bytes = Buffer.from(JSON.stringify(value));
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_JOURNAL_BYTES) throw new Error('transaction journal too large');
+  const fd = openSync(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    fchmodSync(fd, 0o600);
+    writeAll(fd, bytes);
+    fsyncSync(fd);
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777n) !== 0o600n) {
+      throw new Error('transaction journal invalid');
+    }
+    fsyncSync(namespaceFd);
+    return { value, identity: recordIdentity(stat) };
+  } finally {
+    closeSync(fd);
+  }
+};
+const unlinkMatching = (target, identity) => {
+  const current = optionalLstat(target);
+  if (!current) return true;
+  if (!sameRecord(current, identity)) return false;
+  unlinkSync(target);
+  return true;
+};
+const cleanupMarkers = (namespace, markers) => {
+  for (const [name, marker] of markers) {
+    if (marker && !unlinkMatching(markerPath(namespace, name), marker.identity)) return false;
+  }
+  return true;
+};
+const candidateIsValid = (target, candidate, expectedHash, maxBytes) => {
+  const named = optionalLstat(target);
+  if (!named || !named.isFile() || named.isSymbolicLink() || !sameRecord(named, candidate)) return false;
+  const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    return sameRecord(opened, candidate)
+      && hashDescriptor(fd, opened.size, maxBytes) === expectedHash;
+  } finally {
+    closeSync(fd);
+  }
+};
+const recoverNamespace = (cwdFd, namespace, targetName, maxBytes) => {
+  const namespaceStat = lstatSync(namespace, { bigint: true });
+  if (!namespaceStat.isDirectory() || namespaceStat.isSymbolicLink() || (namespaceStat.mode & 0o777n) !== 0o700n) {
+    throw new Error('transaction namespace invalid');
+  }
+  const entries = readdirSync(namespace);
+  if (entries.length === 0) {
+    rmdirSync(namespace);
+    fsyncSync(cwdFd);
+    return;
+  }
+  const created = readMarker(namespace, 'journal-created');
+  if (
+    !created
+    || created.value?.version !== JOURNAL_VERSION
+    || created.value?.target !== targetName
+    || !sameRecord(namespaceStat, created.value?.namespace)
+  ) throw new Error('transaction journal missing');
+  const quarantined = readMarker(namespace, 'journal-quarantined');
+  if (quarantined) {
+    const safeTarget = quarantined.value?.safeTarget;
+    const currentTarget = optionalLstat(targetName);
+    const safeToRead = safeTarget
+      ? currentTarget && sameRecord(currentTarget, safeTarget)
+      : quarantined.value?.safeAbsent === true && currentTarget === undefined;
+    if (quarantined.value?.version !== JOURNAL_VERSION || !safeToRead) {
+      throw new Error('cache target remains contaminated');
+    }
+    return;
+  }
+  const candidateMarker = readMarker(namespace, 'journal-candidate');
+  const installing = readMarker(namespace, 'journal-installing');
+  const committed = readMarker(namespace, 'journal-committed');
+  const markers = [
+    ['journal-installing', installing],
+    ['journal-committed', committed],
+    ['journal-candidate', candidateMarker],
+    ['journal-created', created],
+  ];
+  const candidate = candidateMarker?.value?.candidate;
+  const expectedHash = candidateMarker?.value?.expectedHash;
+  if (candidateMarker && (!candidate || !/^[a-f0-9]{64}$/.test(expectedHash))) {
+    throw new Error('candidate journal invalid');
+  }
+  const candidatePath = namespace + '/candidate';
+  const backupPath = namespace + '/previous';
+  const foreignPath = namespace + '/foreign';
+  let preserveForeign = optionalLstat(foreignPath) !== undefined;
+  let safeTarget = created.value?.baseline;
+  let safeAbsent = created.value?.baselineAbsent === true;
+
+  if (committed) {
+    if (!candidateIsValid(targetName, candidate, expectedHash, maxBytes)) {
+      throw new Error('committed cache target invalid');
+    }
+    const previous = installing?.value?.previous;
+    const backup = optionalLstat(backupPath);
+    if (backup) {
+      if (!previous || !sameRecord(backup, previous)) throw new Error('cache backup changed');
+      unlinkSync(backupPath);
+    }
+  } else if (installing) {
+    const previous = installing.value?.previous;
+    safeTarget = previous;
+    safeAbsent = previous === undefined;
+    let currentTarget = optionalLstat(targetName);
+    const backup = optionalLstat(backupPath);
+    if (backup && (!previous || !sameRecord(backup, previous))) throw new Error('cache backup changed');
+
+    if (currentTarget && candidate && sameRecord(currentTarget, candidate)) {
+      unlinkSync(targetName);
+      currentTarget = undefined;
+    } else if (currentTarget && previous && sameRecord(currentTarget, previous) && !backup) {
+      // The child was killed before moving the previous target.
+    } else if (currentTarget) {
+      if (optionalLstat(foreignPath)) throw new Error('cache quarantine occupied');
+      renameSync(targetName, foreignPath);
+      currentTarget = undefined;
+      preserveForeign = true;
+    }
+
+    if (previous) {
+      if (backup) {
+        if (currentTarget) throw new Error('previous cache target occupied');
+        renameSync(backupPath, targetName);
+        currentTarget = lstatSync(targetName, { bigint: true });
+      }
+    }
+  }
+
+  const namedCandidate = optionalLstat(candidatePath);
+  if (namedCandidate) {
+    if (candidate && sameRecord(namedCandidate, candidate)) unlinkSync(candidatePath);
+    else preserveForeign = true;
+  }
+
+  if (preserveForeign) {
+    const currentTarget = optionalLstat(targetName);
+    const safeToRead = safeTarget
+      ? currentTarget && sameRecord(currentTarget, safeTarget)
+      : safeAbsent && currentTarget === undefined;
+    const namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      writeMarker(namespaceFd, namespace, 'journal-quarantined', {
+        version: JOURNAL_VERSION,
+        safeTarget,
+        safeAbsent,
+      });
+    } finally {
+      closeSync(namespaceFd);
+    }
+    fsyncSync(cwdFd);
+    if (!safeToRead) throw new Error('cache target remains contaminated');
+    return;
+  }
+
+  if (!cleanupMarkers(namespace, markers)) throw new Error('transaction journal replaced');
+  if (readdirSync(namespace).length !== 0) throw new Error('transaction namespace not empty');
+  rmdirSync(namespace);
+  fsyncSync(cwdFd);
+};
+const recoverTransactions = (cwdFd, targetName, maxBytes) => {
+  const prefix = transactionPrefixFor(targetName);
+  const namespaces = readdirSync('.').filter((entry) => entry.startsWith(prefix));
+  if (namespaces.length > 64) throw new Error('too many cache transactions');
+  for (const namespace of namespaces) recoverNamespace(cwdFd, namespace, targetName, maxBytes);
+};
 
 const [
   operation,
@@ -187,9 +438,10 @@ try {
     fail();
   }
 
-  if (operation === 'read') {
+  if (operation === 'read' || operation === 'cache-read') {
     const maxBytes = Number(first);
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) fail();
+    if (operation === 'cache-read') recoverTransactions(cwdFd, name, maxBytes);
     const fd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = fstatSync(fd, { bigint: true });
     if (!before.isFile() || before.size < 0n || before.size > BigInt(maxBytes)) fail();
@@ -223,6 +475,7 @@ try {
     if (!safeName(namespace) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedHash)) {
       fail();
     }
+    recoverTransactions(cwdFd, name, maxBytes);
     emit({ stage: 'ready' });
     if (hangAfterReady === '1') await hang();
     const bytes = readInput(maxBytes);
@@ -230,12 +483,10 @@ try {
 
     const temporary = namespace + '/candidate';
     const backup = namespace + '/previous';
-    const quarantine = namespace + '/rejected';
     let namespaceIdentity;
     let temporaryIdentity;
-    let previousIdentity;
+    let namespaceFd;
     let candidateFd;
-    let installed = false;
     let completed = false;
     try {
       mkdirSync(namespace, { mode: 0o700 });
@@ -244,16 +495,34 @@ try {
         throw new Error('private namespace invalid');
       }
       namespaceIdentity = { dev: namespaceStat.dev, ino: namespaceStat.ino };
+      namespaceFd = openSync(namespace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      const baselineTarget = optionalLstat(name);
+      writeMarker(namespaceFd, namespace, 'journal-created', {
+        version: JOURNAL_VERSION,
+        target: name,
+        namespace: recordIdentity(namespaceStat),
+        baseline:
+          baselineTarget?.isFile() && !baselineTarget.isSymbolicLink()
+            ? recordIdentity(baselineTarget)
+            : undefined,
+        baselineAbsent: baselineTarget === undefined,
+      });
       candidateFd = openSync(
         temporary,
         constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
         0o600,
       );
       fchmodSync(candidateFd, 0o600);
+      const openedCandidate = fstatSync(candidateFd, { bigint: true });
+      temporaryIdentity = { dev: openedCandidate.dev, ino: openedCandidate.ino };
+      writeMarker(namespaceFd, namespace, 'journal-candidate', {
+        version: JOURNAL_VERSION,
+        candidate: recordIdentity(openedCandidate),
+        expectedHash,
+      });
       writeAll(candidateFd, bytes);
       fsyncSync(candidateFd);
       const candidateStat = fstatSync(candidateFd, { bigint: true });
-      temporaryIdentity = { dev: candidateStat.dev, ino: candidateStat.ino };
       if (
         !candidateStat.isFile()
         || candidateStat.isSymbolicLink()
@@ -270,11 +539,13 @@ try {
       const previous = optionalLstat(name);
       if (previous) {
         if (!previous.isFile() || previous.isSymbolicLink()) throw new Error('target is not replaceable');
-        previousIdentity = { dev: previous.dev, ino: previous.ino };
-        renameSync(name, backup);
       }
+      writeMarker(namespaceFd, namespace, 'journal-installing', {
+        version: JOURNAL_VERSION,
+        previous: previous ? recordIdentity(previous) : undefined,
+      });
+      if (previous) renameSync(name, backup);
       renameSync(temporary, name);
-      installed = true;
       if (enableTestStages === '1') emit({ stage: 'installed', namespace, temporary, target: name });
 
       const installedFd = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -290,18 +561,12 @@ try {
         || installedHash !== expectedHash
       ) throw new Error('installed target invalid');
       fsyncSync(cwdFd);
-
-      if (previousIdentity) {
-        const namedBackup = lstatSync(backup, { bigint: true });
-        if (!same(namedBackup, previousIdentity)) throw new Error('backup identity changed');
-        unlinkSync(backup);
-      }
+      writeMarker(namespaceFd, namespace, 'journal-committed', { version: JOURNAL_VERSION });
       closeSync(candidateFd);
       candidateFd = undefined;
-      const currentNamespace = lstatSync(namespace, { bigint: true });
-      if (!same(currentNamespace, namespaceIdentity)) throw new Error('namespace identity changed');
-      rmdirSync(namespace);
-      fsyncSync(cwdFd);
+      closeSync(namespaceFd);
+      namespaceFd = undefined;
+      recoverNamespace(cwdFd, namespace, name, maxBytes);
       closeSync(cwdFd);
       completed = true;
     } catch {
@@ -309,22 +574,15 @@ try {
       if (candidateFd !== undefined) {
         try { closeSync(candidateFd); } catch {}
       }
-      const currentTarget = optionalLstat(name);
-      if (installed && currentTarget && temporaryIdentity && same(currentTarget, temporaryIdentity)) {
-        try { renameSync(name, quarantine); } catch {}
+      if (namespaceFd !== undefined) {
+        try { closeSync(namespaceFd); } catch {}
       }
-      const currentBackup = optionalLstat(backup);
-      if (previousIdentity && currentBackup && same(currentBackup, previousIdentity) && !optionalLstat(name)) {
-        try { renameSync(backup, name); } catch {}
-      }
-      const currentTemporary = optionalLstat(temporary);
-      if (temporaryIdentity && currentTemporary && same(currentTemporary, temporaryIdentity)) {
-        try { unlinkSync(temporary); } catch {}
-      }
-      const currentNamespace = optionalLstat(namespace);
-      if (namespaceIdentity && currentNamespace && same(currentNamespace, namespaceIdentity)) {
-        try { rmdirSync(namespace); } catch {}
-      }
+      try {
+        const currentNamespace = optionalLstat(namespace);
+        if (namespaceIdentity && currentNamespace && same(currentNamespace, namespaceIdentity)) {
+          recoverNamespace(cwdFd, namespace, name, maxBytes);
+        }
+      } catch {}
       try { fsyncSync(cwdFd); } catch {}
     }
     if (!completed) fail();
@@ -515,18 +773,21 @@ async function terminateAndReap(
 async function runContainedChild(
   directory: ContainedDirectoryIdentity,
   operation: ContainedOperation,
-  childOperation: 'read' | 'atomic-write' | 'ensure-directory',
+  childOperation: 'read' | 'cache-read' | 'atomic-write' | 'ensure-directory',
   args: string[],
   input: Buffer,
   maxOutputBytes: number,
   options: ContainedRuntimeOptions = {},
 ): Promise<Buffer> {
-  await acquirePermit();
+  const timeoutMs = safeDuration(options.timeoutMs, CONTAINED_HELPER_TIMEOUT_MS);
+  const deadlineAt = Date.now() + timeoutMs;
+  await acquirePermit(deadlineAt);
   let child: ChildProcess | undefined;
   let exit: ReturnType<typeof trackedExit> | undefined;
   let events: ReturnType<typeof eventReader> | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    if (Date.now() >= deadlineAt) throw new Error('contained filesystem child timed out');
     child = spawn(
       process.execPath,
       [
@@ -561,11 +822,12 @@ async function runContainedChild(
     }
     events = eventReader(eventStream);
     const output = collect(stdout, Math.min(maxOutputBytes + 1, MAX_PROTOCOL_OUTPUT_BYTES));
-    const timeoutMs = safeDuration(options.timeoutMs, CONTAINED_HELPER_TIMEOUT_MS);
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new Error('contained filesystem child timed out');
     const deadline = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(
         () => reject(new Error('contained filesystem child timed out')),
-        timeoutMs,
+        remaining,
       );
       timeout.unref?.();
     });
@@ -640,7 +902,7 @@ export async function readContainedFile(
   return runContainedChild(
     directory,
     operation,
-    'read',
+    operation === 'cache-read' ? 'cache-read' : 'read',
     [name, String(maxBytes), '', ''],
     Buffer.alloc(0),
     maxBytes,
@@ -655,7 +917,8 @@ export async function atomicWriteContainedFile(
   maxBytes: number,
   options: ContainedRuntimeOptions = {},
 ): Promise<void> {
-  const namespace = `.slide-cache-${randomUUID()}`;
+  const targetHash = createHash('sha256').update(name).digest('hex').slice(0, 16);
+  const namespace = `.slide-cache-${targetHash}-${randomUUID()}`;
   const expectedHash = createHash('sha256').update(data).digest('hex');
   await runContainedChild(
     directory,

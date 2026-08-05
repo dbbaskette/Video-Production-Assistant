@@ -353,12 +353,110 @@ describe('SlideUnderstandingService', () => {
       activePermits: 0,
       activeProcesses: 0,
       queued: 0,
-      spawned: 3,
+      spawned: 5,
     });
     gate.resolve(validModelOutput);
 
     const [one, two] = await Promise.all([first, second]);
     expect(two).toEqual(one);
+  });
+
+  it('deduplicates identical captured bytes across service instances', async () => {
+    const gate = deferred<string>();
+    generateWithImage.mockImplementation(() => gate.promise);
+    const firstService = service();
+    const secondService = service();
+
+    const first = firstService.ensureBrief(input, model());
+    const second = secondService.ensureBrief(input, model());
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    gate.resolve(validModelOutput);
+
+    const [one, two] = await Promise.all([first, second]);
+    expect(two).toEqual(one);
+    expect(inspectSlideUnderstandingResources(firstService)).toEqual({ inFlight: 0, targets: 0 });
+  });
+
+  it('does not cross-deduplicate identical page descriptors from different projects', async () => {
+    const otherProjectPath = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'vpa-slide-understanding-other-')),
+    );
+    const otherImagePath = path.join(
+      otherProjectPath,
+      'presentations',
+      PRESENTATION_ID,
+      'pages',
+      'page-0001.png',
+    );
+    await mkdir(path.dirname(otherImagePath), { recursive: true });
+    await writeFile(otherImagePath, ORIGINAL_IMAGE);
+    const gates = [deferred<string>(), deferred<string>()];
+    generateWithImage.mockImplementation(
+      () => gates[generateWithImage.mock.calls.length - 1]!.promise,
+    );
+
+    try {
+      const calls = [
+        service().ensureBrief(input, model()),
+        service().ensureBrief(
+          { ...input, projectPath: otherProjectPath, imagePath: otherImagePath },
+          model(),
+        ),
+      ];
+      await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
+      gates.forEach((gate) => gate.resolve(validModelOutput));
+      await expect(Promise.all(calls)).resolves.toHaveLength(2);
+    } finally {
+      gates.forEach((gate) => gate.resolve(validModelOutput));
+      await rm(otherProjectPath, { recursive: true, force: true });
+    }
+  });
+
+  it('runs changed source bytes independently while an older source generation is in flight', async () => {
+    const newerImage = Buffer.from('new immutable normalized PNG bytes');
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const oldOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Older source',
+    });
+    const newOutput = JSON.stringify({
+      ...JSON.parse(validModelOutput),
+      detected_title: 'Newer source',
+    });
+    generateWithImage.mockImplementation((request: GenerateWithImageInput) =>
+      request.expectedImageSha256 === sha256(ORIGINAL_IMAGE) ? older.promise : newer.promise,
+    );
+    const instance = service();
+
+    const olderCall = instance.ensureBrief(input, model());
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    await writeFile(imagePath, newerImage);
+    const newerCall = instance.ensureBrief(input, model());
+    try {
+      await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
+      newer.resolve(newOutput);
+      await expect(newerCall).resolves.toMatchObject({
+        detected_title: 'Newer source',
+        image_sha256: sha256(newerImage),
+      });
+      older.resolve(oldOutput);
+      await expect(olderCall).resolves.toMatchObject({
+        detected_title: 'Older source',
+        image_sha256: sha256(ORIGINAL_IMAGE),
+      });
+    } finally {
+      newer.resolve(newOutput);
+      older.resolve(oldOutput);
+      await Promise.allSettled([olderCall, newerCall]);
+    }
+
+    generateWithImage.mockClear();
+    await expect(instance.ensureBrief(input, model())).resolves.toMatchObject({
+      detected_title: 'Newer source',
+      image_sha256: sha256(newerImage),
+    });
+    expect(generateWithImage).not.toHaveBeenCalled();
   });
 
   it('does not deduplicate different pages, models, or image hashes', async () => {
@@ -704,12 +802,12 @@ describe('SlideUnderstandingService', () => {
     ).toEqual([]);
   });
 
-  it('immediately releases losing captured buffers for many duplicate same-key callers', async () => {
+  it('releases losing captured buffers after many same-key callers hash the source', async () => {
     const gate = deferred<string>();
     generateWithImage.mockImplementation(() => gate.promise);
     const instance = service();
     const calls = Array.from({ length: 20 }, () => instance.ensureBrief(input, model()));
-    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce(), { timeout: 10_000 });
     const analysisEntries = await readdir(path.dirname(artifactPath()));
 
     expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual(
@@ -849,11 +947,12 @@ describe('SlideUnderstandingService', () => {
     generateWithImage.mockImplementation((request: GenerateWithImageInput) =>
       request.model === 'gemini-old' ? older.promise : newer.promise,
     );
-    const instance = service();
+    const olderService = service();
+    const newerService = service();
 
-    const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
+    const olderCall = olderService.ensureBrief(input, model('old-entry', 'gemini-old'));
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
-    const newerCall = instance.ensureBrief(input, model('new-entry', 'gemini-new'));
+    const newerCall = newerService.ensureBrief(input, model('new-entry', 'gemini-new'));
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
     newer.resolve(newOutput);
     await expect(newerCall).resolves.toMatchObject({ detected_title: 'Newer model' });
@@ -862,7 +961,7 @@ describe('SlideUnderstandingService', () => {
     generateWithImage.mockClear();
 
     await expect(
-      instance.ensureBrief(input, model('new-entry', 'gemini-new')),
+      newerService.ensureBrief(input, model('new-entry', 'gemini-new')),
     ).resolves.toMatchObject({
       detected_title: 'Newer model',
     });
@@ -875,11 +974,12 @@ describe('SlideUnderstandingService', () => {
     generateWithImage.mockImplementation((request: GenerateWithImageInput) =>
       request.model === 'gemini-old' ? older.promise : newer.promise,
     );
-    const instance = service();
+    const olderService = service();
+    const newerService = service();
 
-    const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
+    const olderCall = olderService.ensureBrief(input, model('old-entry', 'gemini-old'));
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
-    const newerCall = instance.ensureBrief(input, model('new-entry', 'gemini-new'));
+    const newerCall = newerService.ensureBrief(input, model('new-entry', 'gemini-new'));
     await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
     newer.reject(new Error('private newer provider rejection'));
     await expect(newerCall).rejects.toEqual(new SlideUnderstandingError());
@@ -888,10 +988,10 @@ describe('SlideUnderstandingService', () => {
     );
     await expect(olderCall).resolves.toMatchObject({ detected_title: 'Older survivor' });
 
-    expect(inspectSlideUnderstandingResources(instance)).toEqual({ inFlight: 0, targets: 0 });
+    expect(inspectSlideUnderstandingResources(olderService)).toEqual({ inFlight: 0, targets: 0 });
     generateWithImage.mockClear();
     await expect(
-      instance.ensureBrief(input, model('old-entry', 'gemini-old')),
+      olderService.ensureBrief(input, model('old-entry', 'gemini-old')),
     ).resolves.toMatchObject({
       detected_title: 'Older survivor',
     });

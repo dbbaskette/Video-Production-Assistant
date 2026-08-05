@@ -95,19 +95,61 @@ describe('contained filesystem helper', () => {
     });
   });
 
+  it('includes queued permit time in the deadline and never spawns an expired waiter', async () => {
+    await writeFile(path.join(directoryPath, 'source.bin'), Buffer.from('bounded source'));
+    const gate = deferred();
+    const blockers = Array.from({ length: MAX_CONTAINED_HELPERS }, () =>
+      readContainedFile(directory, 'source.bin', 1_024, 'source-read', {
+        timeoutMs: 2_000,
+        onEvent: () => gate.promise,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(inspectContainedFilesystemResources()).toMatchObject({
+        activePermits: MAX_CONTAINED_HELPERS,
+        activeProcesses: MAX_CONTAINED_HELPERS,
+        spawned: MAX_CONTAINED_HELPERS,
+      }),
+    );
+
+    const expired = readContainedFile(directory, 'source.bin', 1_024, 'source-read', {
+      timeoutMs: 80,
+    });
+    const outcome = await Promise.race([
+      expired.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 250)),
+    ]);
+
+    gate.resolve();
+    await Promise.all(blockers);
+    await Promise.allSettled([expired]);
+
+    expect(outcome).toBe('rejected');
+    expect(inspectContainedFilesystemResources()).toEqual({
+      activePermits: 0,
+      activeProcesses: 0,
+      maxActiveProcesses: MAX_CONTAINED_HELPERS,
+      queued: 0,
+      spawned: MAX_CONTAINED_HELPERS,
+    });
+  });
+
   it('escalates to SIGKILL and reaps a child that ignores SIGTERM', async () => {
     const startedAt = Date.now();
 
     await expect(
       atomicWriteContainedFile(directory, 'cache.json', Buffer.from('bounded cache'), 1_024, {
-        timeoutMs: 80,
+        timeoutMs: 500,
         terminationGraceMs: 40,
         childBehavior: { hangAfterReady: true, ignoreSigterm: true },
       }),
     ).rejects.toThrow();
 
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(110);
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(520);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(await readdir(directoryPath)).toEqual([]);
     expect(inspectContainedFilesystemResources()).toMatchObject({
       activePermits: 0,
@@ -160,7 +202,7 @@ describe('contained filesystem helper', () => {
     await expect(readFile(replacementPath, 'utf8')).resolves.toBe('cleanup replacement');
   });
 
-  it('rejects a post-install replacement and quarantines the previous valid cache', async () => {
+  it('quarantines a post-install replacement and restores the previous valid cache', async () => {
     const targetPath = path.join(directoryPath, 'cache.json');
     await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
     let namespacePath = '';
@@ -177,12 +219,72 @@ describe('contained filesystem helper', () => {
       }),
     ).rejects.toThrow();
 
-    await expect(readFile(targetPath, 'utf8')).resolves.toBe('post-install replacement');
+    await expect(readFile(targetPath, 'utf8')).resolves.toBe('previous valid cache');
     const quarantined = await Promise.all(
       (await readdir(namespacePath)).map((entry) =>
         readFile(path.join(namespacePath, entry), 'utf8').catch(() => ''),
       ),
     );
-    expect(quarantined).toContain('previous valid cache');
+    expect(quarantined).toContain('post-install replacement');
+    await expect(readFile(path.join(directoryPath, 'attacker-moved-installed'), 'utf8')).resolves.toBe(
+      'new cache',
+    );
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+  });
+
+  it('recovers a killed prepared transaction before the next cache read without residue', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+
+    let reachedPrepared = false;
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('new cache'), 1_024, {
+        timeoutMs: 500,
+        terminationGraceMs: 40,
+        childBehavior: { ignoreSigterm: true },
+        onEvent: (event) => {
+          if (event.stage !== 'prepared') return;
+          reachedPrepared = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(reachedPrepared).toBe(true);
+    await expect(
+      readContainedFile(directory, 'cache.json', 1_024, 'cache-read'),
+    ).resolves.toEqual(Buffer.from('previous valid cache'));
+    expect((await readdir(directoryPath)).filter((entry) => entry.startsWith('.slide-cache-'))).toEqual(
+      [],
+    );
+  });
+
+  it('rolls back a killed installed transaction before the next cache write', async () => {
+    const targetPath = path.join(directoryPath, 'cache.json');
+    await writeFile(targetPath, 'previous valid cache', { mode: 0o600 });
+
+    let reachedInstalled = false;
+    await expect(
+      atomicWriteContainedFile(directory, 'cache.json', Buffer.from('interrupted cache'), 1_024, {
+        timeoutMs: 500,
+        terminationGraceMs: 40,
+        childBehavior: { ignoreSigterm: true },
+        onEvent: (event) => {
+          if (event.stage !== 'installed') return;
+          reachedInstalled = true;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+    ).rejects.toThrow();
+
+    expect(reachedInstalled).toBe(true);
+    await atomicWriteContainedFile(directory, 'cache.json', Buffer.from('next valid cache'), 1_024);
+
+    await expect(readFile(targetPath, 'utf8')).resolves.toBe('next valid cache');
+    expect((await readdir(directoryPath)).filter((entry) => entry.startsWith('.slide-cache-'))).toEqual(
+      [],
+    );
   });
 });

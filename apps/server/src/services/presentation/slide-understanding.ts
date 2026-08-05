@@ -127,9 +127,12 @@ interface BundlePaths {
 interface TargetState {
   nextGeneration: number;
   latestCompletedGeneration: number;
-  activeGenerations: number;
-  writeTail?: Promise<void>;
+  activeRequests: number;
+  operationTail?: Promise<void>;
 }
+
+const inFlight = new Map<string, Promise<PresentationSlideBrief>>();
+const targetStates = new Map<string, TargetState>();
 
 function pageName(pageNumber: number, extension: 'png' | 'json'): string {
   return `page-${String(pageNumber).padStart(4, '0')}.${extension}`;
@@ -321,19 +324,15 @@ function isFresh(
 }
 
 function requestKey(fields: {
-  projectPath: string;
-  presentationId: string;
-  pageNumber: number;
-  imagePath: string;
+  target: string;
+  imageSha256: string;
   extractedTextSha256: string;
   entryId: string;
   model: string;
 }): string {
   return JSON.stringify({
-    projectPath: fields.projectPath,
-    presentationId: fields.presentationId,
-    pageNumber: fields.pageNumber,
-    imagePath: fields.imagePath,
+    target: fields.target,
+    imageSha256: fields.imageSha256,
     extractedTextSha256: fields.extractedTextSha256,
     entryId: fields.entryId,
     model: fields.model,
@@ -342,14 +341,67 @@ function requestKey(fields: {
   });
 }
 
+function targetKey(paths: BundlePaths): string {
+  return JSON.stringify({
+    analysisPath: paths.analysis.path,
+    analysisDev: paths.analysis.dev.toString(),
+    analysisIno: paths.analysis.ino.toString(),
+    artifactName: path.basename(paths.artifactPath),
+  });
+}
+
+function acquireTargetState(target: string): TargetState {
+  const state = targetStates.get(target) ?? {
+    nextGeneration: 0,
+    latestCompletedGeneration: 0,
+    activeRequests: 0,
+  };
+  if (!targetStates.has(target)) targetStates.set(target, state);
+  state.activeRequests += 1;
+  return state;
+}
+
+function deleteIdleTargetState(target: string, state: TargetState): void {
+  if (
+    state.activeRequests === 0 &&
+    state.operationTail === undefined &&
+    targetStates.get(target) === state
+  ) {
+    targetStates.delete(target);
+  }
+}
+
+function releaseTargetState(target: string, state: TargetState): void {
+  state.activeRequests -= 1;
+  deleteIdleTargetState(target, state);
+}
+
+async function withTargetOperation<T>(
+  target: string,
+  state: TargetState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = state.operationTail ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  state.operationTail = tail;
+  try {
+    return await result;
+  } finally {
+    if (state.operationTail === tail) state.operationTail = undefined;
+    deleteIdleTargetState(target, state);
+  }
+}
+
 export class SlideUnderstandingService {
   private readonly transport: GeminiImageTransportLike;
   private readonly readPrompt: () => Promise<string>;
   private readonly readTextFile?: (path: string, maxBytes: number) => Promise<string>;
   private readonly containedRuntime: ContainedRuntimeOptions;
   private readonly warn: SlideUnderstandingWarning;
-  private readonly inFlight = new Map<string, Promise<PresentationSlideBrief>>();
-  private readonly targetStates = new Map<string, TargetState>();
   private promptCache?: Promise<string>;
 
   constructor(options: SlideUnderstandingServiceOptions) {
@@ -447,31 +499,9 @@ export class SlideUnderstandingService {
     }
   }
 
-  private acquireTargetGeneration(target: string): { generation: number; state: TargetState } {
-    const state = this.targetStates.get(target) ?? {
-      nextGeneration: 0,
-      latestCompletedGeneration: 0,
-      activeGenerations: 0,
-    };
-    if (!this.targetStates.has(target)) this.targetStates.set(target, state);
+  private acquireTargetGeneration(state: TargetState): number {
     state.nextGeneration += 1;
-    state.activeGenerations += 1;
-    return { generation: state.nextGeneration, state };
-  }
-
-  private releaseTargetGeneration(target: string, state: TargetState): void {
-    state.activeGenerations -= 1;
-    this.deleteIdleTargetState(target, state);
-  }
-
-  private deleteIdleTargetState(target: string, state: TargetState): void {
-    if (
-      state.activeGenerations === 0 &&
-      state.writeTail === undefined &&
-      this.targetStates.get(target) === state
-    ) {
-      this.targetStates.delete(target);
-    }
+    return state.nextGeneration;
   }
 
   private markCompleted(state: TargetState, generation: number): void {
@@ -480,34 +510,25 @@ export class SlideUnderstandingService {
 
   private async persistIfLatest(
     paths: BundlePaths,
+    target: string,
     state: TargetState,
     generation: number,
     data: string,
   ): Promise<void> {
-    const target = paths.artifactPath;
-    const previous = state.writeTail ?? Promise.resolve();
-    const write = previous
-      .catch(() => undefined)
-      .then(async () => {
-        if (state.latestCompletedGeneration !== generation) return;
-        await assertDirectoryIdentity(paths.analysis);
-        const bytes = Buffer.from(data, 'utf8');
-        if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
-        await atomicWriteContainedFile(
-          paths.analysis,
-          path.basename(target),
-          bytes,
-          MAX_ARTIFACT_BYTES,
-          this.containedRuntime,
-        );
-        await assertDirectoryIdentity(paths.analysis);
-      });
-    const tracked = write.finally(() => {
-      if (state.writeTail === tracked) state.writeTail = undefined;
-      this.deleteIdleTargetState(target, state);
+    await withTargetOperation(target, state, async () => {
+      if (state.latestCompletedGeneration !== generation) return;
+      await assertDirectoryIdentity(paths.analysis);
+      const bytes = Buffer.from(data, 'utf8');
+      if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
+      await atomicWriteContainedFile(
+        paths.analysis,
+        path.basename(paths.artifactPath),
+        bytes,
+        MAX_ARTIFACT_BYTES,
+        this.containedRuntime,
+      );
+      await assertDirectoryIdentity(paths.analysis);
     });
-    state.writeTail = tracked;
-    await tracked;
   }
 
   async ensureBrief(
@@ -518,24 +539,7 @@ export class SlideUnderstandingService {
     const parsedInput = InputSchema.safeParse(uncheckedInput);
     if (!parsedInput.success) throw new SlideUnderstandingError();
     const input = parsedInput.data;
-
-    const key = requestKey({
-      projectPath: input.projectPath,
-      presentationId: input.presentationId,
-      pageNumber: input.pageNumber,
-      imagePath: input.imagePath,
-      extractedTextSha256: sha256(input.extractedText),
-      entryId: model.summary.entry_id,
-      model: model.model,
-    });
-    const current = this.inFlight.get(key);
-    if (current) return await current;
-    const generated = this.ensureBriefOnce(input, model);
-    const tracked = generated.finally(() => {
-      if (this.inFlight.get(key) === tracked) this.inFlight.delete(key);
-    });
-    this.inFlight.set(key, tracked);
-    return await tracked;
+    return await this.ensureBriefOnce(input, model);
   }
 
   private async ensureBriefOnce(
@@ -557,26 +561,38 @@ export class SlideUnderstandingService {
       }
       const imageSha256 = sha256(imageBytes);
       const extractedTextSha256 = sha256(input.extractedText);
-      const cached = await this.readCache(paths, input);
-      if (cached && isFresh(cached, input, imageSha256, extractedTextSha256, model)) {
-        return cached;
+      const target = targetKey(paths);
+      const key = requestKey({
+        target,
+        imageSha256,
+        extractedTextSha256,
+        entryId: model.summary.entry_id,
+        model: model.model,
+      });
+      const current = inFlight.get(key);
+      if (current) {
+        imageBytes = undefined;
+        return await current;
       }
 
-      const { generation, state } = this.acquireTargetGeneration(paths.artifactPath);
-      const generatedBrief = this.generateBrief(
+      const state = acquireTargetState(target);
+      const generated = this.ensureCapturedBrief(
         input,
         paths,
         imageBytes,
         imageSha256,
         extractedTextSha256,
         model,
+        target,
         state,
-        generation,
       );
-      imageBytes = undefined;
-      return await generatedBrief.finally(() => {
-        this.releaseTargetGeneration(paths.artifactPath, state);
+      const tracked = generated.finally(() => {
+        if (inFlight.get(key) === tracked) inFlight.delete(key);
+        releaseTargetState(target, state);
       });
+      inFlight.set(key, tracked);
+      imageBytes = undefined;
+      return await tracked;
     } catch (error) {
       if (error instanceof SlideUnderstandingError) throw error;
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');
@@ -584,6 +600,34 @@ export class SlideUnderstandingService {
     } finally {
       imageBytes = undefined;
     }
+  }
+
+  private async ensureCapturedBrief(
+    input: EnsureSlideBriefInput,
+    paths: BundlePaths,
+    imageBytes: Buffer,
+    imageSha256: string,
+    extractedTextSha256: string,
+    model: ResolvedVisualModel,
+    target: string,
+    state: TargetState,
+  ): Promise<PresentationSlideBrief> {
+    const cached = await withTargetOperation(target, state, () => this.readCache(paths, input));
+    if (cached && isFresh(cached, input, imageSha256, extractedTextSha256, model)) {
+      return cached;
+    }
+    const generation = this.acquireTargetGeneration(state);
+    return await this.generateBrief(
+      input,
+      paths,
+      imageBytes,
+      imageSha256,
+      extractedTextSha256,
+      model,
+      target,
+      state,
+      generation,
+    );
   }
 
   private async systemPrompt(): Promise<string> {
@@ -613,6 +657,7 @@ export class SlideUnderstandingService {
     imageSha256: string,
     extractedTextSha256: string,
     model: ResolvedVisualModel,
+    target: string,
     state: TargetState,
     generation: number,
   ): Promise<PresentationSlideBrief> {
@@ -649,7 +694,13 @@ export class SlideUnderstandingService {
         ...modelFields,
       });
       this.markCompleted(state, generation);
-      await this.persistIfLatest(paths, state, generation, `${JSON.stringify(brief, null, 2)}\n`);
+      await this.persistIfLatest(
+        paths,
+        target,
+        state,
+        generation,
+        `${JSON.stringify(brief, null, 2)}\n`,
+      );
       return brief;
     } catch (error) {
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');
@@ -658,13 +709,9 @@ export class SlideUnderstandingService {
   }
 }
 
-export function inspectSlideUnderstandingResources(service: SlideUnderstandingService): {
+export function inspectSlideUnderstandingResources(_service: SlideUnderstandingService): {
   inFlight: number;
   targets: number;
 } {
-  const internal = service as unknown as {
-    inFlight: Map<string, unknown>;
-    targetStates: Map<string, unknown>;
-  };
-  return { inFlight: internal.inFlight.size, targets: internal.targetStates.size };
+  return { inFlight: inFlight.size, targets: targetStates.size };
 }
