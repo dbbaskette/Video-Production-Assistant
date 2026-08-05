@@ -41,10 +41,11 @@ function boundedRedactedDiagnostic(value: string): string {
       /(["'])(\/[^"'`\r\n]+?\.(?:mp4|mov|mkv|webm|mp3|wav|aac|m4a|srt|vtt|png|jpe?g|webp|gif|json|ya?ml|txt|md|log))\1/gi,
       '$1[redacted path]$1',
     )
-    // Unquoted ffmpeg paths commonly live below these absolute roots. Require
-    // a file-like suffix so ordinary prose such as "/ retry later" survives.
+    // An unquoted absolute path has a non-space root segment followed by `/`.
+    // Stop only at log/sentence delimiters, independent of file extension.
+    // Ordinary prose such as "/ retry later" has no structural root segment.
     .replace(
-      /(^|[\s("'=])\/(?:Users|home|private|tmp|var|Volumes|opt|etc|usr|Library|Applications)\/[^\r\n"'`]*?\.(?:mp4|mov|mkv|webm|mp3|wav|aac|m4a|srt|vtt|png|jpe?g|webp|gif|json|ya?ml|txt|md|log)(?=$|[.\s,;:)])/gim,
+      /(^|[\s("'=])\/[A-Za-z0-9._-]+\/[^\r\n"'`,;:)]+?(?=$|[\r\n,;:)]|\.\s|\s+--[A-Za-z])/gm,
       '$1[redacted path]',
     )
     .replace(/file:\/\/[^\s"'`]+/gi, '[redacted path]')

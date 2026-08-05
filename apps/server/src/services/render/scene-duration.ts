@@ -57,3 +57,7 @@ export function resolveRenderSceneDuration(
   }
   throw new RenderError('Scene recording duration is unavailable');
 }
+
+/** Documented public name; delegates to render-only duration semantics. */
+export const resolveSceneDuration: typeof resolveRenderSceneDuration =
+  resolveRenderSceneDuration;

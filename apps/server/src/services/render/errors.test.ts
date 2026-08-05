@@ -79,6 +79,26 @@ describe('render failure boundaries', () => {
     expect(diagnostic).toMatchObject({ message: expect.stringContaining(ordinaryProse) });
   });
 
+  it('redacts unquoted spaced absolute paths independently of extension', () => {
+    const paths = [
+      '/Users/alice/Private Project/font.ttf',
+      '/private/tmp/Review Documents/source deck.pdf',
+      '/tmp/Render Jobs/extensionless output',
+    ];
+    const ordinaryProse = 'Render failed / retry later, but keep this explanation.';
+    const diagnostic = privateRenderDiagnostic(new RenderError(
+      `Inputs: ${paths[0]}; ${paths[1]}; ${paths[2]}\n${ordinaryProse}`,
+    ));
+    const serialized = JSON.stringify(diagnostic);
+
+    for (const path of paths) {
+      expect(serialized).not.toContain(path);
+      expect(serialized).not.toContain(path.split('/').at(-1));
+    }
+    expect(serialized.match(/\[redacted path\]/g)).toHaveLength(3);
+    expect(diagnostic).toMatchObject({ message: expect.stringContaining(ordinaryProse) });
+  });
+
   it('preserves stable precondition codes without exposing scene identifiers', () => {
     expect(publicRenderFailure(new RenderError('Scene not found: private-scene'), 'scene')).toEqual({
       statusCode: 400,

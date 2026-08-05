@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vpa/shared';
-import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
+import {
+  RenderError,
+  resolveRenderSceneDuration,
+  resolveSceneDuration,
+} from './scene-duration.js';
 
 const slideScene: Scene = {
   id: 'scene-slide-2',
@@ -98,5 +102,38 @@ describe('resolveRenderSceneDuration', () => {
       type: 'slide',
       recording: { source: 'presentations/fake/clips/page-0001.mp4', duration_sec: 30 },
     }, 12.4)).toEqual({ targetSec: 30, flexible: false, source: 'recording' });
+  });
+});
+
+describe('resolveSceneDuration public contract', () => {
+  it('exports the documented name with render-only narration semantics', () => {
+    const sceneWithStoredChunks: Scene = {
+      ...slideScene,
+      narration: {
+        script: 'Stored narration',
+        chunks: [{
+          index: 0,
+          text: 'Stored narration',
+          audio: 'narration/chunk.mp3',
+          durationSec: 8.25,
+        }],
+      },
+    };
+
+    expect(resolveSceneDuration(sceneWithStoredChunks)).toEqual({
+      targetSec: 5,
+      flexible: true,
+      source: 'slide-hold',
+    });
+    expect(resolveSceneDuration(sceneWithStoredChunks, 8.25)).toEqual({
+      targetSec: 8.25,
+      flexible: true,
+      source: 'narration',
+    });
+    expect(resolveSceneDuration(sceneWithStoredChunks, Number.NaN)).toEqual({
+      targetSec: 5,
+      flexible: true,
+      source: 'slide-hold',
+    });
   });
 });
