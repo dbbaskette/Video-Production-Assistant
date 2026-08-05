@@ -59,7 +59,11 @@ function modelSummary(role: 'video-understanding' | 'writing' | 'general') {
     provider: role === 'video-understanding' ? 'gemini' as const : 'fake' as const,
     model: `${role}-v1`,
     name: `${role} model`,
-    capabilities: { text: true, video: role === 'video-understanding' },
+    capabilities: {
+      text: true,
+      image: role === 'video-understanding',
+      video: role === 'video-understanding',
+    },
     ready: true as const,
   };
 }

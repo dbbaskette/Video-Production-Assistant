@@ -27,7 +27,7 @@ async function buildTestServer(opts: { writer?: LlmClient; general?: LlmClient }
       provider: 'fake' as const,
       model: `fake-${role}`,
       name: role,
-      capabilities: { text: true, video: false },
+      capabilities: { text: true, image: false, video: false },
       ready: true as const,
     },
   }));

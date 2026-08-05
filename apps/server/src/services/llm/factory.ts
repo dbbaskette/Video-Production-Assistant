@@ -10,7 +10,8 @@ import { createCodexCliLlm } from './providers/codex-cli.js';
 import { createOpenAICompatLlm } from './providers/openai-compat.js';
 
 export function capabilitiesForProvider(provider: ModelProvider): ModelCapabilities {
-  return { text: true, video: provider === 'gemini' };
+  const isGemini = provider === 'gemini';
+  return { text: true, image: isGemini, video: isGemini };
 }
 
 export function configuredReadiness(entry: ModelEntry): { ready: boolean; message?: string } {

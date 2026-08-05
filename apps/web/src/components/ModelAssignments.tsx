@@ -154,6 +154,7 @@ export function ModelAssignments({
               <div className="model-assignment-row__signal-topline">
                 <span className="model-assignment-row__scope">{presentation.scopeLabel}</span>
                 {capabilities?.text && <span className="model-capability">Text</span>}
+                {capabilities?.image && <span className="model-capability">Image</span>}
                 {capabilities?.video && <span className="model-capability model-capability--video">Video</span>}
               </div>
               <strong>{presentation.label}</strong>

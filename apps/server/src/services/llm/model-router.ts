@@ -47,6 +47,12 @@ export interface ResolvedVideoModel {
   summary: ResolvedModelSummary & { provider: 'gemini' };
 }
 
+export interface ResolvedVisualModel {
+  apiKey: string;
+  model: string;
+  summary: ResolvedModelSummary & { provider: 'gemini' };
+}
+
 export class ModelRoutingError extends Error {
   constructor(
     readonly code: ModelRoutingErrorCode,
@@ -208,6 +214,22 @@ export class ModelRouter {
         ...summaryFor(role, scope, entry, capabilities),
         provider: 'gemini',
       },
+    };
+  }
+
+  async resolveVisual(project?: Project): Promise<ResolvedVisualModel> {
+    const role = 'video-understanding' as const;
+    const { entry, scope } = this.selectedEntry(role, project);
+    const capabilities = capabilitiesForProvider(entry.provider);
+    if (entry.provider !== 'gemini' || !capabilities.image) {
+      throw routingError('model_capability_mismatch', role, scope);
+    }
+    await this.requireReady(role, scope, entry);
+    if (!entry.apiKey) throw routingError('model_unavailable', role, scope);
+    return {
+      apiKey: entry.apiKey,
+      model: entry.model,
+      summary: { ...summaryFor(role, scope, entry, capabilities), provider: 'gemini' },
     };
   }
 

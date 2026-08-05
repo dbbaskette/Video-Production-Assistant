@@ -1,10 +1,11 @@
 import { z } from 'zod';
+import { PresentationSourceSchema } from './presentation.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
   duration_sec: z.number().positive().optional(),
   ingested_at: z.string().datetime().optional(),
-  source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split']).optional(),
+  source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split', 'presentation']).optional(),
   capture_session_id: z.string().uuid().optional(),
   captured_at: z.string().datetime().optional(),
 });
@@ -144,6 +145,7 @@ export const SceneSchema = z.object({
   intent: z.string().optional(),
   type: SceneTypeSchema.default('desktop'),
   recording: RecordingSchema.optional(),
+  presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),
   overlay_render: z.string().optional(),
@@ -204,6 +206,16 @@ export const SceneSchema = z.object({
       }),
     )
     .optional(),
+}).superRefine((scene, ctx) => {
+  const hasPresentationRecording = scene.recording?.source_kind === 'presentation';
+  const hasPresentationSource = scene.presentation_source !== undefined;
+  if (hasPresentationRecording !== hasPresentationSource) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: hasPresentationRecording ? ['presentation_source'] : ['recording', 'source_kind'],
+      message: 'presentation recording and presentation_source must be provided together',
+    });
+  }
 });
 export type Scene = z.infer<typeof SceneSchema>;
 

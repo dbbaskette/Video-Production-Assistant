@@ -60,7 +60,7 @@ describe('ModelRegistry', () => {
       provider: 'gemini',
       model: 'gemini-2.5-pro',
       hasApiKey: true,
-      capabilities: { text: true, video: true },
+      capabilities: { text: true, image: true, video: true },
       ready: true,
     });
 
@@ -97,7 +97,7 @@ describe('ModelRegistry', () => {
     expect(registry.list()).toContainEqual(expect.objectContaining({
       id: 'vision',
       hasApiKey: false,
-      capabilities: { text: true, video: true },
+      capabilities: { text: true, image: true, video: true },
       ready: false,
       readinessMessage: 'API key is missing',
     }));

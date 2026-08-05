@@ -94,7 +94,11 @@ describe('task-model setup probes', () => {
         provider: role === 'video-understanding' ? 'gemini' as const : 'fake' as const,
         model: `test-${role}`,
         name: role === 'video-understanding' ? 'Vision' : 'General',
-        capabilities: { text: true, video: role === 'video-understanding' },
+        capabilities: {
+          text: true,
+          image: role === 'video-understanding',
+          video: role === 'video-understanding',
+        },
         ready: true as const,
       };
     });

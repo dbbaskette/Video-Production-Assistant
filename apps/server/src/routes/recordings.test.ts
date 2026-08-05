@@ -75,7 +75,7 @@ async function buildTestServer(options: {
       provider: 'gemini',
       model: 'gemini-2.5-pro',
       name: 'Gemini Video',
-      capabilities: { text: true, video: true },
+      capabilities: { text: true, image: true, video: true },
       ready: true,
     },
   };
@@ -115,7 +115,7 @@ async function buildTestServer(options: {
       provider: 'fake' as const,
       model: 'fake',
       name: 'Fake',
-      capabilities: { text: true, video: false },
+      capabilities: { text: true, image: false, video: false },
       ready: true,
     },
   })));

@@ -31,7 +31,7 @@ const model = (entryId = 'vision', concreteModel = 'gemini-2.5-pro'): ResolvedVi
     provider: 'gemini',
     model: concreteModel,
     name: 'Gemini Vision',
-    capabilities: { text: true, video: true },
+    capabilities: { text: true, image: true, video: true },
     ready: true,
   },
 });

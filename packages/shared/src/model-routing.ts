@@ -9,6 +9,7 @@ export type ModelTaskRole = z.infer<typeof ModelTaskRoleSchema>;
 
 export const ModelCapabilitiesSchema = z.object({
   text: z.boolean(),
+  image: z.boolean(),
   video: z.boolean(),
 }).strict();
 export type ModelCapabilities = z.infer<typeof ModelCapabilitiesSchema>;

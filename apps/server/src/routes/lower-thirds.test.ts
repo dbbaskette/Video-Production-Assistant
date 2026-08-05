@@ -59,6 +59,7 @@ function modelSummary(role: ResolvedModelSummary['role']): ResolvedModelSummary 
     name: role === 'video-understanding' ? 'Gemini 2.5 Pro' : `Codex ${role}`,
     capabilities: {
       text: role !== 'video-understanding',
+      image: role === 'video-understanding',
       video: role === 'video-understanding',
     },
     ready: true,

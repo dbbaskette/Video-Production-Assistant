@@ -164,6 +164,26 @@ describe('ModelRouter', () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
+  it('returns Gemini visual credentials through the persisted video-understanding role', async () => {
+    const gemini: ModelEntry = {
+      id: 'gemini', name: 'Gemini Pro', provider: 'gemini', model: 'gemini-2.5-pro', apiKey: 'gemini-secret',
+    };
+    const registry = await createRegistry([gemini], { 'video-understanding': gemini.id });
+    const createClient = vi.fn(() => client());
+    const router = new ModelRouter({
+      registry,
+      createClient,
+      checkCliReady: vi.fn(async () => ({ ready: true })),
+    });
+
+    await expect(router.resolveVisual()).resolves.toMatchObject({
+      apiKey: 'gemini-secret',
+      model: 'gemini-2.5-pro',
+      summary: { role: 'video-understanding', provider: 'gemini', ready: true },
+    });
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it.each(['claude-code', 'codex-cli'] as const)(
     'awaits the injected readiness probe and blocks an unavailable %s assignment',
     async (provider) => {
