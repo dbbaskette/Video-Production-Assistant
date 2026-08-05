@@ -1,5 +1,19 @@
 import { createHash } from 'node:crypto';
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  truncate,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -9,7 +23,13 @@ import {
 } from '@vpa/shared';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest';
 import type { ResolvedVisualModel } from '../llm/model-router.js';
-import type { GenerateWithImageInput, GeminiImageTransportLike } from './gemini-image.js';
+import {
+  GeminiImageTransport,
+  MAX_INLINE_IMAGE_BYTES,
+  readBoundedFileNoFollow,
+  type GenerateWithImageInput,
+  type GeminiImageTransportLike,
+} from './gemini-image.js';
 import {
   SlideUnderstandingError,
   SlideUnderstandingService,
@@ -69,7 +89,7 @@ describe('SlideUnderstandingService', () => {
   let generateWithImage: MockedFunction<GeminiImageTransportLike['generateWithImage']>;
 
   beforeEach(async () => {
-    projectPath = await mkdtemp(path.join(tmpdir(), 'vpa-slide-understanding-'));
+    projectPath = await realpath(await mkdtemp(path.join(tmpdir(), 'vpa-slide-understanding-')));
     imagePath = path.join(
       projectPath,
       'presentations',
@@ -148,6 +168,7 @@ describe('SlideUnderstandingService', () => {
       imageMimeType: 'image/png',
       responseMimeType: 'application/json',
       maxTokens: 4_096,
+      expectedImageSha256: sha256(ORIGINAL_IMAGE),
     }));
     const request = generateWithImage.mock.calls[0]![0] as GenerateWithImageInput;
     expect(request.userPrompt).toContain('Analyze slide 1.');
@@ -187,6 +208,8 @@ describe('SlideUnderstandingService', () => {
     ['too many list items', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: Array(51).fill('point') })],
     ['an oversized list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: ['x'.repeat(1_001)] })],
     ['an empty list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: [''] })],
+    ['a whitespace visual summary', JSON.stringify({ ...JSON.parse(validModelOutput), visual_summary: '   ' })],
+    ['a whitespace list item', JSON.stringify({ ...JSON.parse(validModelOutput), key_points: [' \t '] })],
   ])('rejects and does not persist %s', async (_label, output) => {
     generateWithImage.mockResolvedValueOnce(output);
 
@@ -405,5 +428,220 @@ describe('SlideUnderstandingService', () => {
     );
     const diagnostics = JSON.stringify(warn.mock.calls);
     for (const privateValue of privateValues) expect(diagnostics).not.toContain(privateValue);
+  });
+
+  it('rejects a symlinked project root instead of deriving artifacts through its lexical path', async () => {
+    const projectLink = `${projectPath}-link`;
+    await symlink(projectPath, projectLink, 'dir');
+    try {
+      const linkedInput = {
+        ...input,
+        projectPath: projectLink,
+        imagePath: imagePath.replace(projectPath, projectLink),
+      };
+
+      await expect(service().ensureBrief(linkedInput, model())).rejects.toEqual(new SlideUnderstandingError());
+
+      expect(generateWithImage).not.toHaveBeenCalled();
+    } finally {
+      await unlink(projectLink);
+    }
+  });
+
+  it('rejects a snapshot path replacement because transport verifies the expected image hash', async () => {
+    const replacement = Buffer.from('attacker replacement snapshot bytes');
+    const readSnapshot = vi.fn(async (target: string, maxBytes: number) => {
+      await rm(target);
+      await writeFile(target, replacement, { mode: 0o400 });
+      return readBoundedFileNoFollow(target, maxBytes);
+    });
+    const fetchRequest = vi.fn(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: validModelOutput }] } }],
+    }), { status: 200 })) as unknown as typeof fetch;
+    const instance = service({
+      transport: new GeminiImageTransport({ fetch: fetchRequest, readFile: readSnapshot }),
+    });
+
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(fetchRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not recursively delete a replacement snapshot directory during cleanup', async () => {
+    let replacementMarker = '';
+    generateWithImage.mockImplementationOnce(async (request: GenerateWithImageInput) => {
+      const snapshotDirectory = path.dirname(request.imagePath);
+      await rename(snapshotDirectory, `${snapshotDirectory}.original`);
+      await mkdir(snapshotDirectory);
+      replacementMarker = path.join(snapshotDirectory, 'replacement-marker.txt');
+      await writeFile(replacementMarker, 'must survive cleanup');
+      return validModelOutput;
+    });
+
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    await expect(readFile(replacementMarker, 'utf8')).resolves.toBe('must survive cleanup');
+  });
+
+  it('rejects an analysis-parent retarget without writing or cleaning the replacement target', async () => {
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'vpa-slide-cache-retarget-')));
+    const marker = path.join(outside, 'replacement-marker.txt');
+    await writeFile(marker, 'must survive');
+    generateWithImage.mockImplementationOnce(async (request: GenerateWithImageInput) => {
+      const analysis = path.dirname(path.dirname(request.imagePath));
+      await rename(analysis, `${analysis}.original`);
+      await symlink(outside, analysis, 'dir');
+      return validModelOutput;
+    });
+    try {
+      await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+      await expect(access(path.join(outside, 'page-0001.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(marker, 'utf8')).resolves.toBe('must survive');
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('immediately cleans losing snapshots for many duplicate same-key callers', async () => {
+    const gate = deferred<string>();
+    generateWithImage.mockImplementation(() => gate.promise);
+    const instance = service();
+    const calls = Array.from({ length: 20 }, () => instance.ensureBrief(input, model()));
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    const analysisEntries = await readdir(path.dirname(artifactPath()));
+
+    expect(analysisEntries.filter((entry) => entry.startsWith('.slide-understanding-'))).toHaveLength(1);
+
+    gate.resolve(validModelOutput);
+    await Promise.all(calls);
+    expect((await readdir(path.dirname(artifactPath()))).sort()).toEqual(['page-0001.json']);
+  });
+
+  it('uses an explicit byte cap for cache reads and rejects an oversized prompt before transport', async () => {
+    const first = await service().ensureBrief(input, model());
+    const cacheText = `${JSON.stringify(first)}\n`;
+    generateWithImage.mockClear();
+    const readTextFile = vi.fn(async () => cacheText);
+
+    await service({ readTextFile }).ensureBrief(input, model());
+
+    expect(readTextFile).toHaveBeenCalledWith(artifactPath(), 256 * 1024);
+    expect(generateWithImage).not.toHaveBeenCalled();
+
+    await rm(artifactPath());
+    const oversizedPrompt = service({ readPrompt: async () => 'x'.repeat(20_001) });
+    await expect(oversizedPrompt.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+    expect(generateWithImage).not.toHaveBeenCalled();
+  });
+
+  it('regenerates an oversized real cache through the capped cache reader', async () => {
+    await mkdir(path.dirname(artifactPath()), { recursive: true });
+    await writeFile(artifactPath(), Buffer.from('{'));
+    await truncate(artifactPath(), 256 * 1024 + 1);
+
+    await expect(service().ensureBrief(input, model())).resolves.toMatchObject({ page_number: 1 });
+
+    expect(generateWithImage).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      { errorName: 'UnreadableSlideBriefCache', presentationId: PRESENTATION_ID, pageNumber: 1 },
+      'Regenerating unreadable slide brief cache',
+    );
+  });
+
+  it('rejects an over-cap cache value returned by an injected reader before parsing it', async () => {
+    const readTextFile = vi.fn(async () => 'x'.repeat(256 * 1024 + 1));
+
+    await expect(service({ readTextFile }).ensureBrief(input, model())).resolves.toMatchObject({ page_number: 1 });
+
+    expect(generateWithImage).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      { errorName: 'UnreadableSlideBriefCache', presentationId: PRESENTATION_ID, pageNumber: 1 },
+      'Regenerating unreadable slide brief cache',
+    );
+  });
+
+  it('removes its verified empty snapshot directory when failure finds the owned file already absent', async () => {
+    const analysisPath = path.dirname(artifactPath());
+    const readPrompt = vi.fn(async () => {
+      const snapshotDirectoryName = (await readdir(analysisPath)).find((entry) => (
+        entry.startsWith('.slide-understanding-')
+      ));
+      const snapshotDirectory = path.join(analysisPath, snapshotDirectoryName!);
+      const snapshotFile = path.join(snapshotDirectory, (await readdir(snapshotDirectory))[0]!);
+      await unlink(snapshotFile);
+      return 'Exact versioned visual prompt.';
+    });
+
+    await expect(service({ readPrompt }).ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    expect((await readdir(analysisPath)).filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
+  });
+
+  it('removes its verified empty snapshot directory when snapshot creation fails before writing', async () => {
+    const writeSnapshot = vi.fn(async () => {
+      throw new Error('private snapshot write failure');
+    });
+    const instance = service({ writeSnapshot } as unknown as Partial<SlideUnderstandingServiceOptions>);
+
+    await expect(instance.ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    expect(writeSnapshot).toHaveBeenCalledOnce();
+    const analysisPath = path.dirname(artifactPath());
+    expect((await readdir(analysisPath)).filter((entry) => entry.startsWith('.slide-understanding-'))).toEqual([]);
+  });
+
+  it('rejects an oversized real source before transport through the capped descriptor reader', async () => {
+    await truncate(imagePath, MAX_INLINE_IMAGE_BYTES + 1);
+
+    await expect(service().ensureBrief(input, model())).rejects.toEqual(new SlideUnderstandingError());
+
+    expect(generateWithImage).not.toHaveBeenCalled();
+  });
+
+  it('rejects delimiter-collision and other unsafe routed identities before file or transport work', async () => {
+    const unsafe = [
+      model('alpha\0beta', 'gamma'),
+      model('alpha', 'beta\0gamma'),
+      model(' whitespace'),
+      model('x'.repeat(201)),
+      { ...model(), apiKey: 'private\nkey' },
+      { ...model(), apiKey: 'x'.repeat(1_025) },
+      model('valid-entry', 'gemini/unsafe'),
+      model('valid-entry', 'x'.repeat(201)),
+    ] as ResolvedVisualModel[];
+
+    const instance = service();
+    const results = await Promise.allSettled(unsafe.map((routed) => instance.ensureBrief(input, routed)));
+
+    expect(results.every((result) => result.status === 'rejected')).toBe(true);
+    expect(generateWithImage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the newest completed freshness generation in the page cache', async () => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const oldOutput = JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Older model' });
+    const newOutput = JSON.stringify({ ...JSON.parse(validModelOutput), detected_title: 'Newer model' });
+    generateWithImage.mockImplementation((request: GenerateWithImageInput) => (
+      request.model === 'gemini-old' ? older.promise : newer.promise
+    ));
+    const instance = service();
+
+    const olderCall = instance.ensureBrief(input, model('old-entry', 'gemini-old'));
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledOnce());
+    const newerCall = instance.ensureBrief(input, model('new-entry', 'gemini-new'));
+    await vi.waitFor(() => expect(generateWithImage).toHaveBeenCalledTimes(2));
+    newer.resolve(newOutput);
+    await expect(newerCall).resolves.toMatchObject({ detected_title: 'Newer model' });
+    older.resolve(oldOutput);
+    await expect(olderCall).resolves.toMatchObject({ detected_title: 'Older model' });
+    generateWithImage.mockClear();
+
+    await expect(instance.ensureBrief(input, model('new-entry', 'gemini-new'))).resolves.toMatchObject({
+      detected_title: 'Newer model',
+    });
+    expect(generateWithImage).not.toHaveBeenCalled();
   });
 });

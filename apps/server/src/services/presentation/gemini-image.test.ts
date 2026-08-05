@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GEMINI_IMAGE_TIMEOUT_MS,
@@ -8,6 +12,10 @@ import {
 } from './gemini-image.js';
 
 const imageBytes = Buffer.from('private normalized PNG bytes');
+
+function sha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
 function input(overrides: Partial<GenerateWithImageInput> = {}): GenerateWithImageInput {
   return {
@@ -20,7 +28,8 @@ function input(overrides: Partial<GenerateWithImageInput> = {}): GenerateWithIma
     responseMimeType: 'application/json',
     maxTokens: 4_096,
     ...overrides,
-  };
+    expectedImageSha256: sha256(imageBytes),
+  } as GenerateWithImageInput;
 }
 
 function success(text = '{"visual_summary":"Safe output"}'): Response {
@@ -31,7 +40,7 @@ function success(text = '{"visual_summary":"Safe output"}'): Response {
 
 function transport(options: {
   fetch?: typeof fetch;
-  readFile?: (path: string) => Promise<Buffer>;
+  readFile?: (path: string, maxBytes?: number) => Promise<Buffer>;
 } = {}) {
   const fetchRequest = options.fetch ?? vi.fn(async () => success());
   const readFile = options.readFile ?? vi.fn(async () => imageBytes);
@@ -54,7 +63,7 @@ describe('GeminiImageTransport', () => {
     await expect(ctx.instance.generateWithImage(input())).resolves.toBe('{"visual_summary":"Safe output"}');
 
     expect(ctx.readFile).toHaveBeenCalledOnce();
-    expect(ctx.readFile).toHaveBeenCalledWith(input().imagePath);
+    expect(ctx.readFile).toHaveBeenCalledWith(input().imagePath, MAX_INLINE_IMAGE_BYTES);
     expect(ctx.fetchRequest).toHaveBeenCalledOnce();
     const [requestUrl, requestInit] = vi.mocked(ctx.fetchRequest).mock.calls[0]!;
     const url = new URL(String(requestUrl));
@@ -142,15 +151,40 @@ describe('GeminiImageTransport', () => {
     await expect(ctx.instance.generateWithImage(input())).rejects.toEqual(new GeminiImageTransportError());
   });
 
-  it.each([
-    ['empty image', Buffer.alloc(0)],
-    ['oversized image', Buffer.alloc(MAX_INLINE_IMAGE_BYTES + 1)],
-  ])('rejects an %s before making a provider call', async (_label, bytes) => {
-    const ctx = transport({ readFile: vi.fn(async () => bytes) });
+  it('rejects an empty image before making a provider call', async () => {
+    const ctx = transport({ readFile: vi.fn(async () => Buffer.alloc(0)) });
 
     await expect(ctx.instance.generateWithImage(input())).rejects.toEqual(new GeminiImageTransportError());
 
     expect(ctx.readFile).toHaveBeenCalledOnce();
+    expect(ctx.fetchRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized real file through the capped reader before making a provider call', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'vpa-gemini-bounded-image-'));
+    const oversizedPath = path.join(directory, 'oversized.png');
+    await writeFile(oversizedPath, Buffer.from('x'));
+    await truncate(oversizedPath, MAX_INLINE_IMAGE_BYTES + 1);
+    const fetchRequest = vi.fn(async () => success()) as unknown as typeof fetch;
+    try {
+      const instance = new GeminiImageTransport({ fetch: fetchRequest });
+
+      await expect(instance.generateWithImage(input({ imagePath: oversizedPath }))).rejects.toEqual(
+        new GeminiImageTransportError(),
+      );
+
+      expect(fetchRequest).not.toHaveBeenCalled();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects snapshot replacement when the bytes read do not match the expected SHA-256', async () => {
+    const replacement = Buffer.from('replacement snapshot bytes');
+    const ctx = transport({ readFile: vi.fn(async () => replacement) });
+
+    await expect(ctx.instance.generateWithImage(input())).rejects.toEqual(new GeminiImageTransportError());
+
     expect(ctx.fetchRequest).not.toHaveBeenCalled();
   });
 
@@ -180,5 +214,45 @@ describe('GeminiImageTransport', () => {
     const ctx = transport({ fetch: vi.fn(async () => response) as unknown as typeof fetch });
 
     await expect(ctx.instance.generateWithImage(input())).rejects.toEqual(new GeminiImageTransportError());
+  });
+
+  it.each([
+    ['non-2xx', 403, undefined],
+    ['oversized declared response', 200, String(1_000_001)],
+  ])('cancels the provider body on %s', async (_label, status, contentLength) => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('private provider body'));
+      },
+      cancel,
+    });
+    const headers = contentLength === undefined ? undefined : { 'content-length': contentLength };
+    const response = new Response(body, { status, headers });
+    const ctx = transport({ fetch: vi.fn(async () => response) as unknown as typeof fetch });
+
+    await expect(ctx.instance.generateWithImage(input())).rejects.toEqual(new GeminiImageTransportError());
+
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('cancels a hanging response body when the request timeout aborts', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const ctx = transport({
+      fetch: vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch,
+    });
+
+    const pending = ctx.instance.generateWithImage(input());
+    const rejection = expect(pending).rejects.toEqual(new GeminiImageTransportError());
+    for (let turn = 0; turn < 10 && vi.mocked(ctx.fetchRequest).mock.calls.length === 0; turn += 1) {
+      await Promise.resolve();
+    }
+    await vi.advanceTimersByTimeAsync(GEMINI_IMAGE_TIMEOUT_MS);
+
+    await rejection;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

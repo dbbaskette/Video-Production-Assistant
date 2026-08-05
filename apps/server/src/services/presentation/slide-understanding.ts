@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
-  chmod,
   lstat,
   mkdir,
   mkdtemp,
   open,
   realpath,
-  rm,
-  writeFile,
+  rename,
+  rmdir,
+  unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -18,18 +18,20 @@ import {
   type PresentationSlideBrief,
 } from '@vpa/shared';
 import { z } from 'zod';
-import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import type { ResolvedVisualModel } from '../llm/model-router.js';
 import {
   GeminiImageTransport,
   MAX_INLINE_IMAGE_BYTES,
+  isValidGeminiTransportIdentity,
+  readBoundedFileNoFollow,
   type GeminiImageTransportLike,
 } from './gemini-image.js';
 
 const MAX_EXTRACTED_TEXT_CHARS = 20_000;
 const MAX_PROJECT_PATH_CHARS = 4_096;
-const MAX_MODEL_CHARS = 500;
-const MAX_ENTRY_ID_CHARS = 200;
+const MAX_PROMPT_BYTES = 20_000;
+const MAX_CACHE_BYTES = 256 * 1024;
+const MAX_ARTIFACT_BYTES = 256 * 1024;
 const SLIDE_MAX_TOKENS = 4_096;
 
 const InputSchema = z.object({
@@ -40,10 +42,20 @@ const InputSchema = z.object({
   extractedText: z.string().max(MAX_EXTRACTED_TEXT_CHARS),
 }).strict();
 
-const BriefListSchema = z.array(z.string().min(1).max(1_000)).max(50);
+const NonWhitespaceItemSchema = z.string().min(1).max(1_000).refine(
+  (value) => value.trim().length > 0,
+  'Item must contain non-whitespace content',
+);
+const BriefListSchema = z.array(NonWhitespaceItemSchema).max(50);
 const ModelProducedBriefSchema = z.object({
-  visual_summary: z.string().min(1).max(4_000),
-  detected_title: z.string().max(200),
+  visual_summary: z.string().min(1).max(4_000).refine(
+    (value) => value.trim().length > 0,
+    'visual_summary must contain non-whitespace content',
+  ),
+  detected_title: z.string().max(200).refine(
+    (value) => value.length === 0 || value.trim().length > 0,
+    'detected_title must be empty or contain non-whitespace content',
+  ),
   key_points: BriefListSchema,
   visual_elements: BriefListSchema,
   quantitative_claims: BriefListSchema,
@@ -67,8 +79,9 @@ export interface SlideUnderstandingServiceOptions {
   workspaceRoot: string;
   transport?: GeminiImageTransportLike;
   readPrompt?: () => Promise<string>;
-  readTextFile?: (path: string) => Promise<string>;
+  readTextFile?: (path: string, maxBytes: number) => Promise<string>;
   persist?: (path: string, data: string) => Promise<void>;
+  writeSnapshot?: (path: string, bytes: Buffer) => Promise<void>;
   warn: SlideUnderstandingWarning;
 }
 
@@ -81,10 +94,30 @@ export class SlideUnderstandingError extends Error {
   }
 }
 
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
+}
+
+interface DirectoryIdentity extends FileIdentity {
+  path: string;
+}
+
+interface BundlePaths {
+  project: DirectoryIdentity;
+  bundle: DirectoryIdentity;
+  pages: DirectoryIdentity;
+  analysis: DirectoryIdentity;
+  imagePath: string;
+  artifactPath: string;
+}
+
 interface ImageSnapshot {
   path: string;
-  bundlePath: string;
-  bytes: Buffer;
+  directory: DirectoryIdentity;
+  file: FileIdentity;
+  imageSha256: string;
+  assertCurrent(): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -113,25 +146,259 @@ function safeErrorName(error: unknown): string {
   ]).has(error.name) ? error.name : 'Error';
 }
 
+function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function currentIdentity(target: string): Promise<FileIdentity & {
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+}> {
+  const current = await lstat(target, { bigint: true });
+  return current;
+}
+
+async function assertNoSymlinkAncestors(target: string): Promise<void> {
+  const resolved = path.resolve(target);
+  const root = path.parse(resolved).root;
+  const relative = resolved.slice(root.length);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await lstat(current);
+    if (stat.isSymbolicLink()) throw new SlideUnderstandingError();
+  }
+}
+
+async function canonicalDirectory(target: string): Promise<DirectoryIdentity> {
+  if (!path.isAbsolute(target) || path.resolve(target) !== target) throw new SlideUnderstandingError();
+  await assertNoSymlinkAncestors(target);
+  if (await realpath(target) !== target) throw new SlideUnderstandingError();
+  const stat = await currentIdentity(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new SlideUnderstandingError();
+  return { path: target, dev: stat.dev, ino: stat.ino };
+}
+
+async function assertDirectoryIdentity(expected: DirectoryIdentity): Promise<void> {
+  const stat = await currentIdentity(expected.path);
+  if (
+    !stat.isDirectory()
+    || stat.isSymbolicLink()
+    || !sameIdentity(stat, expected)
+    || await realpath(expected.path) !== expected.path
+  ) {
+    throw new SlideUnderstandingError();
+  }
+}
+
+async function assertFileIdentity(target: string, expected: FileIdentity): Promise<void> {
+  const stat = await currentIdentity(target);
+  if (!stat.isFile() || stat.isSymbolicLink() || !sameIdentity(stat, expected)) {
+    throw new SlideUnderstandingError();
+  }
+}
+
+async function resolveBundlePaths(input: EnsureSlideBriefInput): Promise<BundlePaths> {
+  const projectPath = path.resolve(input.projectPath);
+  if (projectPath !== input.projectPath) throw new SlideUnderstandingError();
+  const project = await canonicalDirectory(projectPath);
+  const bundlePath = path.join(project.path, 'presentations', input.presentationId);
+  const bundle = await canonicalDirectory(bundlePath);
+  const pages = await canonicalDirectory(path.join(bundle.path, 'pages'));
+  const imagePath = path.join(pages.path, pageName(input.pageNumber, 'png'));
+  if (input.imagePath !== imagePath) throw new SlideUnderstandingError();
+
+  const imageStat = await currentIdentity(imagePath);
+  if (!imageStat.isFile() || imageStat.isSymbolicLink() || await realpath(imagePath) !== imagePath) {
+    throw new SlideUnderstandingError();
+  }
+
+  const analysisPath = path.join(bundle.path, 'analysis');
+  await mkdir(analysisPath, { recursive: true });
+  const analysis = await canonicalDirectory(analysisPath);
+  await assertDirectoryIdentity(project);
+  await assertDirectoryIdentity(bundle);
+  await assertDirectoryIdentity(pages);
+  return {
+    project,
+    bundle,
+    pages,
+    analysis,
+    imagePath,
+    artifactPath: path.join(analysis.path, pageName(input.pageNumber, 'json')),
+  };
+}
+
+async function readBoundedTextNoFollow(target: string, maxBytes: number): Promise<string> {
+  return (await readBoundedFileNoFollow(target, maxBytes)).toString('utf8');
+}
+
+async function writeOwnedFile(target: string, bytes: Buffer, mode: number): Promise<FileIdentity> {
+  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  const handle = await open(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
+    mode,
+  );
+  let identity: FileIdentity | undefined;
+  let failure: unknown;
+  try {
+    try {
+      await handle.writeFile(bytes);
+      const stat = await handle.stat({ bigint: true });
+      identity = { dev: stat.dev, ino: stat.ino };
+    } catch (error) {
+      const failedStat = await handle.stat({ bigint: true }).catch(() => undefined);
+      if (failedStat) identity = { dev: failedStat.dev, ino: failedStat.ino };
+      failure = error;
+    }
+  } finally {
+    await handle.close();
+  }
+  if (failure) {
+    if (identity) {
+      try {
+        await assertFileIdentity(target, identity);
+        await unlink(target);
+      } catch {
+        // Preserve a replacement whose identity changed.
+      }
+    }
+    throw failure;
+  }
+  return identity!;
+}
+
+async function removeOwnedSnapshotCreation(
+  directory: DirectoryIdentity,
+  snapshotPath: string,
+  file?: FileIdentity,
+): Promise<void> {
+  try {
+    await assertDirectoryIdentity(directory);
+  } catch {
+    return;
+  }
+  if (file) {
+    try {
+      await assertFileIdentity(snapshotPath, file);
+      await unlink(snapshotPath);
+    } catch {
+      return;
+    }
+  } else {
+    try {
+      await lstat(snapshotPath);
+      return;
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') return;
+    }
+  }
+  try {
+    await assertDirectoryIdentity(directory);
+    await rmdir(directory.path);
+  } catch {
+    // A changed or non-empty directory is intentionally preserved.
+  }
+}
+
+async function createImageSnapshot(
+  paths: BundlePaths,
+  injectedWrite?: (path: string, bytes: Buffer) => Promise<void>,
+): Promise<ImageSnapshot> {
+  await assertDirectoryIdentity(paths.project);
+  await assertDirectoryIdentity(paths.bundle);
+  await assertDirectoryIdentity(paths.pages);
+  const bytes = await readBoundedFileNoFollow(paths.imagePath, MAX_INLINE_IMAGE_BYTES);
+  await assertDirectoryIdentity(paths.pages);
+  if (bytes.byteLength === 0) throw new SlideUnderstandingError();
+  const imageSha256 = sha256(bytes);
+
+  await assertDirectoryIdentity(paths.analysis);
+  const directoryPath = await mkdtemp(path.join(paths.analysis.path, '.slide-understanding-'));
+  const directory = await canonicalDirectory(directoryPath);
+  await assertDirectoryIdentity(paths.analysis);
+  const snapshotPath = path.join(directory.path, `${randomUUID()}.png`);
+  let file: FileIdentity | undefined;
+  try {
+    if (injectedWrite) {
+      await injectedWrite(snapshotPath, bytes);
+      const stat = await currentIdentity(snapshotPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new SlideUnderstandingError();
+      file = { dev: stat.dev, ino: stat.ino };
+    } else {
+      file = await writeOwnedFile(snapshotPath, bytes, 0o400);
+    }
+    await assertDirectoryIdentity(paths.analysis);
+    await assertDirectoryIdentity(directory);
+    await assertFileIdentity(snapshotPath, file);
+  } catch (error) {
+    await removeOwnedSnapshotCreation(directory, snapshotPath, file);
+    throw error;
+  }
+
+  const snapshot: ImageSnapshot = {
+    path: snapshotPath,
+    directory,
+    file,
+    imageSha256,
+    async assertCurrent() {
+      await assertDirectoryIdentity(paths.analysis);
+      await assertDirectoryIdentity(directory);
+      await assertFileIdentity(snapshotPath, file);
+      if (await realpath(snapshotPath) !== snapshotPath) throw new SlideUnderstandingError();
+    },
+    async cleanup() {
+      try {
+        await assertDirectoryIdentity(directory);
+      } catch {
+        return;
+      }
+      try {
+        await assertFileIdentity(snapshotPath, file);
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') {
+          try {
+            await assertDirectoryIdentity(directory);
+            await rmdir(directory.path);
+          } catch {
+            // A changed or non-empty directory is intentionally preserved.
+          }
+        }
+        return;
+      }
+      try {
+        await unlink(snapshotPath);
+      } catch {
+        return;
+      }
+      try {
+        await assertDirectoryIdentity(directory);
+        await rmdir(directory.path);
+      } catch {
+        // A changed or non-empty directory is intentionally preserved.
+      }
+    },
+  };
+  return snapshot;
+}
+
 function validateVisualModel(model: ResolvedVisualModel): void {
   const summary = model?.summary;
   if (
     !model
-    || typeof model.apiKey !== 'string'
-    || model.apiKey.length < 1
-    || model.apiKey.length > 1_024
-    || typeof model.model !== 'string'
-    || model.model.length < 1
-    || model.model.length > MAX_MODEL_CHARS
     || !summary
     || summary.role !== 'video-understanding'
     || summary.provider !== 'gemini'
     || summary.ready !== true
     || summary.capabilities?.image !== true
-    || typeof summary.entry_id !== 'string'
-    || summary.entry_id.length < 1
-    || summary.entry_id.length > MAX_ENTRY_ID_CHARS
     || summary.model !== model.model
+    || !isValidGeminiTransportIdentity({
+      apiKey: model.apiKey,
+      model: model.model,
+      entryId: summary.entry_id,
+    })
   ) {
     throw new SlideUnderstandingError();
   }
@@ -156,103 +423,14 @@ function parseSingleJsonObject(output: string): unknown {
   return parsed;
 }
 
-async function readTextNoFollow(target: string): Promise<string> {
-  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
-  const handle = await open(target, constants.O_RDONLY | noFollow);
-  try {
-    return await handle.readFile({ encoding: 'utf8' });
-  } finally {
-    await handle.close();
-  }
-}
-
-async function createImageSnapshot(input: EnsureSlideBriefInput): Promise<ImageSnapshot> {
-  const lexicalProject = path.resolve(input.projectPath);
-  const lexicalBundle = path.join(lexicalProject, 'presentations', input.presentationId);
-  const lexicalImage = path.join(lexicalBundle, 'pages', pageName(input.pageNumber, 'png'));
-  if (!path.isAbsolute(input.projectPath) || path.resolve(input.imagePath) !== lexicalImage) {
-    throw new SlideUnderstandingError();
-  }
-
-  const canonicalProject = await realpath(lexicalProject);
-  const canonicalBundle = path.join(canonicalProject, 'presentations', input.presentationId);
-  if (await realpath(lexicalBundle) !== canonicalBundle) throw new SlideUnderstandingError();
-  if (await realpath(lexicalImage) !== path.join(canonicalBundle, 'pages', pageName(input.pageNumber, 'png'))) {
-    throw new SlideUnderstandingError();
-  }
-
-  const sourcePathStat = await lstat(lexicalImage, { bigint: true });
-  if (!sourcePathStat.isFile() || sourcePathStat.isSymbolicLink()) throw new SlideUnderstandingError();
-  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
-  const source = await open(lexicalImage, constants.O_RDONLY | noFollow);
-  let bytes: Buffer;
-  try {
-    const before = await source.stat({ bigint: true });
-    const currentPathStat = await lstat(lexicalImage, { bigint: true });
-    if (
-      !before.isFile()
-      || await realpath(lexicalImage) !== path.join(canonicalBundle, 'pages', pageName(input.pageNumber, 'png'))
-      || currentPathStat.isSymbolicLink()
-      || before.dev !== sourcePathStat.dev
-      || before.ino !== sourcePathStat.ino
-      || before.dev !== currentPathStat.dev
-      || before.ino !== currentPathStat.ino
-    ) {
-      throw new SlideUnderstandingError();
-    }
-    bytes = await source.readFile();
-    const after = await source.stat({ bigint: true });
-    if (
-      after.dev !== before.dev
-      || after.ino !== before.ino
-      || after.size !== before.size
-      || after.mtimeNs !== before.mtimeNs
-      || after.ctimeNs !== before.ctimeNs
-    ) {
-      throw new SlideUnderstandingError();
-    }
-  } finally {
-    await source.close();
-  }
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
-    throw new SlideUnderstandingError();
-  }
-
-  const analysisPath = path.join(lexicalBundle, 'analysis');
-  await mkdir(analysisPath, { recursive: true });
-  const analysisStat = await lstat(analysisPath, { bigint: true });
-  const canonicalAnalysis = path.join(canonicalBundle, 'analysis');
-  if (
-    !analysisStat.isDirectory()
-    || analysisStat.isSymbolicLink()
-    || await realpath(analysisPath) !== canonicalAnalysis
-  ) {
-    throw new SlideUnderstandingError();
-  }
-
-  const directory = await mkdtemp(path.join(analysisPath, '.slide-understanding-'));
-  const snapshotPath = path.join(directory, `${randomUUID()}.png`);
-  try {
-    const currentAnalysisStat = await lstat(analysisPath, { bigint: true });
-    if (
-      currentAnalysisStat.isSymbolicLink()
-      || currentAnalysisStat.dev !== analysisStat.dev
-      || currentAnalysisStat.ino !== analysisStat.ino
-      || await realpath(directory) !== path.join(canonicalAnalysis, path.basename(directory))
-    ) {
-      throw new SlideUnderstandingError();
-    }
-    await writeFile(snapshotPath, bytes, { flag: 'wx', mode: 0o400 });
-    await chmod(snapshotPath, 0o400);
-  } catch (error) {
-    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-    throw error;
-  }
+function modelFieldsFromBrief(brief: PresentationSlideBrief): unknown {
   return {
-    path: snapshotPath,
-    bundlePath: canonicalBundle,
-    bytes,
-    cleanup: () => rm(directory, { recursive: true, force: true }),
+    visual_summary: brief.visual_summary,
+    detected_title: brief.detected_title,
+    key_points: brief.key_points,
+    visual_elements: brief.visual_elements,
+    quantitative_claims: brief.quantitative_claims,
+    uncertain_content: brief.uncertain_content,
   };
 }
 
@@ -274,25 +452,77 @@ function isFresh(
     && brief.model.model === model.model;
 }
 
+function freshnessKey(fields: {
+  bundlePath: string;
+  pageNumber: number;
+  imageSha256: string;
+  extractedTextSha256: string;
+  entryId: string;
+  model: string;
+}): string {
+  return JSON.stringify({
+    bundlePath: fields.bundlePath,
+    pageNumber: fields.pageNumber,
+    imageSha256: fields.imageSha256,
+    extractedTextSha256: fields.extractedTextSha256,
+    entryId: fields.entryId,
+    model: fields.model,
+    schemaVersion: PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
+    promptVersion: PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
+  });
+}
+
+async function atomicWriteContained(
+  target: string,
+  data: string,
+  parent: DirectoryIdentity,
+): Promise<void> {
+  if (Buffer.byteLength(data, 'utf8') > MAX_ARTIFACT_BYTES) throw new SlideUnderstandingError();
+  await assertDirectoryIdentity(parent);
+  const temporary = path.join(parent.path, `.${path.basename(target)}.${randomUUID()}.tmp`);
+  const temporaryIdentity = await writeOwnedFile(temporary, Buffer.from(data, 'utf8'), 0o600);
+  try {
+    await assertDirectoryIdentity(parent);
+    await assertFileIdentity(temporary, temporaryIdentity);
+    await rename(temporary, target);
+    await assertDirectoryIdentity(parent);
+    await assertFileIdentity(target, temporaryIdentity);
+  } catch (error) {
+    try {
+      await assertDirectoryIdentity(parent);
+      await assertFileIdentity(temporary, temporaryIdentity);
+      await unlink(temporary);
+    } catch {
+      // Never remove a path whose directory or file identity changed.
+    }
+    throw error;
+  }
+}
+
 export class SlideUnderstandingService {
   private readonly transport: GeminiImageTransportLike;
   private readonly readPrompt: () => Promise<string>;
-  private readonly readTextFile: (path: string) => Promise<string>;
-  private readonly persist: (path: string, data: string) => Promise<void>;
+  private readonly readTextFile: (path: string, maxBytes: number) => Promise<string>;
+  private readonly persist?: (path: string, data: string) => Promise<void>;
+  private readonly writeSnapshot?: (path: string, bytes: Buffer) => Promise<void>;
   private readonly warn: SlideUnderstandingWarning;
   private readonly inFlight = new Map<string, Promise<PresentationSlideBrief>>();
+  private readonly targetGeneration = new Map<string, number>();
+  private readonly latestCompletedGeneration = new Map<string, number>();
+  private readonly writeTails = new Map<string, Promise<void>>();
 
   constructor(options: SlideUnderstandingServiceOptions) {
     this.transport = options.transport ?? new GeminiImageTransport();
-    this.readPrompt = options.readPrompt ?? (() => readTextNoFollow(path.join(
+    this.readPrompt = options.readPrompt ?? (() => readBoundedTextNoFollow(path.join(
       options.workspaceRoot,
       'apps',
       'server',
       'prompts',
       'presentation-slide-understanding.md',
-    )));
-    this.readTextFile = options.readTextFile ?? readTextNoFollow;
-    this.persist = options.persist ?? atomicWriteFile;
+    ), MAX_PROMPT_BYTES));
+    this.readTextFile = options.readTextFile ?? readBoundedTextNoFollow;
+    this.persist = options.persist;
+    this.writeSnapshot = options.writeSnapshot;
     this.warn = options.warn;
   }
 
@@ -309,23 +539,69 @@ export class SlideUnderstandingService {
   }
 
   private async readCache(
-    target: string,
+    paths: BundlePaths,
     input: EnsureSlideBriefInput,
   ): Promise<PresentationSlideBrief | undefined> {
+    await assertDirectoryIdentity(paths.analysis);
     let raw: string;
     try {
-      raw = await this.readTextFile(target);
+      raw = await this.readTextFile(paths.artifactPath, MAX_CACHE_BYTES);
     } catch (error) {
+      await assertDirectoryIdentity(paths.analysis);
       if (errorCode(error) === 'ENOENT') return undefined;
       this.warnSafely(input, 'UnreadableSlideBriefCache', 'Regenerating unreadable slide brief cache');
       return undefined;
     }
+    await assertDirectoryIdentity(paths.analysis);
+    if (Buffer.byteLength(raw, 'utf8') > MAX_CACHE_BYTES) {
+      this.warnSafely(input, 'UnreadableSlideBriefCache', 'Regenerating unreadable slide brief cache');
+      return undefined;
+    }
     try {
-      return PresentationSlideBriefSchema.parse(JSON.parse(raw));
+      const brief = PresentationSlideBriefSchema.parse(JSON.parse(raw));
+      ModelProducedBriefSchema.parse(modelFieldsFromBrief(brief));
+      return brief;
     } catch {
       this.warnSafely(input, 'InvalidSlideBriefCache', 'Regenerating invalid slide brief cache');
       return undefined;
     }
+  }
+
+  private nextGeneration(target: string): number {
+    const next = (this.targetGeneration.get(target) ?? 0) + 1;
+    this.targetGeneration.set(target, next);
+    return next;
+  }
+
+  private markCompleted(target: string, generation: number): void {
+    this.latestCompletedGeneration.set(
+      target,
+      Math.max(this.latestCompletedGeneration.get(target) ?? 0, generation),
+    );
+  }
+
+  private async persistIfLatest(
+    paths: BundlePaths,
+    generation: number,
+    data: string,
+  ): Promise<void> {
+    const target = paths.artifactPath;
+    const previous = this.writeTails.get(target) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(async () => {
+      if (this.latestCompletedGeneration.get(target) !== generation) return;
+      await assertDirectoryIdentity(paths.analysis);
+      if (this.persist) {
+        await this.persist(target, data);
+        await assertDirectoryIdentity(paths.analysis);
+      } else {
+        await atomicWriteContained(target, data, paths.analysis);
+      }
+    });
+    const tracked = write.finally(() => {
+      if (this.writeTails.get(target) === tracked) this.writeTails.delete(target);
+    });
+    this.writeTails.set(target, tracked);
+    await tracked;
   }
 
   async ensureBrief(
@@ -339,46 +615,43 @@ export class SlideUnderstandingService {
 
     let snapshot: ImageSnapshot | undefined;
     try {
-      snapshot = await createImageSnapshot(input);
-      const imageSha256 = sha256(snapshot.bytes);
+      const paths = await resolveBundlePaths(input);
+      snapshot = await createImageSnapshot(paths, this.writeSnapshot);
       const extractedTextSha256 = sha256(input.extractedText);
-      const target = path.join(
-        input.projectPath,
-        'presentations',
-        input.presentationId,
-        'analysis',
-        pageName(input.pageNumber, 'json'),
-      );
-      const cached = await this.readCache(target, input);
-      if (cached && isFresh(cached, input, imageSha256, extractedTextSha256, model)) {
+      const cached = await this.readCache(paths, input);
+      if (cached && isFresh(cached, input, snapshot.imageSha256, extractedTextSha256, model)) {
         return cached;
       }
 
-      const freshnessKey = [
-        snapshot.bundlePath,
-        input.pageNumber,
-        imageSha256,
+      const key = freshnessKey({
+        bundlePath: paths.bundle.path,
+        pageNumber: input.pageNumber,
+        imageSha256: snapshot.imageSha256,
         extractedTextSha256,
-        model.summary.entry_id,
-        model.model,
-        PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
-        PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
-      ].join('\0');
-      const current = this.inFlight.get(freshnessKey);
-      if (current) return await current;
+        entryId: model.summary.entry_id,
+        model: model.model,
+      });
+      const current = this.inFlight.get(key);
+      if (current) {
+        const losingSnapshot = snapshot;
+        snapshot = undefined;
+        await losingSnapshot.cleanup();
+        return await current;
+      }
 
+      const generation = this.nextGeneration(paths.artifactPath);
       const generated = this.generateBrief(
         input,
-        snapshot.path,
-        target,
-        imageSha256,
+        paths,
+        snapshot,
         extractedTextSha256,
         model,
+        generation,
       );
       const tracked = generated.finally(() => {
-        if (this.inFlight.get(freshnessKey) === tracked) this.inFlight.delete(freshnessKey);
+        if (this.inFlight.get(key) === tracked) this.inFlight.delete(key);
       });
-      this.inFlight.set(freshnessKey, tracked);
+      this.inFlight.set(key, tracked);
       return await tracked;
     } catch (error) {
       if (error instanceof SlideUnderstandingError) throw error;
@@ -391,14 +664,21 @@ export class SlideUnderstandingService {
 
   private async generateBrief(
     input: EnsureSlideBriefInput,
-    snapshotPath: string,
-    target: string,
-    imageSha256: string,
+    paths: BundlePaths,
+    snapshot: ImageSnapshot,
     extractedTextSha256: string,
     model: ResolvedVisualModel,
+    generation: number,
   ): Promise<PresentationSlideBrief> {
     try {
       const systemPrompt = await this.readPrompt();
+      if (
+        Buffer.byteLength(systemPrompt, 'utf8') > MAX_PROMPT_BYTES
+        || systemPrompt.trim().length === 0
+      ) {
+        throw new SlideUnderstandingError();
+      }
+      await snapshot.assertCurrent();
       const output = await this.transport.generateWithImage({
         apiKey: model.apiKey,
         model: model.model,
@@ -408,17 +688,19 @@ export class SlideUnderstandingService {
           'Use the PNG as the visual source of truth. The exact extracted PDF text follows:',
           input.extractedText,
         ].join('\n'),
-        imagePath: snapshotPath,
+        imagePath: snapshot.path,
         imageMimeType: 'image/png',
         responseMimeType: 'application/json',
         maxTokens: SLIDE_MAX_TOKENS,
+        expectedImageSha256: snapshot.imageSha256,
       });
+      await snapshot.assertCurrent();
       const modelFields = ModelProducedBriefSchema.parse(parseSingleJsonObject(output));
       const brief = PresentationSlideBriefSchema.parse({
         schema_version: PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
         presentation_id: input.presentationId,
         page_number: input.pageNumber,
-        image_sha256: imageSha256,
+        image_sha256: snapshot.imageSha256,
         extracted_text_sha256: extractedTextSha256,
         model: {
           entry_id: model.summary.entry_id,
@@ -428,7 +710,8 @@ export class SlideUnderstandingService {
         prompt_version: PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
         ...modelFields,
       });
-      await this.persist(target, `${JSON.stringify(brief, null, 2)}\n`);
+      this.markCompleted(paths.artifactPath, generation);
+      await this.persistIfLatest(paths, generation, `${JSON.stringify(brief, null, 2)}\n`);
       return brief;
     } catch (error) {
       this.warnSafely(input, safeErrorName(error), 'Slide understanding failed');

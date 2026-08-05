@@ -1,4 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -13,6 +15,8 @@ const MAX_IMAGE_PATH_CHARS = 4_096;
 const MAX_OUTPUT_TOKENS = 8_192;
 const MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SAFE_ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const SHA256 = /^[a-f0-9]{64}$/;
 
 export interface GenerateWithImageInput {
   apiKey: string;
@@ -23,6 +27,7 @@ export interface GenerateWithImageInput {
   imageMimeType: 'image/png';
   responseMimeType: 'application/json';
   maxTokens: number;
+  expectedImageSha256: string;
 }
 
 export interface GeminiImageTransportLike {
@@ -40,19 +45,45 @@ export class GeminiImageTransportError extends Error {
 
 export interface GeminiImageTransportOptions {
   fetch?: typeof fetch;
-  readFile?: (path: string) => Promise<Buffer>;
+  readFile?: (path: string, maxBytes: number) => Promise<Buffer>;
 }
 
 function validText(value: string, maxChars: number): boolean {
-  return value.length > 0 && value.length <= maxChars && value.trim().length > 0;
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= maxChars
+    && value.trim().length > 0;
+}
+
+export interface GeminiTransportIdentity {
+  apiKey: string;
+  model: string;
+  entryId?: string;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 31 || codePoint === 127;
+  });
+}
+
+export function isValidGeminiTransportIdentity(identity: GeminiTransportIdentity): boolean {
+  return validText(identity.apiKey, MAX_API_KEY_CHARS)
+    && !/\s/.test(identity.apiKey)
+    && !containsControlCharacter(identity.apiKey)
+    && validText(identity.model, MAX_MODEL_CHARS)
+    && SAFE_MODEL.test(identity.model)
+    && (identity.entryId === undefined || (
+      validText(identity.entryId, 200)
+      && identity.entryId === identity.entryId.trim()
+      && SAFE_ENTRY_ID.test(identity.entryId)
+    ));
 }
 
 function validateInput(input: GenerateWithImageInput): void {
   if (
-    !validText(input.apiKey, MAX_API_KEY_CHARS)
-    || /\s/.test(input.apiKey)
-    || !validText(input.model, MAX_MODEL_CHARS)
-    || !SAFE_MODEL.test(input.model)
+    !isValidGeminiTransportIdentity(input)
     || !validText(input.systemPrompt, MAX_SYSTEM_PROMPT_CHARS)
     || !validText(input.userPrompt, MAX_USER_PROMPT_CHARS)
     || !validText(input.imagePath, MAX_IMAGE_PATH_CHARS)
@@ -62,16 +93,60 @@ function validateInput(input: GenerateWithImageInput): void {
     || !Number.isSafeInteger(input.maxTokens)
     || input.maxTokens < 1
     || input.maxTokens > MAX_OUTPUT_TOKENS
+    || typeof input.expectedImageSha256 !== 'string'
+    || !SHA256.test(input.expectedImageSha256)
   ) {
     throw new GeminiImageTransportError();
   }
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+export async function readBoundedFileNoFollow(target: string, maxBytes: number): Promise<Buffer> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new GeminiImageTransportError();
+  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  const handle = await open(target, constants.O_RDONLY | noFollow);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 0n || before.size > BigInt(maxBytes)) {
+      throw new GeminiImageTransportError();
+    }
+    const length = Number(before.size);
+    const bytes = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = await handle.read(bytes, offset, length - offset, offset);
+      if (read.bytesRead === 0) throw new GeminiImageTransportError();
+      offset += read.bytesRead;
+    }
+    const probe = Buffer.allocUnsafe(1);
+    const overflow = await handle.read(probe, 0, 1, length);
+    const after = await handle.stat({ bigint: true });
+    if (
+      overflow.bytesRead !== 0
+      || after.dev !== before.dev
+      || after.ino !== before.ino
+      || after.size !== before.size
+      || after.mtimeNs !== before.mtimeNs
+      || after.ctimeNs !== before.ctimeNs
+    ) {
+      throw new GeminiImageTransportError();
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  if (!response.body || response.body.locked) return;
+  await response.body.cancel().catch(() => undefined);
+}
+
+async function readBoundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
   const declaredLength = response.headers.get('content-length');
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
     if (!Number.isFinite(parsedLength) || parsedLength < 0 || parsedLength > MAX_PROVIDER_RESPONSE_BYTES) {
+      await cancelResponseBody(response);
       throw new GeminiImageTransportError();
     }
   }
@@ -80,18 +155,28 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let complete = false;
+  const cancelForAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener('abort', cancelForAbort, { once: true });
+  if (signal.aborted) cancelForAbort();
   try {
     while (true) {
       const next = await reader.read();
-      if (next.done) break;
+      if (next.done) {
+        complete = true;
+        break;
+      }
       total += next.value.byteLength;
       if (total > MAX_PROVIDER_RESPONSE_BYTES) {
-        await reader.cancel().catch(() => undefined);
         throw new GeminiImageTransportError();
       }
       chunks.push(next.value);
     }
   } finally {
+    signal.removeEventListener('abort', cancelForAbort);
+    if (!complete) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 
@@ -123,18 +208,21 @@ function candidateText(value: unknown): string {
 
 export class GeminiImageTransport implements GeminiImageTransportLike {
   private readonly fetchRequest: typeof fetch;
-  private readonly readImageFile: (path: string) => Promise<Buffer>;
+  private readonly readImageFile: (path: string, maxBytes: number) => Promise<Buffer>;
 
   constructor(options: GeminiImageTransportOptions = {}) {
     this.fetchRequest = options.fetch ?? fetch;
-    this.readImageFile = options.readFile ?? ((path) => readFile(path));
+    this.readImageFile = options.readFile ?? readBoundedFileNoFollow;
   }
 
   async generateWithImage(input: GenerateWithImageInput): Promise<string> {
     try {
       validateInput(input);
-      const bytes = await this.readImageFile(input.imagePath);
+      const bytes = await this.readImageFile(input.imagePath, MAX_INLINE_IMAGE_BYTES);
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
+        throw new GeminiImageTransportError();
+      }
+      if (createHash('sha256').update(bytes).digest('hex') !== input.expectedImageSha256) {
         throw new GeminiImageTransportError();
       }
       const encodedImage = bytes.toString('base64');
@@ -165,8 +253,11 @@ export class GeminiImageTransport implements GeminiImageTransportLike {
           body,
           signal: controller.signal,
         });
-        if (!response.ok) throw new GeminiImageTransportError();
-        return candidateText(await readBoundedJson(response));
+        if (!response.ok) {
+          await cancelResponseBody(response);
+          throw new GeminiImageTransportError();
+        }
+        return candidateText(await readBoundedJson(response, controller.signal));
       } finally {
         clearTimeout(timeout);
       }
