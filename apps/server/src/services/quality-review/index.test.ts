@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createFakeLlm } from '../llm/index.js';
 import { runQualityReview } from './index.js';
 import type { Storyboard } from '@vpa/shared';
+import type { LlmClient } from '../llm/index.js';
 
 function workspaceRoot(): string {
   return path.resolve(import.meta.dirname, '../../../../..');
@@ -58,5 +59,46 @@ describe('quality review service', () => {
 
     // Fake LLM returns warn items, so status should be 'warnings'
     expect(result.status).toBe('warnings');
+  });
+
+  it('suppresses narration length warnings for flexible presentation scenes', async () => {
+    let userPrompt = '';
+    const llm: LlmClient = {
+      async complete(opts) {
+        userPrompt = opts.userPrompt;
+        return { text: '[]' };
+      },
+    };
+    const sb = makeSampleStoryboard();
+    sb.scenes = [{
+      id: 'scene-slide',
+      name: 'Slide',
+      description: 'A slide',
+      type: 'slide',
+      recording: {
+        source: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/clips/page-0001.mp4',
+        source_kind: 'presentation',
+        duration_sec: 1,
+      },
+      presentation_source: {
+        presentation_id: '1e570aa5-20ce-4779-ad9a-d4db3ae73991',
+        page_number: 1,
+        page_count: 1,
+        image: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/pages/page-0001.png',
+        hold_duration_sec: 5,
+      },
+      narration: {
+        script: Array.from({ length: 100 }, () => 'word').join(' '),
+        audio: 'narration/slide.mp3',
+        chunks: [{ index: 0, text: 'word', audio: 'narration/chunk.mp3', durationSec: 8.25 }],
+      },
+    }];
+
+    await runQualityReview(sb, llm, workspaceRoot());
+
+    expect(userPrompt).toContain('Narration sets final length');
+    expect(userPrompt).toContain('skip narration length check');
+    expect(userPrompt).not.toContain('TOO LONG');
+    expect(userPrompt).not.toContain('vs 1s recording');
   });
 });

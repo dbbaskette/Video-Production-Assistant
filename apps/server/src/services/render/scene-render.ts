@@ -34,6 +34,7 @@ import {
   createCachingBrandColorResolver,
   defaultBrandColorResolver,
 } from '../frame/resolve.js';
+import { resolveSceneDuration } from './scene-duration.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -179,6 +180,7 @@ export async function renderSingleScene(
     : null;
 
   await muxOne({
+    scene,
     videoPath: muxInputVideo,
     audioPath: narrationPath,
     audioMode,
@@ -261,6 +263,7 @@ async function prepareNarrationAudio(
 }
 
 interface MuxOpts {
+  scene: Scene;
   videoPath: string;
   audioPath: string | null;
   audioMode: 'replace' | 'mix';
@@ -279,25 +282,50 @@ async function muxOne(opts: MuxOpts): Promise<void> {
   const args: string[] = ['-y', '-i', opts.videoPath];
   if (opts.audioPath) args.push('-i', opts.audioPath);
 
+  resolveSceneDuration(opts.scene);
+  const narrationDuration = opts.audioPath ? await probeDuration(opts.audioPath) : undefined;
+  const resolvedDuration = resolveSceneDuration(opts.scene, narrationDuration);
+  const filters: string[] = [];
   if (opts.burnSubtitles && opts.srtPath) {
-    args.push('-vf', `subtitles=${escapeForFilter(opts.srtPath)}`);
+    filters.push(`subtitles=${escapeForFilter(opts.srtPath)}`);
+  }
+  if (resolvedDuration.flexible) {
+    const videoDuration = await probeDuration(opts.videoPath);
+    const padSec = Math.max(0, resolvedDuration.targetSec - videoDuration);
+    if (padSec > 0.05) {
+      filters.push(`tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`);
+    }
+    filters.push(`trim=duration=${resolvedDuration.targetSec.toFixed(3)},setpts=PTS-STARTPTS`);
+  }
+  const needsFilteredVideo = resolvedDuration.flexible;
+  const needsVideoReencode = needsFilteredVideo || (opts.burnSubtitles && !!opts.srtPath);
+
+  if (needsFilteredVideo && opts.audioMode !== 'mix') {
+    args.push('-filter_complex', `[0:v]${filters.join(',')}[v]`);
+  } else if (!resolvedDuration.flexible && opts.burnSubtitles && opts.srtPath) {
+    args.push('-vf', filters[0]!);
   }
 
   if (opts.audioPath) {
     if (opts.audioMode === 'replace') {
-      args.push('-map', '0:v:0', '-map', '1:a:0');
-      args.push('-c:v', opts.burnSubtitles ? 'libx264' : 'copy');
+      args.push('-map', needsFilteredVideo ? '[v]' : '0:v:0', '-map', '1:a:0');
+      args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
-      args.push('-shortest');
+      if (!resolvedDuration.flexible) args.push('-shortest');
     } else {
+      const audioFilter = '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]';
       args.push(
         '-filter_complex',
-        '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]',
+        needsFilteredVideo
+          ? `[0:v]${filters.join(',')}[v];${audioFilter}`
+          : audioFilter,
       );
-      args.push('-map', '0:v:0', '-map', '[aout]');
-      args.push('-c:v', opts.burnSubtitles ? 'libx264' : 'copy');
+      args.push('-map', needsFilteredVideo ? '[v]' : '0:v:0', '-map', '[aout]');
+      args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
     }
+  } else if (resolvedDuration.flexible) {
+    args.push('-map', '[v]', '-c:v', 'libx264', '-an');
   } else {
     // No narration — combined.mp4 is just an overlay re-mux.
     args.push('-c', 'copy');

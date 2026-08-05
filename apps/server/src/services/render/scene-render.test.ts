@@ -26,6 +26,7 @@ import type { FrameRenderer } from '../frame/render.js';
 // ── Mock the spawn helper used by runFfmpeg + probeDuration ─────────────────
 
 const ffmpegCalls: { cmd: string; args: string[] }[] = [];
+const probeDurations = new Map<string, number>();
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(
@@ -40,7 +41,8 @@ vi.mock('node:child_process', () => ({
       // probeDuration calls `ffprobe`; return a plausible duration so the
       // (real) frame renderer would have something to put in `-t`.
       if (cmd === 'ffprobe') {
-        cb(null, { stdout: '10.0\n', stderr: '' });
+        const mediaPath = args[args.length - 1] ?? '';
+        cb(null, { stdout: `${probeDurations.get(mediaPath) ?? 10}\n`, stderr: '' });
         return;
       }
 
@@ -61,6 +63,7 @@ vi.mock('node:child_process', () => ({
 
 // Import AFTER vi.mock so runFfmpeg uses the mocked child_process.
 const { renderSingleScene } = await import('./scene-render.js');
+const { renderFinalVideo } = await import('./index.js');
 
 // ── Fixture builders ─────────────────────────────────────────────────────────
 
@@ -97,7 +100,7 @@ function makeStoryboard(extra: Partial<Storyboard['scenes'][number]> = {}): Stor
         name: 'Scene 1',
         description: '',
         type: 'desktop',
-        recording: { source: 'recordings/scene-1.mp4' },
+        recording: { source: 'recordings/scene-1.mp4', duration_sec: 10 },
         ...extra,
       },
     ],
@@ -111,6 +114,7 @@ describe('renderSingleScene — frame integration', () => {
 
   beforeEach(async () => {
     ffmpegCalls.length = 0;
+    probeDurations.clear();
     projectPath = await mkdtemp(join(tmpdir(), 'vpa-scene-render-'));
     await mkdir(join(projectPath, 'recordings'), { recursive: true });
     await writeFile(join(projectPath, 'recordings', 'scene-1.mp4'), 'fake-recording');
@@ -253,5 +257,170 @@ describe('renderSingleScene — frame integration', () => {
     expect(muxCall).toBeDefined();
     const firstInputIdx = muxCall!.args.indexOf('-i');
     expect(muxCall!.args[firstInputIdx + 1]).toBe(cachePath);
+  });
+});
+
+describe('presentation scene duration rendering', () => {
+  let projectPath: string;
+
+  beforeEach(async () => {
+    ffmpegCalls.length = 0;
+    probeDurations.clear();
+    projectPath = await mkdtemp(join(tmpdir(), 'vpa-presentation-render-'));
+    await mkdir(join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips'), { recursive: true });
+    await mkdir(join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'pages'), { recursive: true });
+    await mkdir(join(projectPath, 'narration'), { recursive: true });
+    await writeFile(join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4'), 'slide');
+    await writeFile(join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'pages', 'page-0001.png'), 'image');
+    await writeFile(join(projectPath, 'narration', 'slide.mp3'), 'narration');
+  });
+
+  afterEach(async () => {
+    await rm(projectPath, { recursive: true, force: true });
+  });
+
+  function presentationStoryboard(withNarration = true): Storyboard {
+    return {
+      schema_version: 1,
+      project: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Slides',
+        created: '2026-08-05T00:00:00.000Z',
+      },
+      scenes: [{
+        id: SCENE_ID,
+        name: 'Slide 1',
+        description: 'Opening slide',
+        type: 'slide',
+        recording: {
+          source: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/clips/page-0001.mp4',
+          source_kind: 'presentation',
+          duration_sec: 1,
+        },
+        presentation_source: {
+          presentation_id: '1e570aa5-20ce-4779-ad9a-d4db3ae73991',
+          page_number: 1,
+          page_count: 1,
+          image: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/pages/page-0001.png',
+          hold_duration_sec: 5,
+        },
+        narration: withNarration ? { script: 'Welcome', audio: 'narration/slide.mp3' } : undefined,
+      }],
+    };
+  }
+
+  function outputCall(suffix: string) {
+    return ffmpegCalls.find((call) => call.cmd === 'ffmpeg' && call.args.at(-1)?.endsWith(suffix));
+  }
+
+  it('full-project render pads then trims a slide to longer narration and probes narration once', async () => {
+    await saveStoryboard(projectPath, presentationStoryboard());
+    const clipPath = join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4');
+    const narrationPath = join(projectPath, 'narration', 'slide.mp3');
+    probeDurations.set(clipPath, 1);
+    probeDurations.set(narrationPath, 8.25);
+
+    await renderFinalVideo(projectPath);
+
+    const muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'));
+    expect(muxCall).toBeDefined();
+    expect(muxCall!.args.join(' ')).toContain('tpad=stop_mode=clone:stop_duration=7.250,trim=duration=8.250,setpts=PTS-STARTPTS');
+    expect(muxCall!.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+    expect(muxCall!.args).not.toContain('-shortest');
+    expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
+  });
+
+  it('single-scene render pads then trims a slide to longer narration and probes narration once', async () => {
+    await saveStoryboard(projectPath, presentationStoryboard());
+    const overlayPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'overlay.mp4');
+    const narrationPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'narration.mp3');
+    probeDurations.set(overlayPath, 1);
+    probeDurations.set(narrationPath, 8.25);
+
+    await renderSingleScene({ projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' });
+
+    const muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'));
+    expect(muxCall).toBeDefined();
+    expect(muxCall!.args.join(' ')).toContain('tpad=stop_mode=clone:stop_duration=7.250,trim=duration=8.250,setpts=PTS-STARTPTS');
+    expect(muxCall!.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+    expect(muxCall!.args).not.toContain('-shortest');
+    expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
+  });
+
+  it('uses the hold without narration and trims narration shorter than the physical slide clip', async () => {
+    await saveStoryboard(projectPath, presentationStoryboard(false));
+    const overlayPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'overlay.mp4');
+    probeDurations.set(overlayPath, 1);
+    await renderSingleScene({ projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' });
+    let muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(muxCall.args.join(' ')).toContain('trim=duration=5.000,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-an']));
+
+    ffmpegCalls.length = 0;
+    await saveStoryboard(projectPath, presentationStoryboard(true));
+    const narrationPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'narration.mp3');
+    probeDurations.set(overlayPath, 1);
+    probeDurations.set(narrationPath, 0.75);
+    await renderSingleScene({ projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' });
+    muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(muxCall.args.join(' ')).not.toContain('tpad=stop_mode=clone');
+    expect(muxCall.args.join(' ')).toContain('trim=duration=0.750,setpts=PTS-STARTPTS');
+  });
+
+  it('applies the hold and shorter narration exactly in the full-project path', async () => {
+    const clipPath = join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4');
+    probeDurations.set(clipPath, 1);
+    await saveStoryboard(projectPath, presentationStoryboard(false));
+
+    await renderFinalVideo(projectPath);
+
+    let muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'))!;
+    expect(muxCall.args.join(' ')).toContain('trim=duration=5.000,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-an']));
+
+    ffmpegCalls.length = 0;
+    await saveStoryboard(projectPath, presentationStoryboard(true));
+    const narrationPath = join(projectPath, 'narration', 'slide.mp3');
+    probeDurations.set(narrationPath, 0.75);
+
+    await renderFinalVideo(projectPath);
+
+    muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'))!;
+    expect(muxCall.args.join(' ')).not.toContain('tpad=stop_mode=clone');
+    expect(muxCall.args.join(' ')).toContain('trim=duration=0.750,setpts=PTS-STARTPTS');
+    expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
+  });
+
+  it('keeps ordinary single-scene replacement audio behavior', async () => {
+    await mkdir(join(projectPath, 'recordings'), { recursive: true });
+    await writeFile(join(projectPath, 'recordings', 'scene-1.mp4'), 'recording');
+    const sb = makeStoryboard({
+      recording: { source: 'recordings/scene-1.mp4', duration_sec: 30 },
+      narration: { script: 'Normal narration', audio: 'narration/slide.mp3' },
+    });
+    await saveStoryboard(projectPath, sb);
+
+    await renderSingleScene({ projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' });
+
+    const muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(muxCall.args).toContain('-shortest');
+    expect(muxCall.args.join(' ')).not.toContain('trim=duration=');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '0:v:0', '-map', '1:a:0']));
+  });
+
+  it('keeps ordinary full-project replacement audio behavior', async () => {
+    await mkdir(join(projectPath, 'recordings'), { recursive: true });
+    await writeFile(join(projectPath, 'recordings', 'scene-1.mp4'), 'recording');
+    const sb = makeStoryboard({
+      recording: { source: 'recordings/scene-1.mp4', duration_sec: 30 },
+      narration: { script: 'Normal narration', audio: 'narration/slide.mp3' },
+    });
+    await saveStoryboard(projectPath, sb);
+
+    await renderFinalVideo(projectPath);
+
+    const muxCall = outputCall(join('renders', 'scene-01-Scene-1.mp4'))!;
+    expect(muxCall.args.join(' ')).not.toContain('trim=duration=');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '0:v:0', '-map', '1:a:0']));
   });
 });

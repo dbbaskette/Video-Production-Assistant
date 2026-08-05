@@ -1007,6 +1007,13 @@ export function ScenePage(props: ScenePageProps = {}) {
                 source={scene.recording.source}
                 duration_sec={scene.recording.duration_sec}
                 ingested_at={scene.recording.ingested_at}
+                source_kind={scene.recording.source_kind}
+                scene_type={scene.type}
+                presentation_source={scene.presentation_source}
+                has_narration_audio={
+                  !!scene.narration?.audio ||
+                  (scene.narration?.chunks?.some((chunk) => !!chunk.audio) ?? false)
+                }
               />
 
               {uploadAnalysisFailure && (
