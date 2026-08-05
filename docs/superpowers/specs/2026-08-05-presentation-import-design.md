@@ -261,7 +261,8 @@ source; downstream consumers can identify generated slide media from
 7. Generate the short H.264/yuv420p still-video source with FFmpeg.
 8. Build and validate all proposed scenes and the final presentation manifest
    without mutating the storyboard.
-9. Acquire the existing project mutation lock.
+9. Acquire the process-wide project mutation queue introduced for storyboard
+   edits and presentation commits.
 10. Re-read the current storyboard, assign collision-free scene IDs, move the
     completed staged directory into `presentations/<id>`, append all scenes,
     and save the storyboard atomically.
@@ -276,9 +277,11 @@ but before storyboard commit, the unreferenced manifest remains recoverable
 garbage and is removed by startup or retry cleanup. It is never presented as an
 imported deck.
 
-Project mutation locking is required because a user may edit or reorder scenes
-while a presentation is processing. The final append operates on the latest
-storyboard rather than the version loaded at upload time.
+Serialized storyboard mutation is required because a user may edit or reorder
+scenes while a presentation is processing. Storyboard editing routes and the
+final presentation append use the same project-keyed queue, so the append
+operates on the latest storyboard rather than the version loaded at upload
+time.
 
 ## AI Narration Pipeline
 
