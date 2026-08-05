@@ -60,15 +60,31 @@ function importedDetail(pageCount: number): string {
 
 function stableFailureDetail(job: PresentationJob): string {
   switch (job.error?.code) {
+    case 'encrypted_pdf':
+      return 'Use an unlocked PDF and upload it again';
+    case 'invalid_pdf':
+      return 'Choose a valid PDF and upload it again';
+    case 'page_limit_exceeded':
+      return 'Choose a PDF with 200 slides or fewer';
+    case 'source_not_available':
+      return 'Upload the original PDF again to retry';
+    case 'processing_failed':
+      return 'The presentation could not be processed; try the import again';
+    case 'storyboard_commit_failed':
+      return 'Slides could not be added; try the import again';
+    case 'invalid_import_state':
+      return 'The import could not resume safely; try the import again';
+    case 'interrupted_import':
+      return 'The import was interrupted; try the import again';
+    case 'invalid_source':
+      return 'Upload the PDF again to start a new import';
+    case 'committed_state_pending':
+      return 'Slides may already be saved; refresh to check the import status';
     case 'narration_model_routing_failed':
       return 'Choose compatible narration models and try again';
     case 'narration_operational_failure':
     case 'narration_failed':
       return 'Slides are ready, but narration could not be completed';
-    case 'source_not_available':
-      return 'The original PDF is no longer available';
-    case 'storyboard_commit_failed':
-      return 'Slides could not be added to the storyboard';
     default:
       return job.deterministic_commit === 'committed'
         ? 'Slides are ready, but narration could not be completed'
@@ -120,13 +136,33 @@ export function presentationActions(job: PresentationJob): PresentationAction[] 
     && job.deterministic_commit === 'committed'
     && (job.status === 'partial' || job.status === 'failed');
   const importRetry = job.status === 'failed'
-    && job.deterministic_commit === 'uncommitted'
-    && job.error?.code !== 'source_not_available';
+    && job.deterministic_commit !== 'committed'
+    && isRetryableImportFailure(job.error?.code);
 
   if (importRetry) actions.push('retry-import');
   if (narrationRetry) actions.push('retry-narration');
   if (job.deterministic_commit === 'committed' || job.status === 'failed') actions.push('remove');
   return actions;
+}
+
+function isRetryableImportFailure(code: string | undefined): boolean {
+  switch (code) {
+    case 'processing_failed':
+    case 'storyboard_commit_failed':
+    case 'invalid_import_state':
+    case 'interrupted_import':
+      return true;
+    case 'encrypted_pdf':
+    case 'invalid_pdf':
+    case 'page_limit_exceeded':
+    case 'source_not_available':
+    case 'invalid_source':
+    case 'committed_state_pending':
+    case undefined:
+      return false;
+    default:
+      return false;
+  }
 }
 
 function assertNever(value: never): never {

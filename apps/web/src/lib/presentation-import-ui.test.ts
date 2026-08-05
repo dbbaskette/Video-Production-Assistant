@@ -75,7 +75,7 @@ describe('presentationProgress', () => {
     ['failed import', job({
       status: 'failed', stage: 'failed', error: { code: 'processing_failed', message: '/private/path' },
     }), {
-      label: 'Import failed', detail: 'The presentation could not be imported', terminal: true, tone: 'error',
+      label: 'Import failed', detail: 'The presentation could not be processed; try the import again', terminal: true, tone: 'error',
     }],
     ['failed routing', job({
       status: 'failed', stage: 'failed', deterministic_commit: 'committed',
@@ -109,6 +109,31 @@ describe('presentationProgress', () => {
     expect(`${progress.label} ${progress.detail}`).not.toContain('top-secret');
     expect(`${progress.label} ${progress.detail}`).not.toContain('provider payload');
   });
+
+  it.each([
+    ['encrypted_pdf', 'Use an unlocked PDF and upload it again'],
+    ['invalid_pdf', 'Choose a valid PDF and upload it again'],
+    ['page_limit_exceeded', 'Choose a PDF with 200 slides or fewer'],
+    ['source_not_available', 'Upload the original PDF again to retry'],
+    ['processing_failed', 'The presentation could not be processed; try the import again'],
+    ['storyboard_commit_failed', 'Slides could not be added; try the import again'],
+    ['invalid_import_state', 'The import could not resume safely; try the import again'],
+    ['interrupted_import', 'The import was interrupted; try the import again'],
+    ['invalid_source', 'Upload the PDF again to start a new import'],
+    ['committed_state_pending', 'Slides may already be saved; refresh to check the import status'],
+  ] as const)('maps stable import failure %s to actionable bounded copy', (code, detail) => {
+    const progress = presentationProgress(job({
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: code === 'storyboard_commit_failed' || code === 'committed_state_pending'
+        ? 'commit-pending'
+        : 'uncommitted',
+      error: { code, message: '/private/raw/error must stay hidden' },
+    }));
+
+    expect(progress).toMatchObject({ label: 'Import failed', detail, terminal: true, tone: 'error' });
+    expect(progress.detail).not.toContain('/private');
+  });
 });
 
 describe('presentationActions', () => {
@@ -140,7 +165,7 @@ describe('presentationActions', () => {
     ['commit-pending failure', job({
       status: 'failed', stage: 'failed', deterministic_commit: 'commit-pending',
       error: { code: 'storyboard_commit_failed', message: 'Unknown commit' },
-    }), ['remove']],
+    }), ['retry-import', 'remove']],
     ['failed narration routing', job({
       status: 'failed', stage: 'failed', deterministic_commit: 'committed',
       error: { code: 'narration_model_routing_failed', message: 'Routing failed' },
@@ -155,5 +180,35 @@ describe('presentationActions', () => {
     }), []],
   ] as const)('%s', (_name, input, expected) => {
     expect(presentationActions(input)).toEqual(expected);
+  });
+
+  it.each([
+    ['encrypted_pdf', 'uncommitted', ['remove']],
+    ['invalid_pdf', 'uncommitted', ['remove']],
+    ['page_limit_exceeded', 'uncommitted', ['remove']],
+    ['source_not_available', 'uncommitted', ['remove']],
+    ['invalid_source', 'uncommitted', ['remove']],
+    ['committed_state_pending', 'commit-pending', ['remove']],
+    ['processing_failed', 'uncommitted', ['retry-import', 'remove']],
+    ['storyboard_commit_failed', 'commit-pending', ['retry-import', 'remove']],
+    ['invalid_import_state', 'uncommitted', ['retry-import', 'remove']],
+    ['interrupted_import', 'uncommitted', ['retry-import', 'remove']],
+    ['unknown_import_failure', 'uncommitted', ['remove']],
+  ] as const)('classifies stable/unknown import failure %s conservatively', (code, deterministicCommit, expected) => {
+    expect(presentationActions(job({
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: deterministicCommit,
+      error: { code, message: 'Private failure' },
+    }))).toEqual(expected);
+  });
+
+  it('does not retry a failed import with no stable error code', () => {
+    expect(presentationActions(job({
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      error: undefined,
+    }))).toEqual(['remove']);
   });
 });

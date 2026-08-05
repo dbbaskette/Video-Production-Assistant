@@ -11,6 +11,10 @@ GlobalWorkerOptions.workerSrc = new URL(
 const MAX_PREVIEW_BYTES = 100 * 1024 * 1024;
 const MAX_THUMBNAILS = 4;
 const MAX_THUMBNAIL_WIDTH = 320;
+/** Bounds pathological portrait pages before canvas allocation and encoding. */
+const MAX_THUMBNAIL_HEIGHT = 320;
+/** Four maximally sized thumbnails; checked cumulatively before allocation. */
+const MAX_PREVIEW_PIXEL_AREA = MAX_THUMBNAILS * MAX_THUMBNAIL_WIDTH * MAX_THUMBNAIL_HEIGHT;
 
 export interface PresentationPreview {
   pageCount: number;
@@ -117,6 +121,7 @@ export function createPresentationPreviewer(
 
     const owner: PreviewGeneration = { cancelled: false };
     active = owner;
+    let completedPreview: PresentationPreview | undefined;
     try {
       if (!/\.pdf$/i.test(file.name)) throw new PresentationPreviewError('invalid-file-type');
       if (file.size > MAX_PREVIEW_BYTES) throw new PresentationPreviewError('file-too-large');
@@ -160,6 +165,7 @@ export function createPresentationPreviewer(
       }
 
       const thumbnails: PresentationPreview['thumbnails'] = [];
+      let allocatedPixelArea = 0;
       for (let pageNumber = 1; pageNumber <= Math.min(pageCount, MAX_THUMBNAILS); pageNumber += 1) {
         ensureCurrent(owner, active);
         let page: PresentationPdfPage;
@@ -186,7 +192,11 @@ export function createPresentationPreviewer(
           ) {
             throw new PresentationPreviewError('page-render-failed');
           }
-          const scale = Math.min(1, MAX_THUMBNAIL_WIDTH / baseViewport.width);
+          const scale = Math.min(
+            1,
+            MAX_THUMBNAIL_WIDTH / baseViewport.width,
+            MAX_THUMBNAIL_HEIGHT / baseViewport.height,
+          );
           let viewport: { width: number; height: number };
           try {
             viewport = page.getViewport({ scale });
@@ -202,7 +212,16 @@ export function createPresentationPreviewer(
             throw new PresentationPreviewError('page-render-failed');
           }
           const width = Math.max(1, Math.min(MAX_THUMBNAIL_WIDTH, Math.round(viewport.width)));
-          const height = Math.max(1, Math.round(viewport.height));
+          const height = Math.max(1, Math.min(MAX_THUMBNAIL_HEIGHT, Math.round(viewport.height)));
+          const pixelArea = width * height;
+          if (
+            !Number.isSafeInteger(pixelArea)
+            || pixelArea < 1
+            || allocatedPixelArea > MAX_PREVIEW_PIXEL_AREA - pixelArea
+          ) {
+            throw new PresentationPreviewError('page-render-failed');
+          }
+          allocatedPixelArea += pixelArea;
 
           let canvas: PresentationCanvas;
           try {
@@ -249,7 +268,7 @@ export function createPresentationPreviewer(
       }
 
       ensureCurrent(owner, active);
-      return { pageCount, thumbnails };
+      completedPreview = { pageCount, thumbnails };
     } catch (error) {
       if (owner.cancelled || active !== owner) {
         throw new PresentationPreviewError('superseded');
@@ -257,9 +276,19 @@ export function createPresentationPreviewer(
       if (error instanceof PresentationPreviewError) throw error;
       throw new PresentationPreviewError('invalid-pdf');
     } finally {
-      await releaseGeneration(owner);
+      let cleanupFailed = false;
+      try {
+        await releaseGeneration(owner);
+      } catch {
+        cleanupFailed = true;
+      }
+      const superseded = owner.cancelled || active !== owner;
       if (active === owner) active = undefined;
+      if (superseded) throw new PresentationPreviewError('superseded');
+      if (cleanupFailed) throw new PresentationPreviewError('invalid-pdf');
     }
+    if (!completedPreview) throw new PresentationPreviewError('invalid-pdf');
+    return completedPreview;
   };
 }
 

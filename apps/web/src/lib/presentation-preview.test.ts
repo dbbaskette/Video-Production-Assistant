@@ -36,9 +36,12 @@ function harness(options: {
   canvasFailure?: unknown;
   canvasContextFailure?: unknown;
   viewportFailure?: unknown;
+  destroyPromise?: Promise<void>;
 } = {}): PdfHarness {
   const taskDestroy = vi.fn<[], Promise<void>>(async () => undefined);
-  const documentDestroy = vi.fn<[], Promise<void>>(async () => undefined);
+  const documentDestroy = vi.fn<[], Promise<void>>(async () => {
+    await options.destroyPromise;
+  });
   const pageCleanup = vi.fn<[], void>(() => undefined);
   const renderCancel = vi.fn<[], void>(() => undefined);
   const canvases: PresentationCanvas[] = [];
@@ -150,6 +153,55 @@ describe('previewPresentation', () => {
     await previewWith(pdf, file());
 
     expect(dimensions).toEqual([[expectedWidth, expectedHeight]]);
+  });
+
+  it.each([
+    ['ultra-tall', 1, 1e300, 1, 320],
+    ['ultra-wide', 1e300, 1, 320, 1],
+  ] as const)('bounds a finite %s page without zero or overflowing dimensions', async (
+    _name,
+    width,
+    height,
+    expectedWidth,
+    expectedHeight,
+  ) => {
+    const pdf = harness({ pageCount: 1, width, height });
+    const dimensions: Array<[number, number]> = [];
+    pdf.canvasFactory.mockImplementation(() => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({} as CanvasRenderingContext2D),
+      toDataURL() {
+        dimensions.push([this.width, this.height]);
+        return 'data:image/png;base64,pathological';
+      },
+    }));
+
+    await previewWith(pdf, file());
+
+    expect(dimensions).toEqual([[expectedWidth, expectedHeight]]);
+  });
+
+  it('keeps four thumbnails within the documented height and total pixel ceilings', async () => {
+    const pdf = harness({ pageCount: 8, width: 320, height: 320 });
+    const dimensions: Array<[number, number]> = [];
+    pdf.canvasFactory.mockImplementation(() => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({} as CanvasRenderingContext2D),
+      toDataURL() {
+        dimensions.push([this.width, this.height]);
+        return `data:image/png;base64,page-${dimensions.length}`;
+      },
+    }));
+
+    const result = await previewWith(pdf, file());
+
+    expect(result.thumbnails.map(({ pageNumber }) => pageNumber)).toEqual([1, 2, 3, 4]);
+    expect(dimensions).toHaveLength(4);
+    expect(dimensions.every(([width, height]) => width >= 1 && width <= 320 && height >= 1 && height <= 320)).toBe(true);
+    expect(dimensions.reduce((total, [width, height]) => total + width * height, 0))
+      .toBeLessThanOrEqual(4 * 320 * 320);
   });
 
   it.each([
@@ -319,6 +371,38 @@ describe('previewPresentation', () => {
     expect(newer.taskDestroy).not.toHaveBeenCalled();
     expect(newer.documentDestroy).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['resolve', 'reject'] as const)(
+    'rejects stale success after deferred document cleanup (%s) without touching the newer owner',
+    async (cleanupOutcome) => {
+      let finishCleanup!: () => void;
+      let failCleanup!: (error: unknown) => void;
+      const cleanup = new Promise<void>((resolve, reject) => {
+        finishCleanup = resolve;
+        failCleanup = reject;
+      });
+      const older = harness({ pageCount: 1, destroyPromise: cleanup });
+      const newer = harness({ pageCount: 1 });
+      const loadPdf = vi.fn()
+        .mockImplementationOnce(older.loadPdf)
+        .mockImplementationOnce(newer.loadPdf);
+      const preview = createPresentationPreviewer({ loadPdf, canvasFactory: older.canvasFactory });
+
+      const olderResult = preview(file('older.pdf'));
+      const olderRejection = expect(olderResult).rejects.toMatchObject({ code: 'superseded' });
+      await vi.waitFor(() => expect(older.documentDestroy).toHaveBeenCalledTimes(1));
+      const newerResult = preview(file('newer.pdf'));
+
+      await expect(newerResult).resolves.toMatchObject({ pageCount: 1 });
+      if (cleanupOutcome === 'resolve') finishCleanup();
+      else failCleanup(new Error('/private/cleanup/failure'));
+      await olderRejection;
+
+      expect(older.taskDestroy).not.toHaveBeenCalled();
+      expect(newer.taskDestroy).not.toHaveBeenCalled();
+      expect(newer.documentDestroy).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 function previewWith(pdf: PdfHarness, input: File) {
