@@ -91,7 +91,7 @@ async function renderPdfPage(page: PDFPageProxy, destination: string): Promise<v
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  await page.render({ canvasContext: context as never, canvas: canvas as never, viewport, background: '#ffffff' }).promise;
+  await page.render({ canvasContext: context as never, viewport, background: '#ffffff' }).promise;
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, canvas.toBuffer('image/png'), { mode: 0o600 });
   await chmod(destination, 0o600);
@@ -107,7 +107,7 @@ export async function inspectPdf(sourcePath: string, limits: PdfLimits): Promise
       isEvalSupported: false,
       useSystemFonts: true,
       verbosity: 0,
-    } as Parameters<typeof getDocument>[0]);
+    });
     document = await task.promise;
     if (document.numPages > limits.maxPages) {
       throw new PresentationPdfError('page_limit_exceeded', `PDF has more than ${limits.maxPages} pages`);
