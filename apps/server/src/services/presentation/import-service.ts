@@ -265,32 +265,35 @@ export class PresentationImportService {
   }
 
   async registerUpload(input: RegisterPresentationUploadInput): Promise<PresentationJob> {
-    const paths = this.paths(input.project.path, input.id);
-    if (path.resolve(input.stagedSourcePath) !== path.resolve(paths.source)
-      || !Number.isSafeInteger(input.sizeBytes)
-      || input.sizeBytes <= 0) {
-      throw new PresentationImportError('invalid_source', 'Invalid presentation source');
-    }
-    await this.hash(paths.source);
-    const now = this.now();
-    const job = PresentationJobSchema.parse({
-      schema_version: 1,
-      id: input.id,
-      project_id: input.project.id,
-      filename: displayName(input.filename),
-      status: 'processing',
-      stage: 'processing-slides',
-      generate_narration: input.generateNarration,
-      page_count: 0,
-      processed_pages: 0,
-      analyzed_pages: 0,
-      scripted_pages: 0,
-      remaining_scene_count: 0,
-      deterministic_commit: 'uncommitted',
-      created_at: now,
-      updated_at: now,
+    return serializePresentationLifecycle(input.project.path, input.id, async () => {
+      const paths = this.paths(input.project.path, input.id);
+      if (path.resolve(input.stagedSourcePath) !== path.resolve(paths.source)
+        || !Number.isSafeInteger(input.sizeBytes)
+        || input.sizeBytes <= 0
+        || await this.options.jobs.read(input.project.path, input.id)) {
+        throw new PresentationImportError('invalid_source', 'Invalid presentation source');
+      }
+      await this.hash(paths.source);
+      const now = this.now();
+      const job = PresentationJobSchema.parse({
+        schema_version: 1,
+        id: input.id,
+        project_id: input.project.id,
+        filename: displayName(input.filename),
+        status: 'processing',
+        stage: 'processing-slides',
+        generate_narration: input.generateNarration,
+        page_count: 0,
+        processed_pages: 0,
+        analyzed_pages: 0,
+        scripted_pages: 0,
+        remaining_scene_count: 0,
+        deterministic_commit: 'uncommitted',
+        created_at: now,
+        updated_at: now,
+      });
+      return this.options.jobs.create(input.project.path, job);
     });
-    return this.options.jobs.create(input.project.path, job);
   }
 
   async process(project: Project, id: string): Promise<PresentationJob> {
@@ -301,6 +304,7 @@ export class PresentationImportService {
     const job = await this.options.jobs.read(project.path, id);
     if (!job
       || job.project_id !== project.id
+      || job.deletion_pending
       || job.status !== 'processing'
       || job.stage !== 'processing-slides') {
       throw new PresentationImportStateError(true);
@@ -524,9 +528,10 @@ export class PresentationImportService {
 
   private async retryImportUnlocked(project: Project, id: string): Promise<PresentationJob> {
     const job = await this.options.jobs.read(project.path, id);
-    if (!job || job.project_id !== project.id || job.status !== 'failed') {
+    if (!job || job.project_id !== project.id || job.deletion_pending || job.status !== 'failed') {
       throw new PresentationImportError('source_not_available', 'The original PDF is not available for retry');
     }
+    const rollbackSnapshot = { ...job };
     const paths = this.paths(project.path, id);
     let inspection: Awaited<ReturnType<typeof inspectPdf>> | undefined;
     try {
@@ -554,10 +559,9 @@ export class PresentationImportService {
       if (error instanceof PresentationImportStateError && error.historyRollbackSafe) {
         try {
           await this.options.jobs.update(project.path, id, {
+            ...rollbackSnapshot,
             status: 'failed',
             stage: 'failed',
-            page_count: job.page_count,
-            deterministic_commit: job.deterministic_commit,
             error: {
               code: 'invalid_import_state',
               message: 'Presentation import cannot be processed',
@@ -574,6 +578,23 @@ export class PresentationImportService {
       }
       throw error;
     }
+  }
+
+  async retryNarration(
+    project: Project,
+    id: string,
+    retryNarration: RetryPresentationNarration,
+  ): Promise<PresentationJob> {
+    return serializePresentationLifecycle(project.path, id, async () => {
+      const job = await this.options.jobs.read(project.path, id);
+      if (!job || job.project_id !== project.id || job.deletion_pending) {
+        throw new PresentationImportError(
+          'source_not_available',
+          'The presentation is not available for narration retry',
+        );
+      }
+      return retryNarration(project, id);
+    });
   }
 
   private async withExactRemainingCounts(

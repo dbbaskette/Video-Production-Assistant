@@ -7,7 +7,7 @@ import type { inspectPdf as InspectPdf } from './pdf.js';
 import { PresentationPdfError } from './pdf.js';
 import type { createSlideAssets as CreateSlideAssets } from './media.js';
 import { PresentationJobStore } from './job-store.js';
-import { PresentationImportService } from './import-service.js';
+import { PresentationImportError, PresentationImportService } from './import-service.js';
 import { createStoryboard, loadStoryboard, mutateStoryboard, removeScene, saveStoryboard } from '../storyboard/index.js';
 import type { PresentationJob, PresentationManifest, Project, Scene } from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
@@ -666,12 +666,21 @@ describe('PresentationImportService', () => {
   });
 
   it('restores a retry to a durable failed state when commit validation returns invalid_import_state', async () => {
-    createAssets.mockRejectedValueOnce(new Error('initial transient failure'));
     const presentationService = service();
-    await stageAndRegister(presentationService);
-    await expect(presentationService.process(project, PRESENTATION_ONE)).rejects.toMatchObject({
-      code: 'processing_failed',
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      page_count: 0,
+      processed_pages: 0,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      deterministic_commit: 'uncommitted',
+      error: { code: 'processing_failed', message: 'Earlier failure' },
     });
+    const retainedSource = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(retainedSource), { recursive: true });
+    await writeFile(retainedSource, '%PDF retained retry source');
     await saveStoryboard(root, createStoryboard(project, [{
       id: 'scene-blocking-retry',
       name: 'Existing presentation scene',
@@ -698,6 +707,52 @@ describe('PresentationImportService', () => {
     expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
       status: 'failed',
       stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      page_count: 0,
+      processed_pages: 0,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      remaining_scene_count: 0,
+      error: {
+        code: 'invalid_import_state',
+        message: 'Presentation import cannot be processed',
+      },
+    });
+  });
+
+  it('restores every prior durable progress counter after a known pre-move retry rejection', async () => {
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      page_count: 3,
+      processed_pages: 1,
+      analyzed_pages: 2,
+      scripted_pages: 1,
+      remaining_scene_count: 2,
+      deterministic_commit: 'uncommitted',
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    const retainedSource = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(retainedSource), { recursive: true });
+    await writeFile(retainedSource, '%PDF retained retry source');
+    const presentationService = service({
+      mutateStoryboard: async () => {
+        throw new PresentationImportError('invalid_import_state', 'Presentation import cannot be processed');
+      },
+    });
+
+    await expect(presentationService.retryImport(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'invalid_import_state',
+    });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      status: 'failed',
+      stage: 'failed',
+      page_count: 3,
+      processed_pages: 1,
+      analyzed_pages: 2,
+      scripted_pages: 1,
+      remaining_scene_count: 2,
       deterministic_commit: 'uncommitted',
       error: {
         code: 'invalid_import_state',
@@ -761,6 +816,113 @@ describe('PresentationImportService', () => {
     }, 'Presentation retry rollback could not be persisted');
     expect(JSON.stringify(warn.mock.calls)).not.toContain('private rollback storage path');
     expect(JSON.stringify(warn.mock.calls)).not.toContain(root);
+  });
+
+  it('rejects a retained-source retry tombstone and lets reconciliation finish deletion', async () => {
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      deletion_pending: true,
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    const retainedSource = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(retainedSource), { recursive: true });
+    await writeFile(retainedSource, '%PDF retained tombstone source');
+    const presentationService = service();
+
+    await expect(presentationService.retryImport(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'source_not_available',
+      message: 'The original PDF is not available for retry',
+    });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+    expect(await loadStoryboard(root)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await presentationService.reconcile([project]);
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
+    await expect(access(retainedSource)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects defensive processing of a tombstone without creating scenes or assets', async () => {
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'processing',
+      stage: 'processing-slides',
+      deterministic_commit: 'uncommitted',
+      deletion_pending: true,
+      page_count: 0,
+      processed_pages: 0,
+    });
+    const retainedSource = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(retainedSource), { recursive: true });
+    await writeFile(retainedSource, '%PDF retained tombstone source');
+
+    await expect(service().process(project, PRESENTATION_ONE)).rejects.toMatchObject({
+      code: 'invalid_import_state',
+      message: 'Presentation import cannot be processed',
+    });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+    expect(await loadStoryboard(root)).toBeNull();
+    await expect(access(path.join(root, 'presentations', PRESENTATION_ONE))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not let registration overwrite a durable deletion tombstone', async () => {
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'failed',
+      stage: 'failed',
+      deterministic_commit: 'uncommitted',
+      deletion_pending: true,
+      error: { code: 'processing_failed', message: 'Earlier failure' },
+    });
+    const retainedSource = path.join(root, '.presentation-staging', PRESENTATION_ONE, 'source.pdf');
+    await mkdir(path.dirname(retainedSource), { recursive: true });
+    const bytes = '%PDF retained tombstone source';
+    await writeFile(retainedSource, bytes);
+
+    await expect(service().registerUpload({
+      project,
+      id: PRESENTATION_ONE,
+      filename: 'Replacement.pdf',
+      stagedSourcePath: retainedSource,
+      sizeBytes: Buffer.byteLength(bytes),
+      generateNarration: false,
+    })).rejects.toMatchObject({
+      code: 'invalid_source',
+      message: 'Invalid presentation source',
+    });
+
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({
+      deletion_pending: true,
+      filename: 'Recovered.pdf',
+    });
+  });
+
+  it('does not invoke narration retry for a tombstone and reconciliation still repairs it', async () => {
+    await createPersistedJob(PRESENTATION_ONE, {
+      status: 'processing',
+      stage: 'drafting-narration',
+      deterministic_commit: 'committed',
+      deletion_pending: true,
+    });
+    const retryNarration = vi.fn(async (_project: Project, id: string) => jobs.update(root, id, {
+      status: 'ready',
+      stage: 'ready',
+    }));
+    const presentationService = service();
+
+    await expect(presentationService.retryNarration(project, PRESENTATION_ONE, retryNarration)).rejects.toMatchObject({
+      code: 'source_not_available',
+    });
+    expect(retryNarration).not.toHaveBeenCalled();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toMatchObject({ deletion_pending: true });
+
+    await presentationService.reconcile([project], retryNarration);
+
+    expect(retryNarration).not.toHaveBeenCalled();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
   });
 
   it('imports identical bytes under independent presentation UUIDs', async () => {

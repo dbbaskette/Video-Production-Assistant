@@ -65,6 +65,7 @@ describe('presentation routes', () => {
     list: Mock<Parameters<PresentationImportService['list']>, ReturnType<PresentationImportService['list']>>;
     get: Mock<Parameters<PresentationImportService['get']>, ReturnType<PresentationImportService['get']>>;
     retryImport: Mock<Parameters<PresentationImportService['retryImport']>, ReturnType<PresentationImportService['retryImport']>>;
+    retryNarration: Mock<Parameters<PresentationImportService['retryNarration']>, ReturnType<PresentationImportService['retryNarration']>>;
     remove: Mock<Parameters<PresentationImportService['remove']>, ReturnType<PresentationImportService['remove']>>;
   };
 
@@ -84,6 +85,7 @@ describe('presentation routes', () => {
       list: vi.fn<Parameters<PresentationImportService['list']>, ReturnType<PresentationImportService['list']>>(async () => [job({ project_id: project.id })]),
       get: vi.fn<Parameters<PresentationImportService['get']>, ReturnType<PresentationImportService['get']>>(async () => job({ project_id: project.id })),
       retryImport: vi.fn<Parameters<PresentationImportService['retryImport']>, ReturnType<PresentationImportService['retryImport']>>(async () => job({ project_id: project.id, status: 'ready', stage: 'ready' })),
+      retryNarration: vi.fn<Parameters<PresentationImportService['retryNarration']>, ReturnType<PresentationImportService['retryNarration']>>(async (targetProject, presentationId, callback) => callback(targetProject, presentationId)),
       remove: vi.fn<Parameters<PresentationImportService['remove']>, ReturnType<PresentationImportService['remove']>>(async () => undefined),
     };
     app = Fastify({ logger: false });
@@ -309,6 +311,31 @@ describe('presentation routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({ id: PRESENTATION_ID, stage: 'drafting-narration' });
       expect(retryNarration).toHaveBeenCalledWith(project, PRESENTATION_ID);
+    } finally {
+      await callbackApp.close();
+    }
+  });
+
+  it('returns not_found without invoking narration retry for a public tombstone', async () => {
+    const retryNarration = vi.fn(async () => job({ project_id: project.id, stage: 'drafting-narration' }));
+    service.get.mockResolvedValueOnce(null);
+    const callbackApp = Fastify({ logger: false });
+    await callbackApp.register(multipart);
+    await registerPresentationRoutes(callbackApp, {
+      store,
+      service: service as unknown as PresentationImportService,
+      maxBytes: 32,
+      retryNarration,
+    });
+    try {
+      const response = await callbackApp.inject({
+        method: 'POST',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: 'Presentation not found', code: 'not_found' });
+      expect(retryNarration).not.toHaveBeenCalled();
     } finally {
       await callbackApp.close();
     }

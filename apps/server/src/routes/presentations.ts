@@ -325,13 +325,20 @@ export async function registerPresentationRoutes(
       };
       const project = await requireProject(deps.store, id);
       const presentationId = requireUuid(rawPresentationId, 'invalid_presentation_id', 'presentation id');
+      const value = await deps.service.get(project.path, presentationId);
+      if (!value) throw new PresentationRouteError(404, 'not_found', 'Presentation not found');
+      requireJob(value, project, presentationId);
       if (!deps.retryNarration) {
         return reply.status(501).send({
           error: 'Presentation narration is not available',
           code: 'narration_not_implemented',
         });
       }
-      return requireJob(await deps.retryNarration(project, presentationId), project, presentationId);
+      return requireJob(
+        await deps.service.retryNarration(project, presentationId, deps.retryNarration),
+        project,
+        presentationId,
+      );
     } catch (error) {
       return sendRouteError(reply, error);
     }
