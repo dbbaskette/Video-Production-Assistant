@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { PDFDocument, degrees, StandardFonts } from 'pdf-lib';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
+import { PDFDocument, PDFName, PDFNumber, degrees, rgb, StandardFonts } from 'pdf-lib';
 import { inspectPdf, PresentationPdfError } from './pdf.js';
 
 let directory: string;
@@ -84,6 +85,25 @@ describe('inspectPdf', () => {
     const inspected = await inspectPdf(await writePdf('rotated.pdf', document), { maxPages: 200, maxTextCharsPerPage: 20_000 });
 
     expect(inspected.pages[0]).toMatchObject({ width: 540, height: 960, rotation: 90 });
+    await inspected.close();
+  });
+
+  it('contains a UserUnit-scaled page without clipping its far edge', async () => {
+    const document = await PDFDocument.create();
+    const page = document.addPage([960, 540]);
+    page.node.set(PDFName.of('UserUnit'), PDFNumber.of(4));
+    page.drawRectangle({ x: 900, y: 20, width: 40, height: 40, color: rgb(1, 0, 0) });
+    const rawPngPath = path.join(directory, 'user-unit.png');
+
+    const inspected = await inspectPdf(await writePdf('user-unit.pdf', document), { maxPages: 200, maxTextCharsPerPage: 20_000 });
+    await inspected.pages[0]!.render(rawPngPath);
+
+    const image = await loadImage(await readFile(rawPngPath));
+    const canvas = createCanvas(image.width, image.height);
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    expect([image.width, image.height]).toEqual([1920, 1080]);
+    expect(Array.from(context.getImageData(1840, 1000, 1, 1).data)).toEqual([255, 0, 0, 255]);
     await inspected.close();
   });
 

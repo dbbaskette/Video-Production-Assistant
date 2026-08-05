@@ -66,16 +66,13 @@ function headingFromText(text: string): string | undefined {
 
 function pageDimensions(page: PDFPageProxy): { width: number; height: number; rotation: number } {
   const rotation = ((page.rotate % 360) + 360) % 360;
-  const [left = Number.NaN, bottom = Number.NaN, right = Number.NaN, top = Number.NaN] = page.view;
-  const unrotatedWidth = Math.abs(right - left);
-  const unrotatedHeight = Math.abs(top - bottom);
-  if (!Number.isFinite(unrotatedWidth) || !Number.isFinite(unrotatedHeight) || unrotatedWidth <= 0 || unrotatedHeight <= 0) {
+  const viewport = page.getViewport({ scale: 1 });
+  if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height) || viewport.width <= 0 || viewport.height <= 0) {
     throw new PresentationPdfError('invalid_pdf', 'The PDF page has invalid dimensions');
   }
-  const swapsDimensions = rotation === 90 || rotation === 270;
   return {
-    width: swapsDimensions ? unrotatedHeight : unrotatedWidth,
-    height: swapsDimensions ? unrotatedWidth : unrotatedHeight,
+    width: viewport.width,
+    height: viewport.height,
     rotation,
   };
 }
