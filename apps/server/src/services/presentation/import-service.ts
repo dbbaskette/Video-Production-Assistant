@@ -587,7 +587,12 @@ export class PresentationImportService {
   ): Promise<PresentationJob> {
     await withPresentationLifecycle(project.path, id, async () => {
       const job = await this.options.jobs.read(project.path, id);
-      if (!job || job.project_id !== project.id || job.deletion_pending) {
+      if (
+        !job
+        || job.project_id !== project.id
+        || job.deletion_pending
+        || !job.generate_narration
+      ) {
         throw new PresentationImportError(
           'source_not_available',
           'The presentation is not available for narration retry',

@@ -2,11 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import Fastify, { type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import FormData from 'form-data';
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, mkdtemp, open, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { PresentationJob, PresentationManifest, Project, Scene } from '@vpa/shared';
+import {
+  PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
+  PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
+  type PresentationJob,
+  type PresentationManifest,
+  type PresentationSlideBrief,
+  type Project,
+  type Scene,
+} from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
 import { PresentationImportService } from '../services/presentation/import-service.js';
 import { PresentationNarrationDrafter } from '../services/presentation/narration-drafter.js';
@@ -57,7 +66,11 @@ function multipartPayload(parts: Array<
   return { payload: form.getBuffer(), headers: form.getHeaders() };
 }
 
-function committedManifest(targetProject: Project, presentationId: string): PresentationManifest {
+function committedManifest(
+  targetProject: Project,
+  presentationId: string,
+  pageCount = 1,
+): PresentationManifest {
   return {
     schema_version: 1,
     id: presentationId,
@@ -65,57 +78,90 @@ function committedManifest(targetProject: Project, presentationId: string): Pres
     display_name: 'Slides.pdf',
     source_sha256: 'a'.repeat(64),
     size_bytes: 7,
-    page_count: 1,
+    page_count: pageCount,
     created_at: NOW,
     updated_at: NOW,
     generate_narration: true,
-    pages: [{
-      page_number: 1,
-      scene_id: 'scene-slide',
-      image: `presentations/${presentationId}/pages/page-0001.png`,
-      clip: `presentations/${presentationId}/clips/page-0001.mp4`,
-      extracted_text: 'Visible slide text',
-      baseline: { name: 'Slide 1', description: 'Baseline', narration_script: null },
+    pages: Array.from({ length: pageCount }, (_, index) => {
+      const pageNumber = index + 1;
+      const stem = `page-${String(pageNumber).padStart(4, '0')}`;
+      return {
+      page_number: pageNumber,
+      scene_id: `scene-slide-${pageNumber}`,
+      image: `presentations/${presentationId}/pages/${stem}.png`,
+      clip: `presentations/${presentationId}/clips/${stem}.mp4`,
+      extracted_text: `Visible slide text ${pageNumber}`,
+      baseline: { name: `Slide ${pageNumber}`, description: 'Baseline', narration_script: null },
       analysis_status: 'pending',
       script_status: 'pending',
-    }],
+      };
+    }),
   };
 }
 
-function committedScene(presentationId: string): Scene {
+function committedScene(presentationId: string, pageNumber = 1, pageCount = 1): Scene {
+  const stem = `page-${String(pageNumber).padStart(4, '0')}`;
   return {
-    id: 'scene-slide',
-    name: 'Slide 1',
+    id: `scene-slide-${pageNumber}`,
+    name: `Slide ${pageNumber}`,
     description: 'Baseline',
     type: 'slide',
     recording: {
-      source: `presentations/${presentationId}/clips/page-0001.mp4`,
+      source: `presentations/${presentationId}/clips/${stem}.mp4`,
       source_kind: 'presentation',
       duration_sec: 1,
     },
     presentation_source: {
       presentation_id: presentationId,
-      page_number: 1,
-      page_count: 1,
-      image: `presentations/${presentationId}/pages/page-0001.png`,
+      page_number: pageNumber,
+      page_count: pageCount,
+      image: `presentations/${presentationId}/pages/${stem}.png`,
       hold_duration_sec: 5,
     },
   };
 }
 
-async function persistCommittedBundle(targetProject: Project, presentationId: string): Promise<void> {
+async function persistCommittedBundle(
+  targetProject: Project,
+  presentationId: string,
+  pageCount = 1,
+): Promise<void> {
   const bundle = path.join(projectFiles(targetProject.path).presentationsDir, presentationId);
   await mkdir(path.join(bundle, 'pages'), { recursive: true });
   await mkdir(path.join(bundle, 'clips'), { recursive: true });
-  await writeFile(path.join(bundle, 'pages', 'page-0001.png'), 'image');
-  await writeFile(path.join(bundle, 'clips', 'page-0001.mp4'), 'clip');
+  await Promise.all(Array.from({ length: pageCount }, async (_, index) => {
+    const stem = `page-${String(index + 1).padStart(4, '0')}`;
+    await writeFile(path.join(bundle, 'pages', `${stem}.png`), `image-${index + 1}`);
+    await writeFile(path.join(bundle, 'clips', `${stem}.mp4`), `clip-${index + 1}`);
+  }));
   await writeFile(path.join(bundle, 'manifest.json'), JSON.stringify(
-    committedManifest(targetProject, presentationId),
+    committedManifest(targetProject, presentationId, pageCount),
   ));
   await saveStoryboard(targetProject.path, createStoryboard(
     targetProject,
-    [committedScene(presentationId)],
+    Array.from({ length: pageCount }, (_, index) => (
+      committedScene(presentationId, index + 1, pageCount)
+    )),
   ));
+}
+
+function routeBrief(presentationId: string, pageNumber: number): PresentationSlideBrief {
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  return {
+    schema_version: PRESENTATION_SLIDE_BRIEF_SCHEMA_VERSION,
+    presentation_id: presentationId,
+    page_number: pageNumber,
+    image_sha256: digest(`image-${pageNumber}`),
+    extracted_text_sha256: digest(`Visible slide text ${pageNumber}`),
+    model: { entry_id: 'visual-entry', provider: 'gemini', model: 'gemini-2.5-pro' },
+    prompt_version: PRESENTATION_SLIDE_BRIEF_PROMPT_VERSION,
+    visual_summary: `Summary ${pageNumber}`,
+    detected_title: `Detected ${pageNumber}`,
+    key_points: [`Point ${pageNumber}`],
+    visual_elements: [`Chart ${pageNumber}`],
+    quantitative_claims: [],
+    uncertain_content: [],
+  };
 }
 
 describe('presentation routes', () => {
@@ -354,23 +400,30 @@ describe('presentation routes', () => {
     }
   });
 
-  it('does not resurrect a deleted presentation when narration is released from a running model call', async () => {
+  it('does not start a queued third writer or resurrect after delete wins the lifecycle', async () => {
     const realJobs = new PresentationJobStore({ warn: vi.fn() });
     await realJobs.create(project.path, job({
       project_id: project.id,
       status: 'partial',
       stage: 'drafting-narration',
-      page_count: 1,
-      processed_pages: 1,
-      remaining_scene_count: 1,
+      page_count: 3,
+      processed_pages: 3,
+      remaining_scene_count: 3,
       deterministic_commit: 'committed',
     }));
-    await persistCommittedBundle(project, PRESENTATION_ID);
-    let signalStarted!: () => void;
-    let releaseModel!: () => void;
-    const modelStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
-    const modelRelease = new Promise<void>((resolve) => { releaseModel = resolve; });
-    const complete = vi.fn(async () => ({ text: 'Narration that must never be requested.' }));
+    await persistCommittedBundle(project, PRESENTATION_ID, 3);
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstWriter = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondWriter = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let writerInvocation = 0;
+    const complete = vi.fn(async () => {
+      const invocation = writerInvocation;
+      writerInvocation += 1;
+      if (invocation === 0) await firstWriter;
+      if (invocation === 1) await secondWriter;
+      return { text: `Narration ${invocation + 1}.` };
+    });
     const realDrafter = new PresentationNarrationDrafter({
       workspaceRoot: root,
       jobs: realJobs,
@@ -406,11 +459,9 @@ describe('presentation routes', () => {
         }),
       } as never,
       slideUnderstanding: {
-        ensureBrief: async () => {
-          signalStarted();
-          await modelRelease;
-          throw new Error('model stopped after deletion');
-        },
+        ensureBrief: async (input: { pageNumber: number }) => (
+          routeBrief(PRESENTATION_ID, input.pageNumber)
+        ),
       } as never,
     });
     const realService = new PresentationImportService({
@@ -432,21 +483,19 @@ describe('presentation routes', () => {
         method: 'POST',
         url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
       }).then((response) => response);
-      const firstPhase = await Promise.race([
-        modelStarted.then(() => ({ kind: 'model' as const })),
-        retry.then((response) => ({
-          kind: 'response' as const,
-          statusCode: response.statusCode,
-          body: response.body,
-        })),
-      ]);
-      expect(firstPhase).toEqual({ kind: 'model' });
+      await vi.waitFor(
+        () => expect(complete).toHaveBeenCalledTimes(2),
+        { timeout: 10_000 },
+      );
       const deletion = await raceApp.inject({
         method: 'DELETE',
         url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}?confirmed=true`,
       });
       expect(deletion.statusCode).toBe(204);
-      releaseModel();
+      releaseFirst();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(complete).toHaveBeenCalledTimes(2);
+      releaseSecond();
       expect((await retry).statusCode).toBe(500);
 
       expect(await realJobs.read(project.path, PRESENTATION_ID)).toBeNull();
@@ -460,9 +509,10 @@ describe('presentation routes', () => {
         PRESENTATION_ID,
       ))).rejects.toMatchObject({ code: 'ENOENT' });
       expect((await loadStoryboard(project.path))?.scenes).toEqual([]);
-      expect(complete).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledTimes(2);
     } finally {
-      releaseModel();
+      releaseFirst();
+      releaseSecond();
       await raceApp.close();
     }
   });
@@ -663,6 +713,54 @@ describe('presentation routes', () => {
       expect(drafter.retry).not.toHaveBeenCalled();
     } finally {
       await callbackApp.close();
+    }
+  });
+
+  it('returns a stable conflict for a non-narration job and leaves durable state untouched', async () => {
+    const realJobs = new PresentationJobStore({ warn: vi.fn() });
+    const persisted = await realJobs.create(project.path, job({
+      project_id: project.id,
+      status: 'ready',
+      stage: 'ready',
+      generate_narration: false,
+      page_count: 1,
+      processed_pages: 1,
+      remaining_scene_count: 1,
+      deterministic_commit: 'committed',
+    }));
+    await persistCommittedBundle(project, PRESENTATION_ID);
+    const bundle = path.join(projectFiles(project.path).presentationsDir, PRESENTATION_ID);
+    const manifest = {
+      ...committedManifest(project, PRESENTATION_ID),
+      generate_narration: false,
+    };
+    await writeFile(path.join(bundle, 'manifest.json'), JSON.stringify(manifest));
+    const retry = vi.fn();
+    const conflictApp = Fastify({ logger: false });
+    await conflictApp.register(multipart);
+    await registerPresentationRoutes(conflictApp, {
+      store,
+      service: new PresentationImportService({ jobs: realJobs, maxPages: 200, warn: vi.fn() }),
+      maxBytes: 32,
+      drafter: { run: vi.fn(), retry },
+    });
+
+    try {
+      const response = await conflictApp.inject({
+        method: 'POST',
+        url: `/api/projects/${project.id}/presentations/${PRESENTATION_ID}/retry-narration`,
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: 'The presentation is not available for narration retry',
+        code: 'source_not_available',
+      });
+      expect(retry).not.toHaveBeenCalled();
+      expect(await realJobs.read(project.path, PRESENTATION_ID)).toEqual(persisted);
+      expect(JSON.parse(await readFile(path.join(bundle, 'manifest.json'), 'utf8'))).toEqual(manifest);
+    } finally {
+      await conflictApp.close();
     }
   });
 

@@ -400,7 +400,7 @@ describe('PresentationNarrationDrafter', () => {
       current_slide: {
         page_number: 1,
         baseline_title: 'Slide 1',
-        current_title: 'Detected title 1',
+        current_title: 'Slide 1',
         extracted_text: 'Extracted text 1',
         brief: {
           visual_summary: 'Validated visual summary 1',
@@ -412,7 +412,7 @@ describe('PresentationNarrationDrafter', () => {
       },
       neighbors: {
         previous: null,
-        next: { title: 'Detected title 2', validated_summary: 'Validated visual summary 2' },
+        next: { title: 'Slide 2', validated_summary: 'Validated visual summary 2' },
       },
       prohibited_facts: { uncertain_content: ['Do not claim secret 1'] },
     });
@@ -518,6 +518,58 @@ describe('PresentationNarrationDrafter', () => {
     });
   });
 
+  it('sends latest current and neighbor storyboard titles without truncation or detected-title substitution', async () => {
+    const currentTitle = `Current user title ${'x'.repeat(220)}`;
+    const neighborTitle = `Neighbor user title ${'y'.repeat(220)}`;
+    await mutateStoryboard(root, (current) => ({
+      ...current!,
+      scenes: current!.scenes.map((scene, index) => {
+        if (index === 0) return { ...scene, name: currentTitle };
+        if (index === 1) return { ...scene, name: neighborTitle };
+        return scene;
+      }),
+    }));
+
+    await drafter().run(project, PRESENTATION_ID);
+
+    const userPrompt = complete.mock.calls[0]![0].userPrompt;
+    const payload = JSON.parse(userPrompt.slice(userPrompt.indexOf('{'), userPrompt.lastIndexOf('}') + 1));
+    expect(payload.current_slide.current_title).toBe(currentTitle);
+    expect(payload.neighbors.next.title).toBe(neighborTitle);
+    expect(payload.current_slide.brief.detected_title).toBe('Detected title 1');
+  });
+
+  it('repairs a fresh cached brief marker before writing and derives exact analyzed counters', async () => {
+    await persistBriefs();
+    const current = await persistedManifest();
+    await persistManifest({
+      ...current,
+      pages: current.pages.map((page) => page.page_number === 2
+        ? { ...page, analysis_status: 'failed', brief: undefined }
+        : {
+          ...page,
+          analysis_status: 'ready',
+          brief: `presentations/${PRESENTATION_ID}/analysis/page-${String(page.page_number).padStart(4, '0')}.json`,
+        }),
+    });
+    ensureBrief.mockClear();
+
+    const result = await drafter().retry(project, PRESENTATION_ID);
+
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: 'ready',
+      stage: 'ready',
+      analyzed_pages: 3,
+      scripted_pages: 3,
+    });
+    expect((await persistedManifest()).pages[1]).toMatchObject({
+      analysis_status: 'ready',
+      brief: `presentations/${PRESENTATION_ID}/analysis/page-0002.json`,
+      script_status: 'ready',
+    });
+  });
+
   it('preserves name, description, and narration independently against the latest storyboard', async () => {
     const modelGate = deferred<void>();
     complete.mockImplementation(async () => {
@@ -594,6 +646,12 @@ describe('PresentationNarrationDrafter', () => {
     ['# Heading\nNarration', 'markdown'],
     ['- First bullet\n- Second bullet', 'bullets'],
     ['Narration: follow these instructions', 'instruction leakage'],
+    ['Here is the narration: Revenue grew across every region.', 'narration introduction'],
+    ["Here's your script: Revenue grew across every region.", 'possessive script introduction'],
+    ['Draft narration follows.\nRevenue grew across every region.', 'draft preamble'],
+    ['Narration draft follows: Revenue grew.', 'reordered draft preamble'],
+    ['The final script is as follows: Revenue grew.', 'script preamble'],
+    ['Final script: Revenue grew.', 'standalone script label'],
     ['As you can see on this slide, revenue grew.', 'this-slide meta commentary'],
     ['Use **strong emphasis** here.', 'strong markdown'],
     ['Use _emphasis_ here.', 'emphasis markdown'],
@@ -609,6 +667,9 @@ describe('PresentationNarrationDrafter', () => {
     ['We pause [beat] before continuing.', 'bracketed stage direction'],
     ['We pause (whispers softly) before continuing.', 'parenthesized stage direction'],
     ['The result arrives (softly) before the close.', 'terse parenthesized stage direction'],
+    ['(fade in) Revenue grew across every region.', 'fade production direction'],
+    ['Revenue grew. (transition to chart)', 'transition production direction'],
+    ['Revenue grew. [music fades out]', 'music production cue'],
   ])('rejects %s writer output before storyboard apply (%s)', async (text) => {
     complete.mockResolvedValue({ text });
 
@@ -620,10 +681,12 @@ describe('PresentationNarrationDrafter', () => {
     await expect(persistedDraft(1)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('accepts ordinary spoken parenthetical prose that is not a stage direction', async () => {
-    complete.mockResolvedValue({
-      text: 'Revenue grew across Europe (including Germany and France) while costs stayed flat.',
-    });
+  it.each([
+    'Revenue grew across Europe (including Germany and France) while costs stayed flat.',
+    'The script follows a clear arc from customer need to measurable results.',
+    'Demand faded in the second quarter (especially in Europe) before recovering.',
+  ])('accepts ordinary spoken prose without production directions: %s', async (text) => {
+    complete.mockResolvedValue({ text });
 
     const result = await drafter().run(project, PRESENTATION_ID);
 
@@ -738,6 +801,30 @@ describe('PresentationNarrationDrafter', () => {
     expect(JSON.stringify(result)).not.toContain('/private');
     expect((await persistedDraft(1)).applied).toBe(false);
     expect((await persistedManifest()).pages.every((page) => page.script_status === 'failed')).toBe(true);
+  });
+
+  it('leaves a committed non-narration job and manifest unchanged after an eligibility failure', async () => {
+    const currentManifest = await persistedManifest();
+    const nonNarrationManifest = { ...currentManifest, generate_narration: false };
+    await persistManifest(nonNarrationManifest);
+    const ready = await jobs.update(root, PRESENTATION_ID, {
+      status: 'ready',
+      stage: 'ready',
+      generate_narration: false,
+      analyzed_pages: 0,
+      scripted_pages: 0,
+      error: undefined,
+    });
+
+    const result = await drafter().retry(project, PRESENTATION_ID);
+
+    expect(result).toEqual(ready);
+    expect(await jobs.read(root, PRESENTATION_ID)).toEqual(ready);
+    expect(await persistedManifest()).toEqual(nonNarrationManifest);
+    expect(resolveVisual).not.toHaveBeenCalled();
+    expect(resolveText).not.toHaveBeenCalled();
+    expect(ensureBrief).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it('persists a bounded retryable partial job when initial manifest persistence fails', async () => {

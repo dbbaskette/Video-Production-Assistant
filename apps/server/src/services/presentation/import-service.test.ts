@@ -925,6 +925,28 @@ describe('PresentationImportService', () => {
     expect(await jobs.read(root, PRESENTATION_ONE)).toBeNull();
   });
 
+  it('rejects narration retry for a committed non-narration job without mutating it', async () => {
+    const persisted = await createPersistedJob(PRESENTATION_ONE, {
+      status: 'ready',
+      stage: 'ready',
+      deterministic_commit: 'committed',
+      generate_narration: false,
+    });
+    const retryNarration = vi.fn(async () => jobs.update(root, PRESENTATION_ONE, {
+      status: 'partial',
+      stage: 'drafting-narration',
+    }));
+
+    await expect(service().retryNarration(
+      project,
+      PRESENTATION_ONE,
+      retryNarration,
+    )).rejects.toMatchObject({ code: 'source_not_available' });
+
+    expect(retryNarration).not.toHaveBeenCalled();
+    expect(await jobs.read(root, PRESENTATION_ONE)).toEqual(persisted);
+  });
+
   it('imports identical bytes under independent presentation UUIDs', async () => {
     inspect.mockImplementation(async () => inspection(['Same deck']));
     const presentationService = service();

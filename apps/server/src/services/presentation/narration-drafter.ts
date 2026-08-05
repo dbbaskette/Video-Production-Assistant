@@ -229,13 +229,24 @@ function validateWriterOutput(output: unknown): string {
   if (/^\s*(?:narration|script|instructions?|response)\s*:/im.test(script)) {
     throw new PresentationNarrationError();
   }
+  const deliverable = String.raw`(?:(?:the|your|my)\s+)?(?:(?:draft|final)\s+)?(?:narration|script)`;
+  const reorderedDeliverable = String.raw`(?:(?:the|your|my)\s+)?(?:narration|script)\s+(?:draft|version)`;
+  const preambleEnd = String.raw`(?::|[-—]\s*|\.(?:\s|$))`;
+  const metaPreambles = [
+    new RegExp(String.raw`^\s*(?:here(?:'s| is)|below is)\s+${deliverable}\s*${preambleEnd}`, 'i'),
+    new RegExp(String.raw`^\s*(?:${deliverable}|${reorderedDeliverable})\s+(?:is\s+)?(?:as\s+)?(?:follows|below)\s*${preambleEnd}`, 'i'),
+    new RegExp(String.raw`^\s*(?:draft|final)\s+(?:narration|script)\s*${preambleEnd}`, 'i'),
+  ];
+  if (metaPreambles.some((pattern) => pattern.test(script))) {
+    throw new PresentationNarrationError();
+  }
   if (/\b(?:follow|ignore) (?:these|the|all|previous) instructions\b/i.test(script)) {
     throw new PresentationNarrationError();
   }
   if (/\bthis slide\b/i.test(script) || /\bas an ai\b/i.test(script)) {
     throw new PresentationNarrationError();
   }
-  const stageDirection = String.raw`(?:pause|beat|silence|music|sfx|sound effect|softly|quietly|loudly|slowly|quickly|applause|whisper(?:s|ed|ing)?|laugh(?:s|ed|ing)?|chuckle(?:s|d|ing)?|sighs?|emphasis|stage direction|cut to|voiceover|narrator|speaker\s+[a-z])`;
+  const stageDirection = String.raw`(?:pause|beat|silence|music(?:\s+(?:up|down|starts?|stops?|fades?(?:\s+(?:in|out))?))?|sfx|sound effect|softly|quietly|loudly|slowly|quickly|applause|whisper(?:s|ed|ing)?|laugh(?:s|ed|ing)?|chuckle(?:s|d|ing)?|sighs?|emphasis|stage direction|fade(?:s|d|ing)?(?:\s+(?:in|out|to black))?|cut(?:s|ting)?(?:\s+to)?|transition(?:s|ed|ing)?(?:\s+to)?|voiceover|narrator|speaker\s+[a-z])`;
   if (new RegExp(String.raw`\[(?:${stageDirection})(?:\s+[^\]\r\n]{0,80})?\]`, 'i').test(script)) {
     throw new PresentationNarrationError();
   }
@@ -353,7 +364,7 @@ export class PresentationNarrationDrafter {
         const current = await this.options.jobs.read(project.path, presentationId);
         if (!current) throw new PresentationNarrationError();
         if (current.project_id !== project.id || current.deletion_pending) return current;
-        if (current.deterministic_commit !== 'committed') return current;
+        if (!current.generate_narration || current.deterministic_commit !== 'committed') return current;
         return this.options.jobs.update(project.path, presentationId, {
           status: 'partial',
           stage: 'drafting-narration',
@@ -571,22 +582,6 @@ export class PresentationNarrationDrafter {
   ): WriterPayload {
     const scene = scenesById.get(page.scene_id);
     if (!sceneMatchesPage(scene, manifest, page)) throw new PresentationNarrationError();
-    const contextTitle = (
-      targetPage: PresentationPageRecord,
-      targetScene: Scene,
-      targetBrief: PresentationSlideBrief,
-    ): string => {
-      const detected = targetBrief.detected_title.trim();
-      const generated = targetPage.baseline.name === `Slide ${targetPage.page_number}` && detected
-        ? detected
-        : targetPage.baseline.name;
-      return bounded(
-        targetScene.name === targetPage.baseline.name || targetScene.name === generated
-          ? generated
-          : targetScene.name,
-        200,
-      );
-    };
     const neighbor = (pageNumber: number): NeighborContext | null => {
       const neighborPage = manifest.pages[pageNumber - 1];
       const neighborBrief = briefsByPage.get(pageNumber);
@@ -594,7 +589,7 @@ export class PresentationNarrationDrafter {
       const neighborScene = scenesById.get(neighborPage.scene_id);
       if (!sceneMatchesPage(neighborScene, manifest, neighborPage)) return null;
       return {
-        title: contextTitle(neighborPage, neighborScene, neighborBrief),
+        title: neighborScene.name,
         validated_summary: bounded(neighborBrief.visual_summary, MAX_NEIGHBOR_SUMMARY_CHARS),
       };
     };
@@ -606,7 +601,7 @@ export class PresentationNarrationDrafter {
       current_slide: {
         page_number: page.page_number,
         baseline_title: bounded(page.baseline.name, 200),
-        current_title: contextTitle(page, scene, brief),
+        current_title: scene.name,
         extracted_text: bounded(page.extracted_text, 20_000),
         brief: {
           visual_summary: brief.visual_summary,
@@ -628,7 +623,47 @@ export class PresentationNarrationDrafter {
     payload: WriterPayload,
     brief: PresentationSlideBrief,
     writer: ResolvedTextModel,
+    manifest: PresentationManifest,
+    page: PresentationPageRecord,
+    briefsByPage: Map<number, PresentationSlideBrief>,
   ): string {
+    const canonicalTitle = (
+      targetPage: PresentationPageRecord,
+      actualTitle: string,
+      targetBrief: PresentationSlideBrief,
+    ): string => {
+      const detected = targetBrief.detected_title.trim();
+      const generated = targetPage.baseline.name === `Slide ${targetPage.page_number}` && detected
+        ? detected
+        : targetPage.baseline.name;
+      return actualTitle === targetPage.baseline.name || actualTitle === generated
+        ? generated
+        : actualTitle;
+    };
+    const canonicalNeighbor = (
+      pageNumber: number,
+      neighbor: NeighborContext | null,
+    ): NeighborContext | null => {
+      if (!neighbor) return null;
+      const neighborPage = manifest.pages[pageNumber - 1];
+      const neighborBrief = briefsByPage.get(pageNumber);
+      if (!neighborPage || !neighborBrief) return neighbor;
+      return {
+        ...neighbor,
+        title: canonicalTitle(neighborPage, neighbor.title, neighborBrief),
+      };
+    };
+    const fingerprintContext: WriterPayload = {
+      ...payload,
+      current_slide: {
+        ...payload.current_slide,
+        current_title: canonicalTitle(page, payload.current_slide.current_title, brief),
+      },
+      neighbors: {
+        previous: canonicalNeighbor(page.page_number - 1, payload.neighbors.previous),
+        next: canonicalNeighbor(page.page_number + 1, payload.neighbors.next),
+      },
+    };
     return sha256(JSON.stringify({
       schema_version: PRESENTATION_SCHEMA_VERSION,
       prompt_version: PRESENTATION_NARRATION_PROMPT_VERSION,
@@ -645,7 +680,7 @@ export class PresentationNarrationDrafter {
         entry_id: writer.summary.entry_id,
         model: writer.summary.model,
       },
-      context: payload,
+      context: fingerprintContext,
     }));
   }
 
@@ -716,7 +751,8 @@ export class PresentationNarrationDrafter {
       });
       const analyzed = manifest.pages.filter((page) => page.analysis_status === 'ready').length;
       const scripted = evidence.filter(Boolean).length;
-      const ready = scripted === manifest.page_count
+      const ready = analyzed === manifest.page_count
+        && scripted === manifest.page_count
         && manifest.pages.every((page) => page.script_status === 'ready');
       return this.options.jobs.update(project.path, presentationId, {
         status: ready ? 'ready' : 'partial',
@@ -728,6 +764,27 @@ export class PresentationNarrationDrafter {
           message: 'Presentation narration is incomplete',
         },
       });
+    });
+  }
+
+  private startWriter(
+    project: Project,
+    presentationId: string,
+    writer: ResolvedTextModel,
+    request: Parameters<ResolvedTextModel['client']['complete']>[0],
+  ): Promise<{ completion: ReturnType<ResolvedTextModel['client']['complete']> }> {
+    return this.lifecycle(project.path, presentationId, async () => {
+      const current = await this.options.jobs.read(project.path, presentationId);
+      if (
+        !current
+        || current.project_id !== project.id
+        || current.deletion_pending
+        || !current.generate_narration
+        || current.deterministic_commit !== 'committed'
+      ) {
+        throw new PresentationNarrationError();
+      }
+      return { completion: writer.client.complete(request) };
     });
   }
 
@@ -792,7 +849,16 @@ export class PresentationNarrationDrafter {
     const analysisResults = await mapLimit(pagesToProcess, CONCURRENCY, async (page) => {
       try {
         const cached = briefsByPage.get(page.page_number);
-        if (cached) return { page, brief: cached } satisfies PageAnalysis;
+        if (cached) {
+          const expectedBrief = `presentations/${presentationId}/analysis/${pageName(page.page_number)}`;
+          if (page.analysis_status !== 'ready' || page.brief !== expectedBrief) {
+            await this.patchPage(project, presentationId, paths, page.page_number, {
+              analysis_status: 'ready',
+              brief: expectedBrief,
+            });
+          }
+          return { page, brief: cached } satisfies PageAnalysis;
+        }
         const imagePath = path.join(project.path, page.image);
         const generated = PresentationSlideBriefSchema.parse(
           await this.options.slideUnderstanding.ensureBrief({
@@ -847,7 +913,14 @@ export class PresentationNarrationDrafter {
           latestScenes,
           briefsByPage,
         );
-        const fingerprint = this.fingerprint(payload, analysis.brief, writer);
+        const fingerprint = this.fingerprint(
+          payload,
+          analysis.brief,
+          writer,
+          currentManifest,
+          analysis.page,
+          briefsByPage,
+        );
         const existing = await this.readDraft(paths, analysis.page.page_number);
         const fresh = existing
           && existing.presentation_id === presentationId
@@ -907,13 +980,14 @@ export class PresentationNarrationDrafter {
         if (Buffer.byteLength(userPrompt, 'utf8') > MAX_WRITER_USER_PROMPT_BYTES) {
           throw new PresentationNarrationError();
         }
-        const completion = await writer.client.complete({
+        const started = await this.startWriter(project, presentationId, writer, {
           systemPrompt,
           userPrompt,
           responseFormat: 'text',
           temperature: 0.3,
           maxTokens: MAX_WRITER_TOKENS,
         });
+        const completion = await started.completion;
         const script = validateWriterOutput(completion.text);
         const draft = PresentationDraftSchema.parse({
           schema_version: PRESENTATION_SCHEMA_VERSION,
