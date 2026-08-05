@@ -365,6 +365,9 @@ describe('presentation scene duration rendering', () => {
     muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
     expect(muxCall.args.join(' ')).not.toContain('tpad=stop_mode=clone');
     expect(muxCall.args.join(' ')).toContain('trim=duration=0.750,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+    expect(muxCall.args).not.toContain('-shortest');
+    expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
   });
 
   it('applies the hold and shorter narration exactly in the full-project path', async () => {
@@ -388,7 +391,57 @@ describe('presentation scene duration rendering', () => {
     muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'))!;
     expect(muxCall.args.join(' ')).not.toContain('tpad=stop_mode=clone');
     expect(muxCall.args.join(' ')).toContain('trim=duration=0.750,setpts=PTS-STARTPTS');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+    expect(muxCall.args).not.toContain('-shortest');
     expect(ffmpegCalls.filter((call) => call.cmd === 'ffprobe' && call.args.at(-1) === narrationPath)).toHaveLength(1);
+  });
+
+  it('treats presentation mix as replacement in both render paths because slide clips are silent', async () => {
+    await saveStoryboard(projectPath, presentationStoryboard(true));
+    const clipPath = join(projectPath, 'presentations', '1e570aa5-20ce-4779-ad9a-d4db3ae73991', 'clips', 'page-0001.mp4');
+    const fullNarrationPath = join(projectPath, 'narration', 'slide.mp3');
+    probeDurations.set(clipPath, 1);
+    probeDurations.set(fullNarrationPath, 8.25);
+
+    await renderFinalVideo(projectPath, { audioMode: 'mix' });
+
+    let muxCall = outputCall(join('renders', 'scene-01-Slide-1.mp4'))!;
+    expect(muxCall.args.join(' ')).not.toContain('[0:a]');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+
+    ffmpegCalls.length = 0;
+    const overlayPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'overlay.mp4');
+    const sceneNarrationPath = join(projectPath, 'renders', 'scenes', SCENE_ID, 'narration.mp3');
+    probeDurations.set(overlayPath, 1);
+    probeDurations.set(sceneNarrationPath, 8.25);
+
+    await renderSingleScene(
+      { projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' },
+      { audioMode: 'mix' },
+    );
+
+    muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(muxCall.args.join(' ')).not.toContain('[0:a]');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '[v]', '-map', '1:a:0']));
+    expect(muxCall.args).not.toContain('-shortest');
+  });
+
+  it('preserves ordinary recording mix graphs', async () => {
+    await mkdir(join(projectPath, 'recordings'), { recursive: true });
+    await writeFile(join(projectPath, 'recordings', 'scene-1.mp4'), 'recording');
+    await saveStoryboard(projectPath, makeStoryboard({
+      recording: { source: 'recordings/scene-1.mp4', duration_sec: 30 },
+      narration: { script: 'Normal narration', audio: 'narration/slide.mp3' },
+    }));
+
+    await renderSingleScene(
+      { projectPath, sceneId: SCENE_ID, vpaHome: '', workspaceRoot: '' },
+      { audioMode: 'mix' },
+    );
+
+    const muxCall = outputCall(join('renders', 'scenes', SCENE_ID, 'combined.mp4'))!;
+    expect(muxCall.args.join(' ')).toContain('[0:a]volume=0.1');
+    expect(muxCall.args).toEqual(expect.arrayContaining(['-map', '0:v:0', '-map', '[aout]']));
   });
 
   it('keeps ordinary single-scene replacement audio behavior', async () => {

@@ -17,6 +17,8 @@ export interface VideoLtInput {
   sceneDescription: string;
   sceneIntent?: string;
   durationSec?: number;
+  /** Static presentation media can stretch beyond the physical brief clip. */
+  flexibleDuration?: boolean;
   projectObjective?: string;
   projectAudience?: string;
   /** Used to load source-document text. The path itself is never sent to the writer. */
@@ -142,12 +144,12 @@ export async function recommendLowerThirdsFromBrief(
   validateSegmentSelections(selections, brief);
 
   const segmentById = new Map(brief.segments.map((segment) => [segment.id, segment]));
-  const sourceDuration = brief.source.duration_sec;
+  const sourceDuration = input.durationSec ?? brief.source.duration_sec;
   return selections.map((selection) => {
     const segment = segmentById.get(selection.segment_id)!;
     const inSec = Math.max(0, Math.min(segment.start_sec, sourceDuration));
     const outSec = Math.max(inSec, Math.min(
-      segment.end_sec,
+      input.flexibleDuration ? sourceDuration : segment.end_sec,
       sourceDuration,
       inSec + MAX_LOWER_THIRD_DURATION_SEC,
     ));

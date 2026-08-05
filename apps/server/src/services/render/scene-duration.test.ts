@@ -55,10 +55,20 @@ describe('resolveSceneDuration', () => {
   });
 
   it('ignores invalid narration durations and returns a bounded render error for missing recording duration', () => {
-    expect(resolveSceneDuration(slideScene, Number.POSITIVE_INFINITY).source).toBe('slide-hold');
+    for (const duration of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveSceneDuration(slideScene, duration).source).toBe('slide-hold');
+    }
     expect(() => resolveSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
       .toThrowError(RenderError);
     expect(() => resolveSceneDuration({ ...videoScene, recording: { source: 'recordings/demo.mp4' } }))
       .toThrowError(/^Scene recording duration is unavailable$/);
+  });
+
+  it('does not infer presentation semantics from a presentation-looking filename', () => {
+    expect(resolveSceneDuration({
+      ...videoScene,
+      type: 'slide',
+      recording: { source: 'presentations/fake/clips/page-0001.mp4', duration_sec: 30 },
+    }, 12.4)).toEqual({ targetSec: 30, flexible: false, source: 'recording' });
   });
 });

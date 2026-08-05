@@ -1,4 +1,5 @@
-import type { PresentationSource, Recording, SceneType } from '@vpa/shared';
+import type { Scene } from '@vpa/shared';
+import { recordingInfoDurationLabel } from '../lib/scene-duration.js';
 
 interface VideoMeta {
   duration_sec: number;
@@ -14,36 +15,11 @@ interface RecordingInfoProps {
   duration_sec?: number;
   ingested_at?: string;
   metadata?: VideoMeta | null;
-  source_kind?: Recording['source_kind'];
-  scene_type?: SceneType;
-  presentation_source?: Pick<PresentationSource, 'hold_duration_sec'>;
-  has_narration_audio?: boolean;
+  scene?: Scene;
 }
 
-function formatDuration(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.round(sec % 60);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
-}
-
-interface RecordingDurationLabelInput {
-  durationSec?: number;
-  sourceKind?: Recording['source_kind'];
-  sceneType?: SceneType;
-  presentationSource?: Pick<PresentationSource, 'hold_duration_sec'>;
-  hasNarrationAudio: boolean;
-}
-
-export function resolveRecordingDurationLabel(input: RecordingDurationLabelInput): string | null {
-  const isPresentation = input.sourceKind === 'presentation'
-    && input.sceneType === 'slide'
-    && input.presentationSource !== undefined;
-  if (isPresentation) {
-    return input.hasNarrationAudio
-      ? 'Narration sets final length'
-      : `${formatDuration(input.presentationSource!.hold_duration_sec)} hold without narration`;
-  }
-  return input.durationSec === undefined ? null : formatDuration(input.durationSec);
+export function resolveRecordingDurationLabel(scene: Scene | undefined, durationSec?: number): string | null {
+  return recordingInfoDurationLabel(scene, durationSec);
 }
 
 function formatBytes(bytes: number): string {
@@ -57,18 +33,9 @@ export function RecordingInfo({
   duration_sec,
   ingested_at,
   metadata,
-  source_kind,
-  scene_type,
-  presentation_source,
-  has_narration_audio = false,
+  scene,
 }: RecordingInfoProps) {
-  const durationLabel = resolveRecordingDurationLabel({
-    durationSec: duration_sec,
-    sourceKind: source_kind,
-    sceneType: scene_type,
-    presentationSource: presentation_source,
-    hasNarrationAudio: has_narration_audio,
-  });
+  const durationLabel = resolveRecordingDurationLabel(scene, duration_sec);
   return (
     <div
       style={{

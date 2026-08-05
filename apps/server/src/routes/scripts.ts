@@ -15,7 +15,7 @@ import {
   loadProjectSourceContext,
   sourceDocsNeedSummarization,
 } from '../services/project-source-docs/context.js';
-import type { ResolvedModelSummary } from '@vpa/shared';
+import { resolveEffectiveSceneDuration, type ResolvedModelSummary } from '@vpa/shared';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
 import { sha256File } from '../services/recording/metadata.js';
 import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
@@ -242,7 +242,8 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             sceneName: operationScene.name,
             sceneDescription: operationScene.description,
             sceneIntent: operationScene.intent,
-            durationSec: operationScene.recording.duration_sec ?? brief.source.duration_sec,
+            durationSec:
+              resolveEffectiveSceneDuration(operationScene).targetSec ?? brief.source.duration_sec,
             projectObjective: project.objective,
             projectAudience: project.audience,
             sourceContext,
@@ -267,7 +268,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             sceneDescription: operationScene.description,
             sceneIntent: operationScene.intent,
             sceneType: operationScene.type,
-            durationSec: operationScene.recording?.duration_sec,
+            durationSec: resolveEffectiveSceneDuration(operationScene).targetSec,
             projectObjective: project.objective,
             projectAudience: project.audience,
             sourceContext,
@@ -454,10 +455,18 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
       });
     }
 
+    const durationResolution = resolveEffectiveSceneDuration(scene);
+    if (durationResolution.flexible) {
+      return reply.status(400).send({
+        error: 'Presentation narration sets the final scene length and does not need tightening.',
+        code: 'flexible_scene_duration',
+      });
+    }
+
     const targetDurationSec =
       typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0
         ? body.targetDurationSec
-        : scene.recording?.duration_sec;
+        : durationResolution.targetSec;
     if (!targetDurationSec || targetDurationSec <= 0) {
       return reply.status(400).send({
         error: 'No target duration available — upload a recording or pass targetDurationSec',
@@ -541,13 +550,14 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: `Scene not found: ${sceneId}`, code: 'scene_not_found' });
 
-    // Fit target: explicit override, else the recording's duration. Undefined
-    // when the scene has no recording — polish then improves quality only and
-    // the client tells the user it wasn't fitted to length.
-    const targetDurationSec =
-      typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0
+    // Fixed-duration recordings use an explicit override or their source
+    // duration. Flexible presentation visuals are polished for quality only.
+    const polishDuration = resolveEffectiveSceneDuration(scene);
+    const targetDurationSec = polishDuration.flexible
+      ? undefined
+      : typeof body.targetDurationSec === 'number' && body.targetDurationSec > 0
         ? body.targetDurationSec
-        : scene.recording?.duration_sec;
+        : polishDuration.targetSec;
 
     // Same measured-wpm source of truth Generate + Tighten + Quality Review use.
     const wpmInfo = computeProjectWpm(sb);

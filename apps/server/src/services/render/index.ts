@@ -660,6 +660,10 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     audioPath ? probeDuration(audioPath) : Promise.resolve(undefined),
   ]);
   const resolvedDuration = resolveSceneDuration(scene, narrationDuration);
+  // Imported slide clips are intentionally silent. Treat a persisted `mix`
+  // preference as replacement for this scene so the graph never references
+  // a nonexistent [0:a] stream. Ordinary recordings keep true mix behavior.
+  const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : audioMode;
 
   // Detect narration overrun — TTS audio is often a fraction of a second
   // longer than the recording, especially on the last paragraph. With the
@@ -705,7 +709,7 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
 
   // Audio routing
   if (audioPath) {
-    if (audioMode === 'replace') {
+    if (effectiveAudioMode === 'replace') {
       // Drop original audio, use only narration.
       args.push('-map', needsVideoReencode ? '[v]' : '0:v:0', '-map', '1:a:0');
       args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');

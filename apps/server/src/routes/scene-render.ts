@@ -19,12 +19,14 @@ import {
   renderSingleScene,
   type SingleSceneRenderOptions,
 } from '../services/render/scene-render.js';
-import { RenderError } from '../services/render/index.js';
+import { privateRenderDiagnostic, publicRenderFailure } from '../services/render/errors.js';
+import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
 
 interface Deps {
   store: ProjectStore;
   vpaHome: string;
   workspaceRoot: string;
+  renderScene?: typeof renderSingleScene;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -42,6 +44,7 @@ const KIND_TO_FILE: Record<string, { rel: string; mime: string }> = {
 
 export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store } = deps;
+  const renderScene = deps.renderScene ?? renderSingleScene;
 
   // POST /api/projects/:id/scenes/:sceneId/render — kick the per-scene render
   // and return paths once everything's on disk. Synchronous (no jobQueue).
@@ -68,7 +71,7 @@ export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps
     }
 
     try {
-      const result = await renderSingleScene(
+      const result = await renderScene(
         {
           projectPath,
           sceneId,
@@ -88,15 +91,18 @@ export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps
         narrationRel: result.narrationRel,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const hint = err instanceof RenderError ? err.hint : undefined;
-      const stderrTail = err instanceof RenderError ? err.stderrTail : undefined;
-      const code = /no recording|storyboard|scene not found/i.test(message)
-        ? 'precondition_failed'
-        : 'scene_render_failed';
+      const failure = publicRenderFailure(err, 'scene');
+      app.log.error(
+        { ...safeSceneDiagnosticFields(sceneId), ...privateRenderDiagnostic(err) },
+        'Scene render failed',
+      );
       return reply
-        .status(code === 'precondition_failed' ? 400 : 500)
-        .send({ error: message, hint, stderrTail, code });
+        .status(failure.statusCode)
+        .send({
+          error: failure.error,
+          code: failure.code,
+          ...(failure.hint ? { hint: failure.hint } : {}),
+        });
     }
   });
 

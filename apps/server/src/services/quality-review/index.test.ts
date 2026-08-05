@@ -101,4 +101,74 @@ describe('quality review service', () => {
     expect(userPrompt).not.toContain('TOO LONG');
     expect(userPrompt).not.toContain('vs 1s recording');
   });
+
+  it('deterministically removes only presentation narration-length findings', async () => {
+    const llm: LlmClient = {
+      async complete() {
+        return { text: JSON.stringify([
+          {
+            sceneId: 'scene-slide',
+            severity: 'warn',
+            category: 'narration_too_long',
+            message: 'Narration exceeds the visual duration.',
+          },
+          {
+            sceneId: 'scene-slide',
+            severity: 'warn',
+            category: 'narration',
+            message: 'Narration audio is missing.',
+          },
+          {
+            sceneId: 'scene-video',
+            severity: 'warn',
+            category: 'narration_too_long',
+            message: 'Narration exceeds the recording duration.',
+          },
+          {
+            sceneId: 'scene-slide',
+            severity: 'info',
+            category: 'description',
+            message: 'The scene description is clear.',
+          },
+        ]) };
+      },
+    };
+    const sb = makeSampleStoryboard();
+    sb.scenes = [
+      {
+        id: 'scene-slide',
+        name: 'Slide',
+        description: 'A slide',
+        type: 'slide',
+        recording: {
+          source: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/clips/page-0001.mp4',
+          source_kind: 'presentation',
+          duration_sec: 1,
+        },
+        presentation_source: {
+          presentation_id: '1e570aa5-20ce-4779-ad9a-d4db3ae73991',
+          page_number: 1,
+          page_count: 1,
+          image: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/pages/page-0001.png',
+          hold_duration_sec: 5,
+        },
+      },
+      {
+        id: 'scene-video',
+        name: 'Video',
+        description: 'A recording',
+        type: 'desktop',
+        recording: { source: 'recordings/video.mp4', duration_sec: 30 },
+      },
+    ];
+
+    const result = await runQualityReview(sb, llm, workspaceRoot());
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ sceneId: 'scene-slide', category: 'narration', message: 'Narration audio is missing.' }),
+      expect.objectContaining({ sceneId: 'scene-video', category: 'narration_too_long' }),
+      expect.objectContaining({ sceneId: 'scene-slide', category: 'description' }),
+    ]);
+    expect(result.summary).toEqual({ total: 3, info: 1, warn: 2, issue: 0 });
+  });
 });

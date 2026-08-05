@@ -26,6 +26,10 @@ import { AgentRecordingDialog } from '../components/AgentRecordingDialog.js';
 import { AgentRecordingStatus } from '../components/AgentRecordingStatus.js';
 import { isActiveAgentRecordingSession } from '../lib/agent-recording-ui.js';
 import {
+  lowerThirdTimelineDurationSec,
+  scriptDurationGuidance,
+} from '../lib/scene-duration.js';
+import {
   briefFreshnessMessage,
   groundedFailureMessage,
   groundedGenerationPhase,
@@ -188,6 +192,8 @@ export function ScenePage(props: ScenePageProps = {}) {
   });
 
   const scene = storyboard?.scenes.find((s) => s.id === sceneId);
+  const durationGuidance = scriptDurationGuidance(scene);
+  const lowerThirdDurationSec = lowerThirdTimelineDurationSec(scene);
   const videoRoute = modelRouting
     ? resolutionForRole(modelRouting.resolved, 'video-understanding')
     : undefined;
@@ -1007,13 +1013,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                 source={scene.recording.source}
                 duration_sec={scene.recording.duration_sec}
                 ingested_at={scene.recording.ingested_at}
-                source_kind={scene.recording.source_kind}
-                scene_type={scene.type}
-                presentation_source={scene.presentation_source}
-                has_narration_audio={
-                  !!scene.narration?.audio ||
-                  (scene.narration?.chunks?.some((chunk) => !!chunk.audio) ?? false)
-                }
+                scene={scene}
               />
 
               {uploadAnalysisFailure && (
@@ -2098,8 +2098,16 @@ export function ScenePage(props: ScenePageProps = {}) {
                   {(() => {
                     const activeText = (isMono ? editingScript : editingDialogScript) ?? '';
                     const words = activeText.split(/\s+/).filter(Boolean).length;
-                    const durSec = scene?.recording?.duration_sec;
-                    if (!durSec || words === 0) return null;
+                    if (words === 0 || durationGuidance.mode === 'unavailable') return null;
+                    if (durationGuidance.mode === 'flexible') {
+                      return (
+                        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fg-muted)' }}>
+                          <strong style={{ color: 'var(--fg)' }}>{words} words</strong>
+                          <span> · {durationGuidance.label}</span>
+                        </div>
+                      );
+                    }
+                    const durSec = durationGuidance.durationSec;
                     const wpmInfo = computeProjectWpm(storyboard ?? null);
                     const fit = classifyFit(words, durSec, wpmInfo.wpm);
                     const color =
@@ -3169,10 +3177,10 @@ export function ScenePage(props: ScenePageProps = {}) {
               ordering and a drag-to-position editor that complements the
               precise numeric inputs in the cards below. Only shown when
               we have a recording duration to scale the track by. */}
-          {editingLTs && editingLTs.length > 0 && scene?.recording?.duration_sec && (
+          {editingLTs && editingLTs.length > 0 && lowerThirdDurationSec && (
             <LowerThirdsTimeline
               lts={editingLTs}
-              durationSec={scene.recording.duration_sec}
+              durationSec={lowerThirdDurationSec}
               onChange={(idx, in_sec, out_sec) => {
                 const updated = editingLTs.map((lt, i) => (i === idx ? { ...lt, in_sec, out_sec } : lt));
                 setEditingLTs(updated);

@@ -126,6 +126,41 @@ describe('recommendLowerThirdsFromBrief', () => {
     ]);
   });
 
+  it('extends a static presentation segment to the meaningful flexible duration', async () => {
+    const slideBrief = brief({
+      source: {
+        path: '/private/project/presentations/slide.mp4',
+        sha256: 'a'.repeat(64),
+        duration_sec: 1,
+        width: 1920,
+        height: 1080,
+      },
+      segments: [{
+        id: 'segment-001',
+        start_sec: 0,
+        end_sec: 1,
+        screen_change: 'The slide remains visible.',
+        visible_labels: ['Architecture'],
+        on_screen_terms: ['Services'],
+      }],
+      lower_third_candidates: [],
+    });
+    const { writer } = writerResponse([
+      { segment_id: 'segment-001', title: 'Architecture', style: 'minimal' },
+    ]);
+
+    await expect(recommendLowerThirdsFromBrief({
+      ...input(slideBrief),
+      durationSec: 5,
+      flexibleDuration: true,
+    }, writer, workspaceRoot())).resolves.toEqual([{
+      title: 'Architecture',
+      style: 'minimal',
+      in_sec: 0,
+      out_sec: 5,
+    }]);
+  });
+
   it('passes a text-only brief to the writer without local paths or file uris', async () => {
     const videoPath = '/private/project/recordings/scene-01.mp4';
     const fileUri = 'https://generativelanguage.googleapis.com/v1beta/files/private-video';

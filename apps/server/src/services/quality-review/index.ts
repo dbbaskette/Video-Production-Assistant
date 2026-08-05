@@ -3,6 +3,7 @@ import { loadPrompt } from '../llm/prompts.js';
 import type { Storyboard } from '@vpa/shared';
 import { computeProjectWpm } from '../script/wpm.js';
 import { isFlexiblePresentationScene } from '../render/scene-duration.js';
+import { z } from 'zod';
 
 export interface ReviewItem {
   sceneId: string;
@@ -22,6 +23,21 @@ export interface ReviewResult {
   status: 'ok' | 'warnings' | 'issues';
   reviewedAt: string;
   inputFingerprint?: string;
+}
+
+const ReviewItemSchema = z.object({
+  sceneId: z.string().min(1).max(120),
+  severity: z.enum(['info', 'warn', 'issue']),
+  category: z.string().min(1).max(120),
+  message: z.string().min(1).max(2_000),
+}).strict();
+const ReviewItemsSchema = z.array(ReviewItemSchema).max(500);
+
+function isNarrationLengthFinding(item: ReviewItem): boolean {
+  if (item.category === 'narration_too_long') return true;
+  if (item.category !== 'narration') return false;
+  return /\btoo long\b|\bover target\b|\bdoes not fit\b|\bexceeds\b.{0,80}\b(?:duration|recording|clip|visual)\b/i
+    .test(item.message);
 }
 
 function buildStoryboardContext(sb: Storyboard): string {
@@ -168,7 +184,13 @@ export async function runQualityReview(
   const jsonStr = text.startsWith('[')
     ? text
     : text.replace(/^```json\s*/, '').replace(/```\s*$/, '');
-  const items = JSON.parse(jsonStr) as ReviewItem[];
+  const parsedItems = ReviewItemsSchema.parse(JSON.parse(jsonStr));
+  const flexibleSceneIds = new Set(
+    storyboard.scenes.filter(isFlexiblePresentationScene).map((scene) => scene.id),
+  );
+  const items = parsedItems.filter(
+    (item) => !(flexibleSceneIds.has(item.sceneId) && isNarrationLengthFinding(item)),
+  );
 
   const info = items.filter((i) => i.severity === 'info').length;
   const warn = items.filter((i) => i.severity === 'warn').length;

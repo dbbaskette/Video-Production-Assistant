@@ -285,6 +285,9 @@ async function muxOne(opts: MuxOpts): Promise<void> {
   resolveSceneDuration(opts.scene);
   const narrationDuration = opts.audioPath ? await probeDuration(opts.audioPath) : undefined;
   const resolvedDuration = resolveSceneDuration(opts.scene, narrationDuration);
+  // Presentation source clips have no audio stream. A scene-level `mix`
+  // preference therefore narrows to replacement instead of addressing [0:a].
+  const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : opts.audioMode;
   const filters: string[] = [];
   if (opts.burnSubtitles && opts.srtPath) {
     filters.push(`subtitles=${escapeForFilter(opts.srtPath)}`);
@@ -300,14 +303,14 @@ async function muxOne(opts: MuxOpts): Promise<void> {
   const needsFilteredVideo = resolvedDuration.flexible;
   const needsVideoReencode = needsFilteredVideo || (opts.burnSubtitles && !!opts.srtPath);
 
-  if (needsFilteredVideo && opts.audioMode !== 'mix') {
+  if (needsFilteredVideo && effectiveAudioMode !== 'mix') {
     args.push('-filter_complex', `[0:v]${filters.join(',')}[v]`);
   } else if (!resolvedDuration.flexible && opts.burnSubtitles && opts.srtPath) {
     args.push('-vf', filters[0]!);
   }
 
   if (opts.audioPath) {
-    if (opts.audioMode === 'replace') {
+    if (effectiveAudioMode === 'replace') {
       args.push('-map', needsFilteredVideo ? '[v]' : '0:v:0', '-map', '1:a:0');
       args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
