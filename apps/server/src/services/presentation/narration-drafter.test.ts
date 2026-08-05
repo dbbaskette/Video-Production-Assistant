@@ -658,6 +658,12 @@ describe('PresentationNarrationDrafter', () => {
     ['The final version below.\nRevenue grew.', 'qualified generic preamble'],
     ['Here is the draft: Revenue grew.', 'introduced generic draft preamble'],
     ['Below is the final version.\nRevenue grew.', 'introduced generic version preamble'],
+    ['Draft: Revenue grew.', 'direct-colon generic label'],
+    ['Draft - Revenue grew.', 'space-bounded hyphen generic label'],
+    ['Final — Revenue grew.', 'space-bounded em-dash generic label'],
+    ['Version – Revenue grew.', 'space-bounded en-dash generic label'],
+    ['The final version\t—\tRevenue grew.', 'qualified tab-bounded dash label mutation'],
+    ['Your draft – Revenue grew.', 'possessive en-dash label mutation'],
     ['As you can see on this slide, revenue grew.', 'this-slide meta commentary'],
     ['Use **strong emphasis** here.', 'strong markdown'],
     ['Use _emphasis_ here.', 'emphasis markdown'],
@@ -704,6 +710,9 @@ describe('PresentationNarrationDrafter', () => {
     'The release remains on schedule (transition planning continues) this quarter.',
     'The final version below market expectations still improved retention.',
     'Our draft follows the evidence gathered from customer interviews.',
+    'Version-control improvements reduce deployment risk.',
+    'Final-stage testing begins tomorrow.',
+    'Draft-proof windows reduce energy costs.',
   ])('accepts ordinary spoken prose without production directions: %s', async (text) => {
     complete.mockResolvedValue({ text });
 

@@ -232,13 +232,14 @@ function validateWriterOutput(output: unknown): string {
   const deliverable = String.raw`(?:(?:the|your|my)\s+)?(?:(?:draft|final)\s+)?(?:narration|script)`;
   const reorderedDeliverable = String.raw`(?:(?:the|your|my)\s+)?(?:narration|script)\s+(?:draft|version)`;
   const genericDeliverable = String.raw`(?:(?:the|your|my)\s+)?(?:(?:draft|final)(?:\s+version)?|version)`;
-  const preambleEnd = String.raw`(?::|[-—][ \t]*|\.(?:\s|$)|\r?\n|$)`;
+  const labelSeparator = String.raw`(?:[ \t]*:|[ \t]+[-–—][ \t]+)`;
+  const preambleEnd = String.raw`(?:${labelSeparator}|\.(?:\s|$)|\r?\n|$)`;
   const metaPreambles = [
     new RegExp(String.raw`^\s*(?:here(?:'s| is)|below is)\s+(?:${deliverable}|${genericDeliverable})\s*${preambleEnd}`, 'i'),
     new RegExp(String.raw`^\s*(?:${deliverable}|${reorderedDeliverable})\s+(?:is\s+)?(?:as\s+)?(?:follows|below)\s*${preambleEnd}`, 'i'),
     new RegExp(String.raw`^\s*(?:draft|final)\s+(?:narration|script)\s*${preambleEnd}`, 'i'),
     new RegExp(String.raw`^\s*${genericDeliverable}\s+(?:is\s+)?(?:as\s+)?(?:follows|below)[ \t]*${preambleEnd}`, 'i'),
-    new RegExp(String.raw`^\s*${genericDeliverable}[ \t]*[:—-]`, 'i'),
+    new RegExp(String.raw`^\s*${genericDeliverable}${labelSeparator}`, 'i'),
   ];
   if (metaPreambles.some((pattern) => pattern.test(script))) {
     throw new PresentationNarrationError();
