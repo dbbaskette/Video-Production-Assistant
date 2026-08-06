@@ -81,15 +81,8 @@ interface GeminiResponse {
 export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<LyriaResult> {
   const modelId = MODEL_IDS[req.model];
 
-  // Lyria audio output is signaled by `responseModalities` only — the
-  // generationConfig.responseMimeType field accepts text/JSON/XML/YAML mime
-  // types (not audio). The returned inline_data carries the actual audio
-  // mime, which we use to pick the saved-file extension below.
   const body = {
     contents: [{ parts: [{ text: req.prompt }] }],
-    generationConfig: {
-      responseModalities: ['AUDIO', 'TEXT'],
-    },
   };
 
   const url = `${BASE_URL}/models/${encodeURIComponent(modelId)}:generateContent`;
@@ -133,7 +126,8 @@ export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<
     );
   }
 
-  const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+  const candidate = parsed.candidates?.[0];
+  const parts = candidate?.content?.parts ?? [];
   let audioBuffer: Buffer | null = null;
   let audioMime = '';
   let lyrics: string | undefined;
@@ -152,10 +146,21 @@ export async function generateMusic(req: LyriaRequest, apiKey: string): Promise<
   }
 
   if (!audioBuffer || audioBuffer.length === 0) {
+    const finishReason = candidate?.finishReason;
+    if (finishReason === 'SAFETY') {
+      throw new LyriaError(
+        'safety_blocked',
+        resp.status,
+        `Lyria returned no audio (finish reason: ${finishReason}).`,
+      );
+    }
+
     throw new LyriaError(
       'no_audio',
       resp.status,
-      'Lyria returned no audio bytes. The prompt may have been refused without an explicit safety block.',
+      finishReason
+        ? `Lyria returned no audio bytes (finish reason: ${finishReason}).`
+        : 'Lyria returned no audio bytes and did not provide a finish reason.',
     );
   }
 
