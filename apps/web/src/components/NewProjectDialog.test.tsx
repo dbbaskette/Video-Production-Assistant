@@ -44,6 +44,24 @@ function button(container: HTMLElement, label: string): HTMLButtonElement {
   return result;
 }
 
+async function waitForUi(assertion: () => void): Promise<void> {
+  let failure: unknown;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1);
+      else await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
 describe('NewProjectDialog presentation mode', () => {
   beforeEach(() => {
     previewMock.mockReset().mockResolvedValue({ pageCount: 3, thumbnails: [] });
@@ -197,12 +215,14 @@ describe('NewProjectDialog presentation mode', () => {
     chooseFile(view.container.querySelector('input[type="file"]')!, new File(['pdf'], 'deck.pdf'));
     await flushPromises();
     act(() => button(view.container, 'Create & import presentation').click());
-    await vi.waitFor(() => expect(presentationsApi.upload).toHaveBeenCalledOnce());
+    await waitForUi(() => expect(presentationsApi.upload).toHaveBeenCalledOnce());
 
     view.rerender(<NewProjectDialog {...props} open={false} />);
     view.rerender(<NewProjectDialog {...props} open />);
-    resolveUpload(job);
-    await flushPromises();
+    await act(async () => {
+      resolveUpload(job);
+      await Promise.resolve();
+    });
 
     expect(onCreated).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
@@ -274,8 +294,55 @@ describe('NewProjectDialog presentation mode', () => {
     }
   });
 
+  it('keeps extraction polling single-flight and stops after the resumed request completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const extracting: SourceDoc = {
+        id: 'doc-1', kind: 'file', name: 'brief.pdf', extractedRel: 'brief.md',
+        extractor: 'pdf-parse', extractedChars: 0, status: 'extracting',
+        uploadedAt: '2026-08-05T12:00:00.000Z',
+      };
+      let resolveA!: (docs: SourceDoc[]) => void;
+      let resolveB!: (docs: SourceDoc[]) => void;
+      vi.spyOn(api, 'createProject').mockResolvedValue(project);
+      vi.spyOn(sourceDocsApi, 'uploadFiles').mockResolvedValue({ created: [extracting] });
+      const list = vi.spyOn(sourceDocsApi, 'list')
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveB = resolve; }));
+      const view = renderComponent(
+        <NewProjectDialog open mode="ideate" onCreated={vi.fn()} onClose={vi.fn()} />,
+      );
+      changeValue(view.container.querySelector<HTMLInputElement>('input[placeholder="MCP Demo Test"]')!, 'with docs');
+      chooseFile(view.container.querySelector<HTMLInputElement>('input[multiple]')!, new File(['pdf'], 'brief.pdf'));
+      act(() => button(view.container, 'Create & start ideating').click());
+      await flushPromises();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(list).toHaveBeenCalledOnce();
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(list).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        resolveA([extracting]);
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(list).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        resolveB([{ ...extracting, status: 'ready' }]);
+        await Promise.resolve();
+      });
+      expect(view.container.textContent).toContain('Project ready');
+      await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(view.container.textContent).toContain('Project ready');
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('restores the parent modal semantics after closing failed document setup', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(api, 'createProject').mockResolvedValue(project);
     vi.spyOn(sourceDocsApi, 'uploadFiles').mockRejectedValue(new Error('upload failed'));
     const view = renderComponent(
@@ -284,17 +351,17 @@ describe('NewProjectDialog presentation mode', () => {
     changeValue(view.container.querySelector<HTMLInputElement>('input[placeholder="MCP Demo Test"]')!, 'with docs');
     chooseFile(view.container.querySelector<HTMLInputElement>('input[multiple]')!, new File(['pdf'], 'brief.pdf'));
     act(() => button(view.container, 'Create & start ideating').click());
-    await vi.waitFor(() => expect(view.container.textContent).toContain('Something went wrong'));
+    await waitForUi(() => expect(view.container.textContent).toContain('Something went wrong'));
     expect(view.container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
 
     act(() => button(view.container, 'Close').click());
-    await vi.waitFor(() => expect(view.container.textContent).not.toContain('Something went wrong'));
+    await waitForUi(() => expect(view.container.textContent).not.toContain('Something went wrong'));
     const parent = view.container.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(parent).not.toBeNull();
     expect(parent.getAttribute('aria-hidden')).toBeNull();
     expect(parent.hasAttribute('inert')).toBe(false);
     expect(parent.inert).not.toBe(true);
-    await vi.waitFor(() => expect(document.activeElement)
+    await waitForUi(() => expect(document.activeElement)
       .toBe(view.container.querySelector('input[placeholder="MCP Demo Test"]')));
     view.unmount();
   });

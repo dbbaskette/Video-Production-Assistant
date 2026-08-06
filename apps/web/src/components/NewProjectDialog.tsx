@@ -157,6 +157,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   const navigateToProject = (projectId: string) => {
     if (navigatedRef.current) return;
     navigatedRef.current = true;
+    sessionRef.current += 1;
     if (pollRef.current) clearInterval(pollRef.current);
     queryClient.invalidateQueries({ queryKey: ['projects'] });
     resetForm();
@@ -169,7 +170,10 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
 
   const pollExtraction = (projectId: string, session: number) => {
     if (pollRef.current) clearInterval(pollRef.current);
+    let polling = false;
     pollRef.current = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
         const docs = await sourceDocsApi.list(projectId);
         if (!sessionIsCurrent(session)) return;
@@ -184,6 +188,8 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       } catch {
         // Transient list failure — keep polling; the user can always
         // "Continue in background".
+      } finally {
+        polling = false;
       }
     }, 1000);
   };
@@ -253,7 +259,6 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     } catch (err) {
       if (!sessionIsCurrent(session)) return;
       // Upload failed — the project exists, so let the user proceed anyway.
-      console.warn('Source-doc upload failed during project create:', err);
       setProgress((p) =>
         p
           ? {

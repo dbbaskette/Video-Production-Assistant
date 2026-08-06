@@ -8,6 +8,11 @@ import {
 } from '../lib/presentation-preview.js';
 import { chooseFile, flushPromises, renderComponent } from './component-test-utils.js';
 
+vi.mock('pdfjs-dist', () => ({
+  getDocument: vi.fn(),
+  GlobalWorkerOptions: { workerSrc: '' },
+}));
+
 const previewMock = vi.fn();
 
 import {
@@ -203,6 +208,38 @@ describe('PresentationFilePicker', () => {
     expect(input.accept).toBe('.pdf');
     expect(input.disabled).toBe(true);
     expect(view.container.querySelector('label')?.getAttribute('aria-disabled')).toBe('true');
+    view.unmount();
+  });
+
+  it('makes the selected-file replacement visibly inert while disabled and restores activation', async () => {
+    startPreviewMock.mockReturnValue(operation({ kind: 'ready', preview: { pageCount: 1, thumbnails: [] } }));
+    const view = renderComponent(<Harness />);
+    const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    chooseFile(input, new File(['deck'], 'deck.pdf'));
+    await flushPromises();
+
+    view.rerender(<Harness disabled />);
+    const replace = [...view.container.querySelectorAll('label')]
+      .find((label) => label.textContent === 'Replace PDF')!;
+    const inputClicks = vi.fn();
+    input.addEventListener('click', inputClicks);
+    expect(replace.getAttribute('aria-disabled')).toBe('true');
+    expect(replace.classList.contains('is-disabled')).toBe(true);
+    expect(input.disabled).toBe(true);
+    expect(view.container.querySelector<HTMLButtonElement>('button[aria-label="Remove deck.pdf"]')?.disabled).toBe(true);
+    act(() => {
+      replace.click();
+      replace.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      replace.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    expect(inputClicks).not.toHaveBeenCalled();
+
+    view.rerender(<Harness />);
+    expect(replace.getAttribute('aria-disabled')).toBe('false');
+    expect(replace.classList.contains('is-disabled')).toBe(false);
+    expect(input.disabled).toBe(false);
+    act(() => replace.click());
+    expect(inputClicks).toHaveBeenCalledOnce();
     view.unmount();
   });
 

@@ -1172,6 +1172,7 @@ pre code {
   cursor: pointer;
   font-size: 12px;
 }
+.presentation-file-picker__replace.is-disabled { cursor: not-allowed; opacity: 0.45; }
 .presentation-file-picker__status { margin: 12px 0 0; }
 .presentation-file-picker__error,
 .presentation-progress__error {

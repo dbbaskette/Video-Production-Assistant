@@ -111,7 +111,14 @@ export function PresentationFilePicker({
                   : ''}
               </span>
             </div>
-            <label className="presentation-file-picker__replace" htmlFor={inputId}>
+            <label
+              className={`presentation-file-picker__replace${disabled ? ' is-disabled' : ''}`}
+              htmlFor={inputId}
+              aria-disabled={disabled}
+              onClick={(event) => {
+                if (disabled) event.preventDefault();
+              }}
+            >
               Replace PDF
             </label>
             <button
