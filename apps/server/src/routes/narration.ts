@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -73,6 +73,34 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   const { store, tts, router, workspaceRoot, vpaHome } = deps;
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
+  const activeNarrationRequests = new Set<string>();
+  const activeNarrationJobs = (projectId: string) => jobQueue
+    .list({ activeOnly: true, projectId })
+    .filter((job) => job.type === 'narration-generate-project' || job.type === 'narration-generate-all');
+  const hasActiveNarrationWork = (projectId: string) =>
+    activeNarrationRequests.has(projectId) || activeNarrationJobs(projectId).length > 0;
+  const conflict = (reply: FastifyReply) => reply.status(409).send({
+    error: 'Narration generation is already running for this project',
+    code: 'narration_job_active',
+  });
+
+  // While a project run owns narration, reject every other narration mutation
+  // (script, gaps, speakers, and scene generation included). Reads remain
+  // available, so the scene list can stay mounted and refresh safely.
+  app.addHook('preHandler', async (req, reply) => {
+    const route = req.routeOptions.url;
+    const id = (req.params as { id?: string } | null)?.id;
+    const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
+    if (
+      id
+      && mutating
+      && route?.includes('/narration')
+      && route !== '/api/projects/:id/narration/generate-project'
+      && activeNarrationJobs(id).some((job) => job.type === 'narration-generate-project')
+    ) {
+      return conflict(reply);
+    }
+  });
 
   const listAdvertisedEngines = async () => {
     const engines = tts.listEngines();
@@ -168,33 +196,26 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
     }
 
-    const projectNarrationIsActive = () => jobQueue.list({ activeOnly: true, projectId: id })
-      .some((candidate) => candidate.type === 'narration-generate-project');
-    if (projectNarrationIsActive()) {
-      return reply.status(409).send({
-        error: 'Project narration is already running',
-        code: 'narration_job_active',
-      });
-    }
+    if (hasActiveNarrationWork(id)) return conflict(reply);
+    activeNarrationRequests.add(id);
 
     let project;
     try {
       project = await resolveProject(store, id);
     } catch {
+      activeNarrationRequests.delete(id);
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
     }
-    const storyboard = await loadStoryboard(project.path);
-    if (!storyboard) {
-      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    let storyboard;
+    try {
+      storyboard = await loadStoryboard(project.path);
+    } catch (error) {
+      activeNarrationRequests.delete(id);
+      throw error;
     }
-
-    // Project and storyboard lookup both yield. Recheck immediately before the
-    // synchronous create so concurrent requests cannot both reserve a job.
-    if (projectNarrationIsActive()) {
-      return reply.status(409).send({
-        error: 'Project narration is already running',
-        code: 'narration_job_active',
-      });
+    if (!storyboard) {
+      activeNarrationRequests.delete(id);
+      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
     }
 
     const scenes = storyboard.scenes.map(({ id: sceneId, name }) => ({ id: sceneId, name }));
@@ -202,6 +223,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       projectId: id,
       label: 'Project narration',
     });
+    activeNarrationRequests.delete(id);
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', {
       totalScenes: scenes.length,
@@ -235,13 +257,28 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
               isCancelled,
             ),
             onProgress: (progress) => jobQueue.emit(job.id, 'progress', progress),
-            isCancelled: () => jobQueue.get(job.id)?.status === 'cancelled',
+            isCancelled: () => {
+              const status = jobQueue.get(job.id)?.status;
+              return status === 'cancelling' || status === 'cancelled';
+            },
           },
         );
-        if (jobQueue.get(job.id)?.status === 'cancelled') return;
         jobQueue.complete(job.id, result);
       } catch {
-        if (jobQueue.get(job.id)?.status === 'cancelled') return;
+        if (jobQueue.get(job.id)?.status === 'cancelling') {
+          jobQueue.complete(job.id, {
+            totalScenes: scenes.length,
+            generatedScenes: 0,
+            generatedChunks: 0,
+            preservedScenes: 0,
+            noScriptScenes: 0,
+            removedScenes: 0,
+            failedScenes: 0,
+            cancelled: true,
+            failures: [],
+          });
+          return;
+        }
         jobQueue.fail(job.id, 'Project narration failed. Review narration settings, then try again.');
       }
     })();
@@ -336,6 +373,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     const project = await resolveProject(store, id);
     const projectPath = project.path;
+    if (hasActiveNarrationWork(id)) return conflict(reply);
+    activeNarrationRequests.add(id);
 
     try {
       const writer = engine === 'xai'
@@ -366,6 +405,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         error: 'Narration generation failed. Your existing narration was not changed.',
         code: 'narration_generation_failed',
       });
+    } finally {
+      activeNarrationRequests.delete(id);
     }
   });
 
@@ -391,6 +432,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
     const project = await resolveProject(store, id);
     const projectPath = project.path;
+    if (hasActiveNarrationWork(id)) return conflict(reply);
+    activeNarrationRequests.add(id);
 
     try {
       const writer = engine === 'xai'
@@ -416,6 +459,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         error: 'Narration chunk generation failed. Your existing narration was not changed.',
         code: 'narration_chunk_generation_failed',
       });
+    } finally {
+      activeNarrationRequests.delete(id);
     }
   });
 
@@ -492,6 +537,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
     }
     const projectPath = project.path;
+    if (hasActiveNarrationWork(id)) return conflict(reply);
+    activeNarrationRequests.add(id);
     let writer: Awaited<ReturnType<ModelRouter['resolveText']>> | undefined;
     try {
       if (await batchUsesXai(projectPath, sceneId, {
@@ -503,6 +550,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         writer = await router.resolveText('writing', project);
       }
     } catch (error) {
+      activeNarrationRequests.delete(id);
       if (error instanceof ModelRoutingError) {
         return reply.status(error.statusCode).send({
           error: error.message,
@@ -517,6 +565,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       projectId: id,
       label: `TTS: ${sceneId}`,
     });
+    activeNarrationRequests.delete(id);
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { sceneId, engine: body.engine, voice: body.voice, selector: body.selector ?? 'missing' });
 
@@ -559,6 +608,13 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     if (!j) return reply.status(404).send({ error: 'Job not found', code: 'not_found' });
     if (j.status === 'completed' || j.status === 'failed') {
       return { cancelled: false, status: j.status };
+    }
+    if (j.type === 'narration-generate-project') {
+      if (j.status !== 'cancelling') {
+        jobQueue.setStatus(jobId, 'cancelling');
+        jobQueue.emit(jobId, 'cancel-requested', {});
+      }
+      return { cancelled: true, status: 'cancelling' };
     }
     jobQueue.setStatus(jobId, 'cancelled');
     jobQueue.emit(jobId, 'cancel', {});

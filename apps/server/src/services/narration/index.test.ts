@@ -294,6 +294,120 @@ describe('narration service', () => {
     );
   });
 
+  it("'missing' selector retries a failed chunk even when old audio remains", async () => {
+    const sb = makeSampleStoryboard();
+    const script = sb.scenes[0]!.narration!.script!;
+    sb.scenes[0]!.narration!.chunks = [{
+      index: 0,
+      text: script,
+      audio: 'narration/old.mp3',
+      failed: { reason: 'Narration generation failed', at: new Date().toISOString() },
+    }];
+    await saveStoryboard(projectPath, sb);
+
+    const result = await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+
+    expect(result).toMatchObject({ total: 1, completed: 1, failed: 0 });
+    const updated = await loadStoryboard(projectPath);
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.failed).toBeUndefined();
+  });
+
+  it('removes stored chunks that no longer exist in a shortened script', async () => {
+    const sb = makeSampleStoryboard();
+    sb.scenes[0]!.narration = {
+      script: 'Only one paragraph.',
+      chunks: [
+        { index: 0, text: 'Only one paragraph.', audio: 'narration/keep.mp3' },
+        { index: 1, text: 'Removed paragraph.', audio: 'narration/remove.mp3' },
+      ],
+    };
+    await saveStoryboard(projectPath, sb);
+
+    const result = await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+
+    expect(result.total).toBe(0);
+    const updated = await loadStoryboard(projectPath);
+    expect(updated!.scenes[0]!.narration!.chunks).toHaveLength(1);
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.text).toBe('Only one paragraph.');
+  });
+
+  it('merges generated audio without overwriting a script edit made during TTS', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    tts.register({
+      id: 'slow',
+      displayName: 'Slow',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        started();
+        await gate;
+        return { audio: Buffer.from('audio'), durationSec: 1, timings: [] };
+      },
+    });
+    const sb = makeSampleStoryboard();
+    await saveStoryboard(projectPath, sb);
+
+    const generation = generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'slow', voice: 'voice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+    await began;
+    const edited = await loadStoryboard(projectPath);
+    edited!.scenes[0]!.narration!.script = 'Edited while audio was generating.';
+    await saveStoryboard(projectPath, edited!);
+    release();
+    await generation;
+
+    const updated = await loadStoryboard(projectPath);
+    expect(updated!.scenes[0]!.narration!.script).toBe('Edited while audio was generating.');
+  });
+
+  it('persists a stable public failure reason instead of provider diagnostics', async () => {
+    tts.register({
+      id: 'unsafe',
+      displayName: 'Unsafe',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        throw new Error('/private/key provider response');
+      },
+    });
+    await saveStoryboard(projectPath, makeSampleStoryboard());
+
+    await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'unsafe', voice: 'voice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+
+    const updated = await loadStoryboard(projectPath);
+    const failed = updated!.scenes[0]!.narration!.chunks![0]!.failed;
+    expect(failed?.reason).toBe('Narration generation failed');
+    expect(JSON.stringify(updated)).not.toContain('/private/key');
+  });
+
   it('Regenerate All preserves a manually-set gap that has no script token', async () => {
     const sb = makeSampleStoryboard();
     sb.scenes[0]!.narration = {

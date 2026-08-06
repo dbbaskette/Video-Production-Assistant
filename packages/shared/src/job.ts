@@ -4,6 +4,7 @@ export const JobStatus = z.enum([
   'pending',
   'running',
   'awaiting-input',
+  'cancelling',
   'completed',
   'failed',
   'cancelled',

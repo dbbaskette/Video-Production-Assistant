@@ -47,7 +47,7 @@ test('narrates the whole project while preserving audio unless overwrite is sele
 
     await page.getByRole('button', { name: 'Narrate project' }).click();
     const projectStatus = page.locator('.project-narration-panel').getByRole('status');
-    await expect(projectStatus).toHaveText('Narration complete', { timeout: 10_000 });
+    await expect(projectStatus).toContainText('Narration complete', { timeout: 10_000 });
 
     const afterPreserve = await (await request.get(`${API}/api/projects/${project.id}/storyboard`)).json();
     expect(afterPreserve.scenes[0].narration.chunks[0].audio).toBeTruthy();
@@ -61,7 +61,7 @@ test('narrates the whole project while preserving audio unless overwrite is sele
       const current = await (await request.get(`${API}/api/projects/${project.id}/storyboard`)).json();
       return current.scenes[2].narration.chunks[0].audio;
     }, { timeout: 10_000 }).not.toBe('narration/original.mp3');
-    await expect(projectStatus).toHaveText('Narration complete');
+    await expect(projectStatus).toContainText('Narration complete');
   } finally {
     await request.delete(`${API}/api/projects/${project.id}/tracker`);
   }

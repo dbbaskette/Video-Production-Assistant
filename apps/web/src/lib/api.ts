@@ -1668,7 +1668,7 @@ export const jobsApi = {
       try { onEvent(JSON.parse(e.data)); } catch { /* ignore parse errors */ }
     };
     es.onmessage = handler;
-    for (const evt of ['start', 'progress', 'cancel', 'persisted', 'extracting', 'extracted', 'extracting-tokens', 'tokens-ready', 'writing-rationale', 'done', 'error']) {
+    for (const evt of ['start', 'progress', 'cancel-requested', 'cancel', 'persisted', 'extracting', 'extracted', 'extracting-tokens', 'tokens-ready', 'writing-rationale', 'done', 'error']) {
       es.addEventListener(evt, handler);
     }
     return () => es.close();

@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Expressiveness, Scene } from '@vpa/shared';
 import { jobsApi, narrationApi, ttsApi } from '../lib/api.js';
-import { parseProjectNarrationResult, projectNarrationPreview } from '../lib/project-narration.js';
+import {
+  parseProjectNarrationResult,
+  projectNarrationPreview,
+  type ProjectNarrationTerminalResult,
+} from '../lib/project-narration.js';
 
 interface ProjectNarrationPanelProps {
   projectId: string;
@@ -36,6 +40,8 @@ export function ProjectNarrationPanel({
   const [overwrite, setOverwrite] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState('Ready');
+  const [statusIsAlert, setStatusIsAlert] = useState(false);
+  const [terminalResult, setTerminalResult] = useState<ProjectNarrationTerminalResult | null>(null);
 
   const { data: engines = [] } = useQuery({
     queryKey: ['tts-engines'],
@@ -77,22 +83,42 @@ export function ProjectNarrationPanel({
     if (!jobId) return;
     return jobsApi.stream(jobId, (event) => {
       if (event.type === 'progress') {
-        const progress = event.data as { processedScenes?: unknown; totalScenes?: unknown; sceneName?: unknown };
+        const progress = event.data as {
+          processedScenes?: unknown;
+          totalScenes?: unknown;
+          sceneName?: unknown;
+          preservedScenes?: unknown;
+          noScriptScenes?: unknown;
+        };
         const completed = typeof progress?.processedScenes === 'number' ? progress.processedScenes : null;
         const total = typeof progress?.totalScenes === 'number' ? progress.totalScenes : null;
         const sceneName = typeof progress?.sceneName === 'string' ? progress.sceneName : '';
+        const preserved = typeof progress?.preservedScenes === 'number' ? progress.preservedScenes : 0;
+        const skipped = typeof progress?.noScriptScenes === 'number' ? progress.noScriptScenes : 0;
         setStatus(completed !== null && total !== null
-          ? `Narrating ${completed} of ${total}${sceneName ? ` · ${sceneName}` : ''}`
+          ? `Narrating ${completed} of ${total}${sceneName ? ` · ${sceneName}` : ''} · ${preserved} preserved · ${skipped} skipped`
           : 'Project narration is running');
       } else if (event.type === 'done') {
         const result = parseProjectNarrationResult(event.data);
-        setStatus(result?.failedScenes
-          ? `Narration finished with ${result.failedScenes} scene ${result.failedScenes === 1 ? 'failure' : 'failures'}`
-          : 'Narration complete');
+        setTerminalResult(result);
+        setStatusIsAlert(Boolean(result?.failedScenes));
+        if (result?.cancelled) {
+          setStatus('Narration cancelled');
+        } else if (result?.failedScenes) {
+          setStatus(`Narration finished · ${result.generatedScenes} generated · ${result.preservedScenes} preserved · ${result.noScriptScenes} skipped · ${result.failedScenes} failed`);
+        } else if (result && result.generatedScenes === 0) {
+          setStatus(`Nothing to generate · ${result.preservedScenes} preserved · ${result.noScriptScenes} skipped`);
+        } else if (result) {
+          setStatus(`Narration complete · ${result.generatedScenes} generated · ${result.preservedScenes} preserved · ${result.noScriptScenes} skipped`);
+        } else {
+          setStatus('Narration complete');
+        }
         setJobId(null);
         for (const key of TERMINAL_QUERY_KEYS) {
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
+      } else if (event.type === 'cancel-requested') {
+        setStatus('Cancellation requested · finishing the current audio chunk');
       } else if (event.type === 'cancel') {
         setStatus('Narration cancelled');
         setJobId(null);
@@ -100,6 +126,7 @@ export function ProjectNarrationPanel({
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
       } else if (event.type === 'error') {
+        setStatusIsAlert(true);
         setStatus('Project narration could not finish. Check your narration settings and try again.');
         setJobId(null);
         for (const key of TERMINAL_QUERY_KEYS) {
@@ -124,20 +151,21 @@ export function ProjectNarrationPanel({
       overwrite,
     }),
     onSuccess: (job) => {
+      setTerminalResult(null);
+      setStatusIsAlert(false);
       setJobId(job.jobId);
       setStatus('Project narration is starting');
       void queryClient.invalidateQueries({ queryKey: ['active-jobs', projectId] });
     },
-    onError: () => setStatus('Project narration could not start. Check your narration settings and try again.'),
+    onError: () => {
+      setStatusIsAlert(true);
+      setStatus('Project narration could not start. Check your narration settings and try again.');
+    },
   });
   const cancel = useMutation({
     mutationFn: () => narrationApi.cancelJob(jobId!),
     onSuccess: () => {
-      setStatus('Narration cancelled');
-      setJobId(null);
-      for (const key of TERMINAL_QUERY_KEYS) {
-        void queryClient.invalidateQueries({ queryKey: [key] });
-      }
+      setStatus('Cancellation requested · finishing the current audio chunk');
     },
     onError: () => setStatus('Cancellation could not be confirmed. Check the active job and try again.'),
   });
@@ -216,14 +244,14 @@ export function ProjectNarrationPanel({
           <span><strong>Overwrite existing narration</strong><small>Regenerates audio for every scripted scene.</small></span>
         </label>
         <div className="project-narration-panel__actions">
-          <span role="status" aria-live="polite">{status}</span>
+          <span role={statusIsAlert ? 'alert' : 'status'} aria-live={statusIsAlert ? 'assertive' : 'polite'}>{status}</span>
           {jobId ? (
             <button type="button" className="btn-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancel</button>
           ) : (
             <button
               type="button"
               className="btn-primary"
-              disabled={running || !engineId || !voiceId || preview.willNarrateScenes === 0}
+              disabled={running || expressivenessPending || !engineId || !voiceId || preview.scriptedScenes === 0}
               onClick={() => start.mutate()}
             >
               Narrate project
@@ -231,6 +259,11 @@ export function ProjectNarrationPanel({
           )}
         </div>
       </div>
+      {terminalResult && terminalResult.failures.length > 0 && (
+        <ul className="project-narration-panel__failures" aria-label="Scenes that could not be narrated">
+          {terminalResult.failures.map((failure) => <li key={failure.sceneId}>{failure.sceneName}</li>)}
+        </ul>
+      )}
     </section>
   );
 }

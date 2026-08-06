@@ -44,6 +44,9 @@ export interface ProjectNarrationProgress {
   processedScenes: number;
   generatedScenes: number;
   generatedChunks: number;
+  preservedScenes: number;
+  noScriptScenes: number;
+  removedScenes: number;
   failedScenes: number;
   message: string;
 }
@@ -96,6 +99,9 @@ export async function generateProjectNarration(
     processedScenes,
     generatedScenes: result.generatedScenes,
     generatedChunks: result.generatedChunks,
+    preservedScenes: result.preservedScenes,
+    noScriptScenes: result.noScriptScenes,
+    removedScenes: result.removedScenes,
     failedScenes: result.failedScenes,
     message,
   });
@@ -171,6 +177,11 @@ export async function generateProjectNarration(
       }
       processedScenes += 1;
       emit(generated.failed > 0 ? 'scene-failed' : 'scene-complete', 'Scene processed', snapshot);
+      if (dependencies.isCancelled()) {
+        result.cancelled = true;
+        emit('cancelled', 'Project narration cancelled');
+        break;
+      }
     } catch {
       result.failedScenes += 1;
       if (result.failures.length < MAX_PUBLIC_FAILURES) {

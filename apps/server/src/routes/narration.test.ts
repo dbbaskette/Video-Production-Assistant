@@ -261,6 +261,56 @@ describe('narration routes', () => {
     jobQueue.setStatus(active.id, 'cancelled');
   });
 
+  it('retains project ownership until a cancellation reaches a safe boundary', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    ctx.tts.register({
+      id: 'slow',
+      displayName: 'Slow',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        started();
+        await gate;
+        return { audio: Buffer.from('audio'), durationSec: 1, timings: [] };
+      },
+    });
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const startedJob = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow', voice: 'voice', overwrite: false },
+    });
+    await began;
+
+    const cancelled = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${startedJob.json().jobId}/cancel`,
+    });
+    expect(cancelled.json()).toMatchObject({ cancelled: true, status: 'cancelling' });
+    expect(jobQueue.get(startedJob.json().jobId)?.status).toBe('cancelling');
+
+    const overlappingProject = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow', voice: 'voice', overwrite: false },
+    });
+    expect(overlappingProject.statusCode).toBe(409);
+    const overlappingScene = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'slow', voice: 'voice' },
+    });
+    expect(overlappingScene.statusCode).toBe(409);
+
+    release();
+    await waitForJobStatus(startedJob.json().jobId, 'completed');
+    expect(jobQueue.get(startedJob.json().jobId)?.result).toMatchObject({ cancelled: true });
+  });
+
   it('POST generate creates narration with audio + subtitles', async () => {
     const sb = makeSampleStoryboard(projectId);
     await saveStoryboard(projectPath, sb);

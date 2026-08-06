@@ -5,7 +5,7 @@ import type { LlmClient } from '../llm/index.js';
 import type { Expressiveness, NarrationChunk, Scene } from '@vpa/shared';
 import { prepareExpressiveText } from '../tts/expressiveness.js';
 import { parsePauses, stripTimedPauseTokens } from './pause-parser.js';
-import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
+import { loadStoryboard, mutateStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { generateSrt, generateVtt } from './subtitles.js';
 
 export interface NarrationInput {
@@ -239,47 +239,44 @@ export async function generateChunkNarration(
   const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}.mp3`;
   await writeFile(join(projectPath, audioRelPath), ttsResult.audio);
 
-  // Update chunk in storyboard — preserve speaker assignment if it exists
-  const existingChunks = scene.narration?.chunks ?? [];
-  const chunkIdx = existingChunks.findIndex((c) => c.index === chunkIndex);
-  const existingSpeaker = chunkIdx >= 0 ? existingChunks[chunkIdx]!.speaker : undefined;
-  // Seed gap from the request (script-derived); otherwise preserve any existing
-  // gap so a single-chunk regen doesn't wipe a set pause.
-  const gapSec = input.gapSec ?? (chunkIdx >= 0 ? existingChunks[chunkIdx]!.gapSec : undefined) ?? 0;
-
-  const newChunk = {
-    index: chunkIndex,
-    text,
-    audio: audioRelPath,
-    durationSec: ttsResult.durationSec,
-    timings: ttsResult.timings ?? [],
-    ...(gapSec > 0 ? { gapSec } : {}),
-    ...(existingSpeaker ? { speaker: existingSpeaker } : {}),
-  };
-
-  // Replace existing chunk or append
-  const updatedChunks = [...existingChunks];
-  if (chunkIdx >= 0) {
-    updatedChunks[chunkIdx] = newChunk;
-  } else {
-    updatedChunks.push(newChunk);
-    updatedChunks.sort((a, b) => a.index - b.index);
-  }
-
-  // Mirror the active chunks into the per-mode snapshot so they survive
-  // a mode toggle. Default to monologue when mode hasn't been set yet.
-  const activeMode = (scene.narration as any)?.mode ?? 'monologue';
-  const modeChunksKey = activeMode === 'dialog' ? 'dialogChunks' : 'monologueChunks';
-
-  const narration = {
-    ...(scene.narration ?? { script: text }),
-    tts: { engine, voice, speed: speed ?? 1.0, expressiveness: level },
-    chunks: updatedChunks,
-    [modeChunksKey]: updatedChunks,
-  };
-
-  const updated = updateScene(sb, sceneId, { narration: narration as any });
-  await saveStoryboard(projectPath, updated);
+  // Merge the result into a fresh storyboard snapshot after the potentially
+  // long model/TTS call. This preserves script, speaker, ordering, and other
+  // edits made while audio was being synthesized.
+  await mutateStoryboard(projectPath, (current) => {
+    if (!current) throw new Error('No storyboard found');
+    const currentScene = current.scenes.find((candidate) => candidate.id === sceneId);
+    if (!currentScene) throw new Error(`Scene not found: ${sceneId}`);
+    const existingChunks = currentScene.narration?.chunks ?? [];
+    const chunkIdx = existingChunks.findIndex((chunk) => chunk.index === chunkIndex);
+    const existingSpeaker = chunkIdx >= 0 ? existingChunks[chunkIdx]!.speaker : undefined;
+    const gapSec = input.gapSec
+      ?? (chunkIdx >= 0 ? existingChunks[chunkIdx]!.gapSec : undefined)
+      ?? 0;
+    const newChunk = {
+      index: chunkIndex,
+      text,
+      audio: audioRelPath,
+      durationSec: ttsResult.durationSec,
+      timings: ttsResult.timings ?? [],
+      ...(gapSec > 0 ? { gapSec } : {}),
+      ...(existingSpeaker ? { speaker: existingSpeaker } : {}),
+    };
+    const updatedChunks = [...existingChunks];
+    if (chunkIdx >= 0) updatedChunks[chunkIdx] = newChunk;
+    else {
+      updatedChunks.push(newChunk);
+      updatedChunks.sort((a, b) => a.index - b.index);
+    }
+    const activeMode = currentScene.narration?.mode ?? 'monologue';
+    const modeChunksKey = activeMode === 'dialog' ? 'dialogChunks' : 'monologueChunks';
+    const narration = {
+      ...(currentScene.narration ?? { script: text }),
+      tts: { engine, voice, speed: speed ?? 1.0, expressiveness: level },
+      chunks: updatedChunks,
+      [modeChunksKey]: updatedChunks,
+    };
+    return updateScene(current, sceneId, { narration });
+  });
 
   return {
     chunkIndex,
@@ -355,7 +352,7 @@ function planBatchNarration(scene: Scene, input: BatchVoiceSelection): BatchNarr
     const chunk = stored.find((candidate) => candidate.index === index);
     if (selector === 'all') return true;
     if (selector === 'missing') {
-      return !chunk?.audio || chunk.text !== paragraphs[index];
+      return !chunk?.audio || chunk.text !== paragraphs[index] || Boolean(chunk.failed);
     }
     if (selector === 'failed') return Boolean(chunk?.failed);
     return true;
@@ -415,30 +412,29 @@ async function markChunkFailed(
   chunkIndex: number,
   reason: string,
 ): Promise<void> {
-  const sb = await loadStoryboard(projectPath);
-  if (!sb) return;
-  const scene = sb.scenes.find((s) => s.id === sceneId);
-  if (!scene) return;
-  const existing = scene.narration?.chunks ?? [];
-  const idx = existing.findIndex((c) => c.index === chunkIndex);
-  const failedRecord = { reason: reason.slice(0, 500), at: new Date().toISOString() };
-  let updated;
-  if (idx >= 0) {
-    updated = [...existing];
-    updated[idx] = { ...updated[idx]!, failed: failedRecord };
-  } else {
-    // Build a stub chunk with text from the script (split index)
-    const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
-    const derived = scene.narration?.script
-      ? splitScriptIntoChunks(scene.narration.script, isDialog)
-      : [];
-    const text = derived[chunkIndex]?.text ?? '';
-    updated = [...existing, { index: chunkIndex, text, failed: failedRecord }];
-    updated.sort((a, b) => a.index - b.index);
-  }
-  const narration = { ...(scene.narration ?? {}), chunks: updated };
-  const next = updateScene(sb, sceneId, { narration: narration as any });
-  await saveStoryboard(projectPath, next);
+  await mutateStoryboard(projectPath, (current) => {
+    if (!current) throw new Error('No storyboard found');
+    const scene = current.scenes.find((candidate) => candidate.id === sceneId);
+    if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+    const existing = scene.narration?.chunks ?? [];
+    const idx = existing.findIndex((chunk) => chunk.index === chunkIndex);
+    const failedRecord = { reason: reason.slice(0, 500), at: new Date().toISOString() };
+    let updated;
+    if (idx >= 0) {
+      updated = [...existing];
+      updated[idx] = { ...updated[idx]!, failed: failedRecord };
+    } else {
+      const isDialog = (scene.narration?.mode ?? 'monologue') === 'dialog';
+      const derived = scene.narration?.script
+        ? splitScriptIntoChunks(scene.narration.script, isDialog)
+        : [];
+      const text = derived[chunkIndex]?.text ?? '';
+      updated = [...existing, { index: chunkIndex, text, failed: failedRecord }];
+      updated.sort((a, b) => a.index - b.index);
+    }
+    const narration = { ...(scene.narration ?? { script: '' }), chunks: updated };
+    return updateScene(current, sceneId, { narration });
+  });
 }
 
 /**
@@ -478,20 +474,32 @@ export async function generateAllChunks(
   // UI-set gap. This is what applies a gap-only script edit (which doesn't
   // change chunk text, so isn't otherwise flagged stale) — and it does so
   // WITHOUT regenerating audio, per the spec's "gap ≠ TTS regen" guarantee.
-  {
-    let gapsChanged = false;
-    const synced = stored.map((c) => {
-      const tokenGap = derived[c.index]?.gapSec ?? 0;
-      if (tokenGap > 0 && (c.gapSec ?? 0) !== tokenGap) {
-        gapsChanged = true;
-        return { ...c, gapSec: tokenGap };
-      }
-      return c;
+  if (stored.length > 0) {
+    await mutateStoryboard(projectPath, (current) => {
+      if (!current) throw new Error('No storyboard found');
+      const currentScene = current.scenes.find((candidate) => candidate.id === sceneId);
+      if (!currentScene) throw new Error(`Scene not found: ${sceneId}`);
+      const isDialog = (currentScene.narration?.mode ?? 'monologue') === 'dialog';
+      const currentDerived = currentScene.narration?.script
+        ? splitScriptIntoChunks(currentScene.narration.script, isDialog)
+        : [];
+      const synced = (currentScene.narration?.chunks ?? [])
+        .filter((chunk) => chunk.index < currentDerived.length)
+        .map((chunk) => {
+          const tokenGap = currentDerived[chunk.index]?.gapSec ?? 0;
+          return tokenGap > 0 && (chunk.gapSec ?? 0) !== tokenGap
+            ? { ...chunk, gapSec: tokenGap }
+            : chunk;
+        });
+      const activeMode = currentScene.narration?.mode ?? 'monologue';
+      const modeChunksKey = activeMode === 'dialog' ? 'dialogChunks' : 'monologueChunks';
+      const narration = {
+        ...(currentScene.narration ?? { script: '' }),
+        chunks: synced,
+        [modeChunksKey]: synced,
+      };
+      return updateScene(current, sceneId, { narration });
     });
-    if (gapsChanged) {
-      const narration = { ...(scene.narration ?? {}), chunks: synced };
-      await saveStoryboard(projectPath, updateScene(sb, sceneId, { narration: narration as any }));
-    }
   }
 
   const total = targets.length;
@@ -545,7 +553,9 @@ export async function generateAllChunks(
         message: `Chunk ${i} done`,
       });
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = 'Narration generation failed';
+      const errorName = err instanceof Error ? err.name : 'UnknownError';
+      console.warn('[narration] chunk generation failed', { sceneId, chunkIndex: i, errorName });
       failedCount += 1;
       try {
         await markChunkFailed(projectPath, sceneId, i, reason);

@@ -143,7 +143,34 @@ describe('ProjectNarrationPanel', () => {
     await flushPromises();
 
     expect(cancel).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+    expect(view.container.textContent).toContain('Cancellation requested');
     expect(generate).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it('keeps the repair action available when every scripted scene has some audio', async () => {
+    const fullyPreviewed = scenes.map((scene) => scene.narration?.script
+      ? {
+        ...scene,
+        narration: {
+          ...scene.narration,
+          chunks: [{ index: 0, text: scene.narration.script, audio: `${scene.id}.mp3` }],
+        },
+      }
+      : scene);
+    const view = renderComponent(
+      <ProjectNarrationPanel
+        projectId="project-1"
+        scenes={fullyPreviewed}
+        expressiveness="medium"
+        expressivenessPending={false}
+        onExpressivenessChange={vi.fn()}
+      />,
+    );
+    await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
+    expect(view.container.textContent).toContain('0 scenes will be narrated');
+    expect([...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Narrate project')?.disabled).toBe(false);
     view.unmount();
   });
 });
