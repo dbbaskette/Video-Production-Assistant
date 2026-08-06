@@ -196,6 +196,71 @@ describe('narration routes', () => {
     expect(body.audio).toBeNull();
   });
 
+  it('POST project narration generates scripted scenes and skips empty scripts', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: {
+        engine: 'fake',
+        voice: 'alice',
+        speed: 1,
+        expressiveness: 'medium',
+        overwrite: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'running' });
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toMatchObject({
+      totalScenes: 2,
+      generatedScenes: 1,
+      noScriptScenes: 1,
+      failedScenes: 0,
+    });
+  });
+
+  it.each([
+    null,
+    'bad',
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: false, extra: true },
+    { engine: 'fake', voice: 'alice', speed: 0.49, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 2.01, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'extreme', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: 'yes' },
+    { engine: 'unknown', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'unknown', speed: 1, expressiveness: 'medium', overwrite: false },
+  ])('rejects invalid project narration input %#', async (payload) => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: payload === null || typeof payload === 'string' ? JSON.stringify(payload) : payload,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('invalid_request');
+  });
+
+  it('allows only one active project narration job per project', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const active = jobQueue.create('narration-generate-project', { projectId, label: 'Narration' });
+    jobQueue.setStatus(active.id, 'running');
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'fake', voice: 'alice', overwrite: false },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('narration_job_active');
+    jobQueue.setStatus(active.id, 'cancelled');
+  });
+
   it('POST generate creates narration with audio + subtitles', async () => {
     const sb = makeSampleStoryboard(projectId);
     await saveStoryboard(projectPath, sb);

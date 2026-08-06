@@ -93,7 +93,7 @@ describe('narration service', () => {
       mode: 'dialog',
       script: '[Speaker A] Hello there.',
       speakers: {
-        A: { engine: 'xai', voice: 'Ara' },
+        A: { engine: 'xai', voice: 'Ara', speed: 1 },
       },
     };
 

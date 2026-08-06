@@ -121,7 +121,7 @@ describe('generateProjectNarration', () => {
     dialog.narration = {
       mode: 'dialog',
       script: '[Speaker A] Hello.',
-      speakers: { A: { engine: 'xai', voice: 'Ara' } },
+      speakers: { A: { engine: 'xai', voice: 'Ara', speed: 1 } },
     };
     const writer = { complete: vi.fn() } as any;
     const resolveWriter = vi.fn().mockResolvedValue(writer);

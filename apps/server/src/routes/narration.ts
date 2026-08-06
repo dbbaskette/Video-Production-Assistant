@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -7,7 +8,8 @@ import type { TtsService } from '../services/tts/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, inspectNarrationBatch, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { generateProjectNarration } from '../services/narration/project-generation.js';
 import { jobQueue } from '../lib/job-queue.js';
 import {
   listProfiles,
@@ -25,6 +27,14 @@ interface Deps {
   workspaceRoot: string;
   vpaHome: string;
 }
+
+const ProjectNarrationRequestSchema = z.object({
+  engine: z.string().min(1).max(100),
+  voice: z.string().min(1).max(200),
+  speed: z.number().finite().min(0.5).max(2).default(1),
+  expressiveness: z.enum(['light', 'medium', 'heavy']).default('medium'),
+  overwrite: z.boolean().default(false),
+}).strict();
 
 /** Coerce a request value to a valid emotiveness level, else undefined
  *  (the narration service then defaults to 'medium'). */
@@ -136,6 +146,92 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'Profile not found', code: 'not_found' });
     }
     return { deleted: true };
+  });
+
+  // POST /api/projects/:id/narration/generate-project — generate narration
+  // sequentially for every scripted scene. Existing audio is preserved unless
+  // overwrite is explicitly true.
+  app.post('/api/projects/:id/narration/generate-project', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ProjectNarrationRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid project narration settings', code: 'invalid_request' });
+    }
+
+    const engine = tts.listEngines().find((candidate) => candidate.id === parsed.data.engine);
+    if (!engine || !engine.voices.some((candidate) => candidate.id === parsed.data.voice)) {
+      return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
+    }
+
+    if (jobQueue.list({ activeOnly: true, projectId: id })
+      .some((candidate) => candidate.type === 'narration-generate-project')) {
+      return reply.status(409).send({
+        error: 'Project narration is already running',
+        code: 'narration_job_active',
+      });
+    }
+
+    let project;
+    try {
+      project = await resolveProject(store, id);
+    } catch {
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    const storyboard = await loadStoryboard(project.path);
+    if (!storyboard) {
+      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    }
+
+    const scenes = storyboard.scenes.map(({ id: sceneId, name }) => ({ id: sceneId, name }));
+    const job = jobQueue.create('narration-generate-project', {
+      projectId: id,
+      label: 'Project narration',
+    });
+    jobQueue.setStatus(job.id, 'running');
+    jobQueue.emit(job.id, 'start', {
+      totalScenes: scenes.length,
+      engine: parsed.data.engine,
+      voice: parsed.data.voice,
+      overwrite: parsed.data.overwrite,
+    });
+
+    void (async () => {
+      let writerPromise: ReturnType<ModelRouter['resolveText']> | undefined;
+      try {
+        const result = await generateProjectNarration(
+          {
+            projectPath: project.path,
+            scenes,
+            ...parsed.data,
+          },
+          {
+            loadStoryboard,
+            inspectBatch: inspectNarrationBatch,
+            resolveWriter: async () => {
+              writerPromise ??= router.resolveText('writing', project);
+              return (await writerPromise).client;
+            },
+            generateScene: (input, writer, onProgress, isCancelled) => generateAllChunks(
+              input,
+              tts,
+              writer,
+              workspaceRoot,
+              onProgress,
+              isCancelled,
+            ),
+            onProgress: (progress) => jobQueue.emit(job.id, 'progress', progress),
+            isCancelled: () => jobQueue.get(job.id)?.status === 'cancelled',
+          },
+        );
+        if (jobQueue.get(job.id)?.status === 'cancelled') return;
+        jobQueue.complete(job.id, result);
+      } catch {
+        if (jobQueue.get(job.id)?.status === 'cancelled') return;
+        jobQueue.fail(job.id, 'Project narration failed. Review narration settings, then try again.');
+      }
+    })();
+
+    return { jobId: job.id, status: 'running' };
   });
 
   // GET /api/projects/:id/scenes/:sceneId/narration — get narration state
