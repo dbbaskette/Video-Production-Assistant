@@ -1,5 +1,21 @@
 import { Link, NavLink, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import {
+  AudioLines,
+  CheckCircle2,
+  Clapperboard,
+  FileText,
+  Film,
+  FolderKanban,
+  Home,
+  Library,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Tags,
+  Video,
+  type LucideIcon,
+} from 'lucide-react';
+import type { WorkflowStepKey } from '@vpa/shared';
 import { api, brandsApi } from '../lib/api.js';
 import { usePipelineSteps, type PipelineStep, type PipelineStepStatus } from '../lib/pipeline.js';
 import { STATUS_COLOR } from '../lib/palette.js';
@@ -13,11 +29,28 @@ const sectionLabel: React.CSSProperties = {
   margin: 0,
 };
 
+const WORKFLOW_DESTINATIONS: Array<{
+  key: WorkflowStepKey;
+  label: string;
+  segment: string;
+  icon: LucideIcon;
+}> = [
+  { key: 'storyboard', label: 'Storyboard', segment: 'storyboard', icon: Clapperboard },
+  { key: 'recordings', label: 'Recordings', segment: 'recordings', icon: Video },
+  { key: 'script', label: 'Script', segment: 'script', icon: FileText },
+  { key: 'narration', label: 'Narration', segment: 'narration', icon: AudioLines },
+  { key: 'lower-thirds', label: 'Lower Thirds', segment: 'lower-thirds', icon: Tags },
+  { key: 'render', label: 'Render', segment: 'render', icon: Film },
+  { key: 'review', label: 'Review', segment: 'review', icon: CheckCircle2 },
+];
+
 interface Props {
   projectName: string;
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
 }
 
-export function ProjectSidebar({ projectName }: Props) {
+export function ProjectSidebar({ projectName, collapsed, onCollapsedChange }: Props) {
   const { projectId } = useParams<{ projectId: string }>();
 
   const { data: project } = useQuery({
@@ -31,19 +64,65 @@ export function ProjectSidebar({ projectName }: Props) {
     queryFn: () => brandsApi.list(),
   });
 
-  // Pipeline steps from the same source as the Project Overview's Pipeline
-  // — the sidebar renders a compact version (number + status dot + label)
-  // so the user can see workflow ordering and progress regardless of
-  // which page they're on. Replaces the previous flat link list which
-  // gave no hint about which step was next or which were done.
   const { steps } = usePipelineSteps(projectId);
+  const stepByKey = new Map(steps.map((step) => [step.key, step]));
+  const navigationSteps = WORKFLOW_DESTINATIONS.map<PipelineStep>((destination) => (
+    stepByKey.get(destination.key) ?? {
+      key: destination.key,
+      label: destination.label,
+      to: `/project/${projectId}/${destination.segment}`,
+      status: 'todo',
+      state: 'blocked',
+      detail: `${destination.label} workspace`,
+    }
+  ));
 
   const appliedBrandId = project?.brand?.id ?? null;
-  const appliedBrand = brandRegistry?.brands.find((b) => b.id === appliedBrandId) ?? null;
+  const appliedBrand = brandRegistry?.brands.find((brand) => brand.id === appliedBrandId) ?? null;
+
+  if (collapsed) {
+    return (
+      <nav
+        className="project-sidebar project-sidebar--compact"
+        aria-label={`${projectName} navigation`}
+      >
+        <div className="project-sidebar__compact-header">
+          <button
+            type="button"
+            className="project-sidebar__collapse-control"
+            aria-label="Expand project navigation"
+            title="Expand project navigation"
+            onClick={() => onCollapsedChange(false)}
+          >
+            <PanelLeftOpen size={18} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="project-sidebar__compact-nav">
+          <CompactLink
+            to={`/project/${projectId}`}
+            label="Overview"
+            icon={FolderKanban}
+            end
+          />
+          <div className="project-sidebar__compact-divider" aria-hidden="true" />
+          {navigationSteps.map((step) => (
+            <CompactStep key={step.key} step={step} />
+          ))}
+        </div>
+
+        <div className="project-sidebar__compact-library">
+          <CompactLink to="/brands" label="Brands" icon={Library} />
+          <CompactLink to="/" label="All projects" icon={Home} />
+        </div>
+      </nav>
+    );
+  }
 
   return (
     <nav
       className="project-sidebar"
+      aria-label={`${projectName} navigation`}
       style={{
         width: 240,
         minWidth: 240,
@@ -57,79 +136,56 @@ export function ProjectSidebar({ projectName }: Props) {
         overflow: 'hidden',
       }}
     >
-      {/* Project name + applied brand */}
-      <div
-        className="project-sidebar__header"
-        style={{
-          padding: '20px 16px 12px',
-          borderBottom: '1px solid var(--border)',
-        }}
-      >
-        <div style={{ fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {projectName}
+      <div className="project-sidebar__header">
+        <div className="project-sidebar__title-row">
+          <div className="project-sidebar__project-name" title={projectName}>{projectName}</div>
+          <button
+            type="button"
+            className="project-sidebar__collapse-control"
+            aria-label="Collapse project navigation"
+            title="Collapse project navigation"
+            onClick={() => onCollapsedChange(true)}
+          >
+            <PanelLeftClose size={16} aria-hidden="true" />
+          </button>
         </div>
-        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ textTransform: 'uppercase', letterSpacing: 1 }}>Brand:</span>
+        <div className="project-sidebar__brand">
+          <span>Brand:</span>
           {appliedBrand ? (
             <Link
               to={`/brands/${appliedBrand.id}`}
-              style={{
-                color: 'var(--fg)',
-                textDecoration: 'none',
-                fontWeight: 600,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
               title={`${appliedBrand.name} (v${project?.brand?.applied_version ?? appliedBrand.version})`}
             >
               {appliedBrand.name}
             </Link>
           ) : (
-            <Link
-              to={`/project/${projectId}#brand`}
-              style={{ color: 'var(--fg-muted)', textDecoration: 'underline' }}
-            >
-              none — set
-            </Link>
+            <Link to={`/project/${projectId}#brand`}>none — set</Link>
           )}
         </div>
       </div>
 
-      {/* Main nav */}
-      <div
-        className="project-sidebar__nav"
-        style={{ flex: 1, overflow: 'auto', paddingTop: 8 }}
-      >
-        {/* Overview lives outside the pipeline (it's the meta-view) */}
+      <div className="project-sidebar__nav">
         <NavLink
           className="project-sidebar__link"
           to={`/project/${projectId}`}
+          aria-label="Overview"
           end
           style={({ isActive }) => flatLinkStyle(isActive)}
         >
           Overview
         </NavLink>
 
-        {/* Pipeline: numbered workflow steps with status dots */}
-        <p className="project-sidebar__section-label" style={sectionLabel}>
-          Workflow
-        </p>
-        {steps.map((step, i) => (
-          <SidebarStep key={step.key} step={step} number={i + 1} />
+        <p className="project-sidebar__section-label" style={sectionLabel}>Workflow</p>
+        {navigationSteps.map((step, index) => (
+          <SidebarStep key={step.key} step={step} number={index + 1} />
         ))}
 
-        {/* Library section */}
-        <div
-          className="project-sidebar__library"
-          style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 4 }}
-        >
-          <p className="project-sidebar__section-label" style={sectionLabel}>
-            Library
-          </p>
+        <div className="project-sidebar__library">
+          <p className="project-sidebar__section-label" style={sectionLabel}>Library</p>
           <NavLink
             className="project-sidebar__link"
             to="/brands"
+            aria-label="Brands"
             style={({ isActive }) => flatLinkStyle(isActive)}
           >
             Brands
@@ -137,22 +193,8 @@ export function ProjectSidebar({ projectName }: Props) {
         </div>
       </div>
 
-      {/* Back to all projects */}
-      <div
-        className="project-sidebar__back"
-        style={{ borderTop: '1px solid var(--border)', padding: 8 }}
-      >
-        <NavLink
-          className="project-sidebar__back-link"
-          to="/"
-          style={{
-            display: 'block',
-            padding: '8px 16px',
-            color: 'var(--fg-muted)',
-            textDecoration: 'none',
-            fontSize: 13,
-          }}
-        >
+      <div className="project-sidebar__back">
+        <NavLink className="project-sidebar__back-link" to="/" aria-label="All projects">
           ← All projects
         </NavLink>
       </div>
@@ -160,18 +202,12 @@ export function ProjectSidebar({ projectName }: Props) {
   );
 }
 
-// ── Sidebar step row ─────────────────────────────────────────────────
-//
-// Compact: number-or-check badge + label + optional "NEXT" pill.
-// Active route highlights via the same accent treatment NavLink uses
-// elsewhere; the status badge reflects pipeline progress regardless of
-// which route is active.
-
 function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
   return (
     <NavLink
       className="project-sidebar__step"
       to={step.to}
+      aria-label={step.label}
       end={step.key === 'review'}
       style={({ isActive }) => ({
         display: 'flex',
@@ -189,17 +225,9 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
       title={step.detail}
     >
       <span
-        aria-hidden
+        aria-hidden="true"
+        className="project-sidebar__step-badge"
         style={{
-          flexShrink: 0,
-          width: 18,
-          height: 18,
-          borderRadius: '50%',
-          fontSize: 10,
-          fontWeight: 700,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
           background: stepBadgeBg(step.status),
           color: stepBadgeFg(step.status),
           border: stepBadgeBorder(step.status),
@@ -207,33 +235,56 @@ function SidebarStep({ step, number }: { step: PipelineStep; number: number }) {
       >
         {step.status === 'done' ? '✓' : step.status === 'stale' ? '!' : number}
       </span>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          opacity: step.status === 'todo' ? 0.55 : 1,
-        }}
-      >
+      <span className={`project-sidebar__step-label${step.status === 'todo' ? ' project-sidebar__step-label--todo' : ''}`}>
         {step.label}
       </span>
-      {step.status === 'next' && (
+      {step.status === 'next' && <span className="project-sidebar__next">Next</span>}
+    </NavLink>
+  );
+}
+
+function CompactStep({ step }: { step: PipelineStep }) {
+  const destination = WORKFLOW_DESTINATIONS.find((item) => item.key === step.key)!;
+  return (
+    <CompactLink
+      to={step.to}
+      label={step.label}
+      icon={destination.icon}
+      status={step.status}
+      end={step.key === 'review'}
+    />
+  );
+}
+
+function CompactLink({
+  to,
+  label,
+  icon: Icon,
+  status,
+  end,
+}: {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  status?: PipelineStepStatus;
+  end?: boolean;
+}) {
+  return (
+    <NavLink
+      to={to}
+      aria-label={label}
+      title={label}
+      end={end}
+      className={({ isActive }) => (
+        `project-sidebar__compact-link${isActive ? ' project-sidebar__compact-link--active' : ''}`
+      )}
+    >
+      <Icon size={18} strokeWidth={1.8} aria-hidden="true" />
+      {status && (
         <span
-          aria-label="next step"
-          style={{
-            fontSize: 9,
-            // Violet to match the main Pipeline — "next" is an
-            // AI-driven moment, distinct from human-driven actions.
-            color: 'var(--accent-2)',
-            textTransform: 'uppercase',
-            letterSpacing: 1,
-            fontWeight: 700,
-          }}
-        >
-          Next
-        </span>
+          className={`project-sidebar__compact-status project-sidebar__compact-status--${status}`}
+          aria-hidden="true"
+        />
       )}
     </NavLink>
   );
@@ -245,13 +296,14 @@ function stepBadgeBg(status: PipelineStepStatus): string {
   if (status === 'stale') return 'var(--warn, #d4a017)';
   return 'transparent';
 }
+
 function stepBadgeFg(status: PipelineStepStatus): string {
   if (status === 'done' || status === 'next' || status === 'stale') return '#fff';
   return 'var(--fg-muted)';
 }
+
 function stepBadgeBorder(status: PipelineStepStatus): string {
-  if (status === 'todo') return '1px solid var(--border)';
-  return 'none';
+  return status === 'todo' ? '1px solid var(--border)' : 'none';
 }
 
 function flatLinkStyle(isActive: boolean): React.CSSProperties {

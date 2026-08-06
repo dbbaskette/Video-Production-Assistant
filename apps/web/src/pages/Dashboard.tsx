@@ -118,11 +118,11 @@ export function Dashboard() {
       <section aria-label="Recent projects">
         <div className="section-header">
           <span className="section-label">Recent</span>
-          <button onClick={() => setModal('open')} style={{ fontSize: 12, padding: '5px 12px' }}>
-            Open folder...
-          </button>
         </div>
-        <ProjectList onOpen={(p) => handleOpen(p.id)} />
+        <ProjectList
+          onOpen={(p) => handleOpen(p.id)}
+          onOpenFolder={() => setModal('open')}
+        />
       </section>
 
       <BrandsSection />

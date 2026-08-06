@@ -1,5 +1,13 @@
-import { act } from 'react';
-import { MemoryRouter, Outlet, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
+import { act, useState } from 'react';
+import {
+  MemoryRouter,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { chooseFile, flushPromises, renderComponent } from '../components/component-test-utils.js';
@@ -26,6 +34,44 @@ const storyboard = {
   schema_version: 1 as const,
   project: { id: PROJECT_ID, name: 'demo', created: '2026-08-05T12:00:00.000Z' },
   scenes: [{ id: 'scene-one', name: 'Slide 1', description: '', type: 'slide' as const }],
+};
+const workflowStoryboard = {
+  ...storyboard,
+  scenes: [
+    {
+      id: 'scene-desktop',
+      name: 'Desktop setup',
+      description: 'Open the project workspace',
+      type: 'desktop' as const,
+    },
+    {
+      id: 'scene-browser',
+      name: 'Browser checkout',
+      description: 'Complete checkout in the browser',
+      type: 'browser' as const,
+      recording: { source: 'recordings/browser.mp4' },
+      narration: { script: 'Explain checkout.' },
+    },
+    {
+      id: 'scene-terminal',
+      name: 'Terminal deploy',
+      description: 'Run the deploy command',
+      type: 'terminal' as const,
+      recording: { source: 'recordings/terminal.mp4' },
+      narration: { script: 'Deploy it.', audio: 'narration/terminal.mp3' },
+    },
+    {
+      id: 'scene-slide',
+      name: 'Architecture slide',
+      description: 'Show the system map',
+      type: 'slide' as const,
+      recording: { source: 'presentations/slide.png' },
+      narration: {
+        script: 'Show the map.',
+        chunks: [{ index: 0, text: 'Show the map.', audio: 'narration/slide.mp3' }],
+      },
+    },
+  ],
 };
 
 const presentationScene = (id: string, presentationId = PRESENTATION_ID) => ({
@@ -68,6 +114,27 @@ function SearchControls() {
   );
 }
 
+function LeaveStoryboard() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('..')}>Leave storyboard</button>;
+}
+
+function WorkspaceHarness() {
+  const [focusMode, setFocusMode] = useState(false);
+  return (
+    <>
+      {!focusMode && <nav className="project-sidebar" aria-label="Test project navigation" />}
+      <Outlet context={{
+        project,
+        projectNavCollapsed: false,
+        setProjectNavCollapsed: () => undefined,
+        focusMode,
+        setFocusMode,
+      }} />
+    </>
+  );
+}
+
 function renderStoryboard(entry: string) {
   return renderComponent(
     <MemoryRouter
@@ -75,8 +142,9 @@ function renderStoryboard(entry: string) {
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       <Routes>
-        <Route path="/project/:projectId" element={<Outlet context={{ project }} />}>
-          <Route path="storyboard" element={<><StoryboardView /><Location /><SearchControls /></>} />
+        <Route path="/project/:projectId" element={<WorkspaceHarness />}>
+          <Route path="storyboard" element={<><StoryboardView /><Location /><SearchControls /><LeaveStoryboard /></>} />
+          <Route index element={<div>Overview screen</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -399,6 +467,112 @@ describe('Storyboard presentation integration', () => {
     }
     view.unmount();
   });
+
+  it('composes scene filters and pins a selected scene outside the results', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(
+      `/project/${PROJECT_ID}/storyboard?scene=scene-terminal&tab=narration&safe=1`,
+    );
+    await waitForUi(() => expect(view.container.textContent).toContain('4 of 4 scenes'));
+
+    changeValue(inputByLabel(view.container, 'Search scenes'), 'CHECKOUT');
+    changeValue(selectByLabel(view.container, 'Scene type'), 'browser');
+    changeValue(selectByLabel(view.container, 'Scene readiness'), 'needs-narration');
+
+    expect(view.container.textContent).toContain('1 of 4 scenes');
+    expect(view.container.textContent).toContain('Current scene — outside filters');
+    expect(view.container.querySelectorAll('[aria-label="Select scene Terminal deploy"]')).toHaveLength(1);
+    expect(view.container.querySelectorAll('[aria-label="Select scene Browser checkout"]')).toHaveLength(1);
+    expect(view.container.querySelectorAll('.scene-row')).toHaveLength(2);
+    expect(view.container.querySelector('output[aria-label="Location"]')?.textContent)
+      .toContain('scene=scene-terminal');
+
+    act(() => buttonByText(view.container, 'Reset').click());
+    expect(view.container.textContent).toContain('4 of 4 scenes');
+    expect(view.container.textContent).not.toContain('outside filters');
+    view.unmount();
+  });
+
+  it('navigates displayed scenes by controls and brackets while preserving URL context', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(
+      `/project/${PROJECT_ID}/storyboard?scene=scene-desktop&tab=script&safe=1`,
+    );
+    await waitForUi(() => expect(view.container.textContent).toContain('Scene 1 of 4'));
+
+    expect(buttonByLabel(view.container, 'Previous scene').disabled).toBe(true);
+    act(() => buttonByLabel(view.container, 'Next scene').click());
+    let location = view.container.querySelector('output[aria-label="Location"]')?.textContent ?? '';
+    expect(location).toContain('scene=scene-browser');
+    expect(location).toContain('tab=script');
+    expect(location).toContain('safe=1');
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true })));
+    location = view.container.querySelector('output[aria-label="Location"]')?.textContent ?? '';
+    expect(location).toContain('scene=scene-terminal');
+
+    const search = inputByLabel(view.container, 'Search scenes');
+    act(() => search.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true })));
+    expect(view.container.querySelector('output[aria-label="Location"]')?.textContent)
+      .toContain('scene=scene-terminal');
+    view.unmount();
+  });
+
+  it('shows stable scene card regions and the sticky scene context', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=scene-browser`);
+    await waitForUi(() => expect(view.container.textContent).toContain('Scene 2 of 4'));
+
+    const selected = view.container.querySelector('.scene-row--selected')!;
+    expect(selected.querySelector('.scene-row__identity')?.textContent).toContain('02browser');
+    expect(selected.querySelector('.scene-row__title')?.textContent).toBe('Browser checkout');
+    expect(selected.querySelectorAll('.scene-status')).toHaveLength(3);
+    const select = selected.querySelector<HTMLButtonElement>('.scene-row__select')!;
+    const statusDescriptionId = select.getAttribute('aria-describedby');
+    expect(statusDescriptionId).toBe('scene-status-scene-browser');
+    const statusDescription = selected.querySelector(`#${statusDescriptionId}`);
+    expect(statusDescription?.textContent).toContain('RecordingReady');
+    expect(statusDescription?.textContent).toContain('ScriptReady');
+    expect(statusDescription?.textContent).toContain('NarrationMissing');
+    expect(selected.querySelector('.scene-row__actions')).not.toBeNull();
+    expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('Browser checkout');
+    expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('browser');
+    view.unmount();
+  });
+
+  it('hides and restores both rails in session focus mode', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=scene-browser`);
+    await waitForUi(() => expect(buttonByLabel(view.container, 'Focus editor')).not.toBeNull());
+
+    act(() => buttonByLabel(view.container, 'Focus editor').click());
+    expect(view.container.querySelector('.project-sidebar')).toBeNull();
+    expect(view.container.querySelector('.storyboard-rail')).toBeNull();
+    expect(view.container.querySelector('.storyboard-layout--focused')).not.toBeNull();
+    expect(view.container.querySelector('output[aria-label="Location"]')?.textContent)
+      .toContain('scene=scene-browser');
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(view.container.querySelector('.project-sidebar')).not.toBeNull();
+    expect(view.container.querySelector('.storyboard-rail')).not.toBeNull();
+    expect(view.container.querySelector('output[aria-label="Location"]')?.textContent)
+      .toContain('scene=scene-browser');
+    view.unmount();
+  });
+
+  it('exits focus mode when navigating to a sibling project page', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=scene-browser`);
+    await waitForUi(() => expect(buttonByLabel(view.container, 'Focus editor')).not.toBeNull());
+
+    act(() => buttonByLabel(view.container, 'Focus editor').click());
+    expect(view.container.querySelector('.project-sidebar')).toBeNull();
+
+    act(() => buttonByText(view.container, 'Leave storyboard').click());
+    await waitForUi(() => expect(view.container.textContent).toContain('Overview screen'));
+    expect(view.container.querySelector('.project-sidebar')).not.toBeNull();
+    view.unmount();
+  });
 });
 
 function buttonByText(container: ParentNode, label: string): HTMLButtonElement {
@@ -406,4 +580,30 @@ function buttonByText(container: ParentNode, label: string): HTMLButtonElement {
     .find((candidate) => candidate.textContent?.trim() === label);
   if (!match) throw new Error(`Missing button: ${label}`);
   return match;
+}
+
+function buttonByLabel(container: ParentNode, label: string): HTMLButtonElement {
+  const match = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  if (!match) throw new Error(`Missing button: ${label}`);
+  return match;
+}
+
+function inputByLabel(container: ParentNode, label: string): HTMLInputElement {
+  return container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+}
+
+function selectByLabel(container: ParentNode, label: string): HTMLSelectElement {
+  return container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+}
+
+function changeValue(element: HTMLInputElement | HTMLSelectElement, value: string): void {
+  const prototype = element instanceof HTMLSelectElement
+    ? HTMLSelectElement.prototype
+    : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+  act(() => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 }

@@ -1,11 +1,34 @@
+import { useCallback, useState } from 'react';
 import { useParams, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import type { ProjectTrackerEntry } from '@vpa/shared';
 import { api } from '../lib/api.js';
 import { ProjectSidebar } from '../components/ProjectSidebar.js';
 import { ProjectIssuesControl } from '../components/ProjectIssuesDrawer.js';
+import {
+  readWorkspacePreferences,
+  writeWorkspacePreferences,
+} from '../lib/workspace-preferences.js';
+
+export interface WorkspaceOutletContext {
+  project: ProjectTrackerEntry;
+  projectNavCollapsed: boolean;
+  setProjectNavCollapsed: (collapsed: boolean) => void;
+  focusMode: boolean;
+  setFocusMode: (focused: boolean) => void;
+}
 
 export function ProjectWorkspace() {
   const { projectId } = useParams<{ projectId: string }>();
+  const [projectNavCollapsed, setProjectNavCollapsedState] = useState(
+    () => readWorkspacePreferences().projectNavCollapsed,
+  );
+  const [focusMode, setFocusMode] = useState(false);
+
+  const setProjectNavCollapsed = useCallback((collapsed: boolean) => {
+    setProjectNavCollapsedState(collapsed);
+    writeWorkspacePreferences({ projectNavCollapsed: collapsed });
+  }, []);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['projects'],
@@ -37,10 +60,16 @@ export function ProjectWorkspace() {
 
   return (
     <div
-      className="project-workspace"
+      className={`project-workspace${focusMode ? ' project-workspace--focused' : ''}`}
       style={{ display: 'flex', height: 'calc(100vh - 52px)' }}
     >
-      <ProjectSidebar projectName={project.name} />
+      {!focusMode && (
+        <ProjectSidebar
+          projectName={project.name}
+          collapsed={projectNavCollapsed}
+          onCollapsedChange={setProjectNavCollapsed}
+        />
+      )}
       <main
         className="project-workspace__main"
         style={{
@@ -54,7 +83,15 @@ export function ProjectWorkspace() {
           <ProjectIssuesControl projectId={project.id} />
         </div>
         <div style={{ flex: 1 }}>
-          <Outlet context={{ project }} />
+          <Outlet
+            context={{
+              project,
+              projectNavCollapsed,
+              setProjectNavCollapsed,
+              focusMode,
+              setFocusMode,
+            } satisfies WorkspaceOutletContext}
+          />
         </div>
       </main>
     </div>
