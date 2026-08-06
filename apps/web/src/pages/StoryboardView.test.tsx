@@ -211,6 +211,39 @@ describe('Storyboard presentation integration', () => {
     view.unmount();
   });
 
+  it('clears a potentially deleted selection when DELETE succeeds but fresh Storyboard acquisition fails', async () => {
+    const before = {
+      ...storyboard,
+      scenes: [
+        presentationScene('slide-a'),
+        { id: 'survivor', name: 'Survivor', description: '', type: 'browser' as const },
+      ],
+    };
+    vi.mocked(storyboardApi.get)
+      .mockResolvedValueOnce(before)
+      .mockRejectedValue(new Error('untrusted storyboard diagnostic'));
+    vi.mocked(presentationsApi.list).mockResolvedValueOnce([READY]).mockResolvedValue([]);
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue(READY);
+    vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    const view = renderStoryboard(
+      `/project/${PROJECT_ID}/storyboard?scene=slide-a&tab=script&safe=1`,
+    );
+
+    await waitForUi(() => expect(view.container.textContent).toContain('Remove imported deck'));
+    act(() => buttonByText(view.container, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).not.toBeNull());
+    act(() => buttonByText(view.container.querySelector('[role="dialog"]')!, 'Remove imported deck').click());
+
+    await waitForUi(() => expect(view.container.textContent).toContain(
+      'Presentation was removed, but current project details could not be refreshed',
+    ));
+    const location = view.container.querySelector('output')?.textContent ?? '';
+    expect(location).not.toContain('scene=slide-a');
+    expect(location).toContain('tab=script');
+    expect(location).toContain('safe=1');
+    view.unmount();
+  });
+
   it('refetches the presentation count after deleting one imported scene', async () => {
     const before = {
       ...storyboard,

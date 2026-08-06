@@ -13,12 +13,14 @@ export function useModalFocus({
   open,
   dialogRef,
   initialFocusRef,
+  restoreFocusRef,
   escapeDisabled,
   onEscape,
 }: {
   open: boolean;
   dialogRef: RefObject<HTMLElement>;
   initialFocusRef: RefObject<HTMLElement>;
+  restoreFocusRef?: RefObject<HTMLElement>;
   escapeDisabled: boolean;
   onEscape(): void;
 }) {
@@ -66,9 +68,11 @@ export function useModalFocus({
       window.clearTimeout(focusTimer);
       window.removeEventListener('keydown', onKeyDown);
       restoreOutside();
-      if (opener?.isConnected) opener.focus();
+      const stableRestoreTarget = restoreFocusRef?.current;
+      if (stableRestoreTarget?.isConnected) stableRestoreTarget.focus();
+      else if (opener?.isConnected) opener.focus();
     };
-  }, [dialogRef, initialFocusRef, open]);
+  }, [dialogRef, initialFocusRef, open, restoreFocusRef]);
 }
 
 function inertOutside(modal: HTMLElement): () => void {

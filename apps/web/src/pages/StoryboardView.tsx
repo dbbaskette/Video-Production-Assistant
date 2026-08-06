@@ -83,9 +83,15 @@ export function StoryboardView() {
   }, [setSearchParams]);
 
   const handlePresentationRemoved = useCallback((context: PresentationRemovalContext) => {
-    const latest = queryClient.getQueryData<Storyboard | null>(['storyboard', projectId]);
-    normalizeAfterRemoval(context.previousScenes, latest?.scenes ?? []);
-  }, [normalizeAfterRemoval, projectId, queryClient]);
+    if (context.freshScenes) {
+      normalizeAfterRemoval(context.previousScenes, context.freshScenes);
+      return;
+    }
+    setSearchParams(
+      (current) => normalizeStoryboardAfterUnavailableRemoval(current, context.removedSceneIds),
+      { replace: true },
+    );
+  }, [normalizeAfterRemoval, setSearchParams]);
 
   useEffect(() => {
     if (!hasPresentationId || !presentationIdValid) {
@@ -352,6 +358,16 @@ export function normalizeStoryboardAfterRemoval(
     ?? null;
   if (selected) next.set('scene', selected.id);
   else next.delete('scene');
+  return next;
+}
+
+export function normalizeStoryboardAfterUnavailableRemoval(
+  search: URLSearchParams,
+  potentiallyRemovedSceneIds: readonly string[],
+): URLSearchParams {
+  const next = new URLSearchParams(search);
+  const selectedId = search.get('scene');
+  if (selectedId && potentiallyRemovedSceneIds.includes(selectedId)) next.delete('scene');
   return next;
 }
 

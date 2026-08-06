@@ -1,5 +1,6 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryObserver, type QueryClient, type QueryKey } from '@tanstack/react-query';
 import { presentationsApi } from '../lib/api.js';
 import { flushPromises, renderComponent } from './component-test-utils.js';
 import { PresentationProgress } from './PresentationProgress.js';
@@ -21,6 +22,16 @@ const READY = {
   deterministic_commit: 'committed' as const,
   updated_at: '2026-08-05T12:00:01.000Z',
 };
+const OWNED_SCENE_ID = 'owned-scene';
+const OTHER_SCENE_ID = 'other-scene';
+
+function observeCache(client: QueryClient, queryKey: QueryKey) {
+  client.setQueryData(queryKey, { value: 'before completion' });
+  const queryFn = vi.fn().mockResolvedValue({ value: 'after completion' });
+  const observer = new QueryObserver(client, { queryKey, queryFn, staleTime: Infinity });
+  const unsubscribe = observer.subscribe(() => undefined);
+  return { queryFn, unsubscribe };
+}
 
 describe('PresentationProgress', () => {
   beforeEach(() => { vi.useFakeTimers(); });
@@ -47,6 +58,48 @@ describe('PresentationProgress', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(get).toHaveBeenCalledOnce();
     expect(invalidate).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it('refreshes owned open-scene script and narration caches once on automatic terminal completion', async () => {
+    const get = vi.spyOn(presentationsApi, 'get').mockResolvedValue(READY);
+    const view = renderComponent(
+      <PresentationProgress projectId={PROJECT_ID} initialJob={PROCESSING} onClose={vi.fn()} />,
+    );
+    view.client.setQueryData(['storyboard', PROJECT_ID], {
+      project: { id: PROJECT_ID },
+      scenes: [
+        {
+          id: OWNED_SCENE_ID,
+          presentation_source: { presentation_id: PROCESSING.id },
+        },
+        {
+          id: OTHER_SCENE_ID,
+          presentation_source: { presentation_id: '33333333-3333-4333-8333-333333333333' },
+        },
+      ],
+    });
+    const ownedScript = observeCache(view.client, ['script', PROJECT_ID, OWNED_SCENE_ID]);
+    const ownedNarration = observeCache(view.client, ['narration', PROJECT_ID, OWNED_SCENE_ID]);
+    const otherScript = observeCache(view.client, ['script', PROJECT_ID, OTHER_SCENE_ID]);
+    const otherNarration = observeCache(view.client, ['narration', PROJECT_ID, OTHER_SCENE_ID]);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await flushPromises();
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(ownedScript.queryFn).toHaveBeenCalledOnce();
+    expect(ownedNarration.queryFn).toHaveBeenCalledOnce();
+    expect(otherScript.queryFn).not.toHaveBeenCalled();
+    expect(otherNarration.queryFn).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(ownedScript.queryFn).toHaveBeenCalledOnce();
+    expect(ownedNarration.queryFn).toHaveBeenCalledOnce();
+
+    ownedScript.unsubscribe();
+    ownedNarration.unsubscribe();
+    otherScript.unsubscribe();
+    otherNarration.unsubscribe();
     view.unmount();
   });
 

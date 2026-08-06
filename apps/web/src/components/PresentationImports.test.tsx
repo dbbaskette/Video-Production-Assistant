@@ -1,7 +1,8 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryObserver, type QueryClient, type QueryKey } from '@tanstack/react-query';
 import type { PresentationJob, Scene } from '@vpa/shared';
-import { presentationsApi } from '../lib/api.js';
+import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { renderComponent } from './component-test-utils.js';
 import { PresentationImports } from './PresentationImports.js';
 
@@ -93,6 +94,14 @@ function button(container: HTMLElement, label: string): HTMLButtonElement {
     .find((candidate) => candidate.textContent?.trim() === label);
   if (!match) throw new Error(`Missing button: ${label}`);
   return match;
+}
+
+function observeCache(client: QueryClient, queryKey: QueryKey) {
+  client.setQueryData(queryKey, { value: 'before retry' });
+  const queryFn = vi.fn().mockResolvedValue({ value: 'after retry' });
+  const observer = new QueryObserver(client, { queryKey, queryFn, staleTime: Infinity });
+  const unsubscribe = observer.subscribe(() => undefined);
+  return { queryFn, unsubscribe };
 }
 
 describe('PresentationImports', () => {
@@ -277,6 +286,64 @@ describe('PresentationImports', () => {
   });
 
   it.each([
+    ['ready', job({
+      status: 'ready',
+      stage: 'ready',
+      generate_narration: true,
+      error: undefined,
+      updated_at: '2026-08-05T12:00:02.000Z',
+    })],
+    ['partial', job({
+      status: 'partial',
+      stage: 'drafting-narration',
+      generate_narration: true,
+      error: { code: 'narration_failed', message: 'bounded failure' },
+      updated_at: '2026-08-05T12:00:02.000Z',
+    })],
+  ] as const)('refreshes Storyboard and owned open-scene caches after a terminal %s narration retry', async (_label, next) => {
+    const starting = job({
+      status: 'partial',
+      stage: 'drafting-narration',
+      generate_narration: true,
+      error: { code: 'narration_failed', message: 'bounded failure' },
+    });
+    vi.spyOn(presentationsApi, 'list')
+      .mockResolvedValueOnce([starting])
+      .mockResolvedValue([next]);
+    vi.spyOn(presentationsApi, 'retryNarration').mockResolvedValue(next);
+    const ownedScene = scene('owned-scene', PRESENTATION_A);
+    const unrelatedScene = scene('unrelated-scene', PRESENTATION_B);
+    const view = renderComponent(
+      <PresentationImports
+        projectId={PROJECT_ID}
+        scenes={[ownedScene, unrelatedScene]}
+      />,
+    );
+    await waitForUi(() => expect(view.container.textContent).toContain('Retry narration'));
+
+    const storyboard = observeCache(view.client, ['storyboard', PROJECT_ID]);
+    const ownedScript = observeCache(view.client, ['script', PROJECT_ID, ownedScene.id]);
+    const ownedNarration = observeCache(view.client, ['narration', PROJECT_ID, ownedScene.id]);
+    const unrelatedScript = observeCache(view.client, ['script', PROJECT_ID, unrelatedScene.id]);
+    const unrelatedNarration = observeCache(view.client, ['narration', PROJECT_ID, unrelatedScene.id]);
+
+    act(() => button(view.container, 'Retry narration').click());
+    await waitForUi(() => expect(storyboard.queryFn).toHaveBeenCalledOnce());
+    await waitForUi(() => expect(ownedScript.queryFn).toHaveBeenCalledOnce());
+    expect(ownedNarration.queryFn).toHaveBeenCalledOnce();
+    expect(unrelatedScript.queryFn).not.toHaveBeenCalled();
+    expect(unrelatedNarration.queryFn).not.toHaveBeenCalled();
+    expect(presentationsApi.list).toHaveBeenCalledTimes(2);
+
+    storyboard.unsubscribe();
+    ownedScript.unsubscribe();
+    ownedNarration.unsubscribe();
+    unrelatedScript.unsubscribe();
+    unrelatedNarration.unsubscribe();
+    view.unmount();
+  });
+
+  it.each([
     [0, 'No remaining scenes will be deleted. Presentation assets will be removed.'],
     [1, '1 remaining scene will be deleted.'],
     [3, '3 remaining scenes will be deleted.'],
@@ -295,11 +362,17 @@ describe('PresentationImports', () => {
 
   it('removes once, invalidates both server-owned views, and reports the refetched scene context', async () => {
     const before = [scene('slide-a', PRESENTATION_A), scene('unrelated'), scene('slide-b', PRESENTATION_A)];
+    const after = [before[1]!];
     vi.spyOn(presentationsApi, 'get').mockResolvedValue(job({ remaining_scene_count: 2 }));
     const remove = vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    vi.spyOn(storyboardApi, 'get').mockResolvedValue({
+      schema_version: 1,
+      project: { id: PROJECT_ID, name: 'demo', created: '2026-08-05T12:00:00.000Z' },
+      scenes: after,
+    });
     const onRemoved = vi.fn();
     const view = await renderLoaded([job({ remaining_scene_count: 2 })], { scenes: before, onRemoved });
-    const invalidate = vi.spyOn(view.client, 'invalidateQueries');
+    vi.mocked(presentationsApi.list).mockResolvedValueOnce([]);
 
     act(() => button(view.container, 'Remove imported deck').click());
     await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).not.toBeNull());
@@ -309,12 +382,97 @@ describe('PresentationImports', () => {
     await waitForUi(() => expect(remove).toHaveBeenCalledOnce());
     await waitForUi(() => expect(onRemoved).toHaveBeenCalledOnce());
 
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['presentations', PROJECT_ID] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['storyboard', PROJECT_ID] });
     expect(onRemoved).toHaveBeenCalledWith({
       presentationId: PRESENTATION_A,
       previousScenes: before,
       removedSceneIds: ['slide-a', 'slide-b'],
+      freshScenes: after,
+      refreshFailed: false,
+    });
+    view.unmount();
+  });
+
+  it('uses strict fresh data after DELETE and restores focus to the stable disclosure', async () => {
+    const before = [scene('slide-a', PRESENTATION_A), scene('unrelated')];
+    const freshStoryboard = {
+      schema_version: 1 as const,
+      project: { id: PROJECT_ID, name: 'demo', created: '2026-08-05T12:00:00.000Z' },
+      scenes: [before[1]!],
+    };
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue(job({ remaining_scene_count: 1 }));
+    vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    vi.spyOn(storyboardApi, 'get').mockResolvedValue(freshStoryboard);
+    const onRemoved = vi.fn();
+    const view = await renderLoaded([job({ remaining_scene_count: 1 })], { scenes: before, onRemoved });
+    vi.mocked(presentationsApi.list).mockResolvedValueOnce([]);
+    const disclosure = view.container.querySelector<HTMLButtonElement>(
+      '.presentation-imports__disclosure',
+    )!;
+    const opener = button(view.container, 'Remove imported deck');
+    opener.focus();
+
+    act(() => opener.click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).not.toBeNull());
+    act(() => button(view.container.querySelector('[role="dialog"]')!, 'Remove imported deck').click());
+
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).toBeNull());
+    await waitForUi(() => expect(
+      view.container.querySelector(`[data-testid="presentation-import-${PRESENTATION_A}"]`),
+    ).toBeNull());
+    expect(storyboardApi.get).toHaveBeenCalledWith(PROJECT_ID);
+    expect(onRemoved).toHaveBeenCalledWith({
+      presentationId: PRESENTATION_A,
+      previousScenes: before,
+      removedSceneIds: ['slide-a'],
+      freshScenes: [before[1]],
+      refreshFailed: false,
+    });
+    expect(document.activeElement).toBe(disclosure);
+    view.unmount();
+  });
+
+  it.each([
+    ['Storyboard', true, false],
+    ['presentation list', false, true],
+  ] as const)('keeps DELETE authoritative when the %s refresh fails', async (_label, storyboardFails, listFails) => {
+    const before = [scene('slide-a', PRESENTATION_A), scene('unrelated')];
+    const freshStoryboard = {
+      schema_version: 1 as const,
+      project: { id: PROJECT_ID, name: 'demo', created: '2026-08-05T12:00:00.000Z' },
+      scenes: [before[1]!],
+    };
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue(job({ remaining_scene_count: 1 }));
+    vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    const storyboardGet = vi.spyOn(storyboardApi, 'get');
+    if (storyboardFails) storyboardGet.mockRejectedValue(new Error('untrusted storyboard diagnostic'));
+    else storyboardGet.mockResolvedValue(freshStoryboard);
+    const onRemoved = vi.fn();
+    const view = await renderLoaded([job({ remaining_scene_count: 1 })], { scenes: before, onRemoved });
+    view.client.setQueryData(['storyboard', PROJECT_ID], freshStoryboard);
+    if (listFails) {
+      vi.mocked(presentationsApi.list).mockRejectedValueOnce(new Error('untrusted list diagnostic'));
+    } else {
+      vi.mocked(presentationsApi.list).mockResolvedValueOnce([]);
+    }
+
+    act(() => button(view.container, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).not.toBeNull());
+    act(() => button(view.container.querySelector('[role="dialog"]')!, 'Remove imported deck').click());
+
+    await waitForUi(() => expect(view.container.textContent).toContain(
+      'Presentation was removed, but current project details could not be refreshed',
+    ));
+    expect(view.container.textContent).not.toContain('Removal could not be confirmed');
+    expect(view.container.textContent).not.toContain('untrusted');
+    expect(view.container.querySelector(`[data-testid="presentation-import-${PRESENTATION_A}"]`)).toBeNull();
+    expect(view.client.getQueryState(['presentations', PROJECT_ID])?.isInvalidated).toBe(true);
+    expect(view.client.getQueryState(['storyboard', PROJECT_ID])?.isInvalidated).toBe(true);
+    expect(onRemoved).toHaveBeenCalledWith({
+      presentationId: PRESENTATION_A,
+      previousScenes: before,
+      removedSceneIds: ['slide-a'],
+      freshScenes: storyboardFails ? null : [before[1]],
+      refreshFailed: true,
     });
     view.unmount();
   });

@@ -72,7 +72,7 @@ Draft narration is optional. When enabled, the **Understand visual media** assig
 
 A slide with prepared narration lasts exactly as long as its narration audio. Without narration, it holds for five seconds; the one-second compatibility clip is not the final scene duration.
 
-The default upload limit is 100 MB and 200 pages. Operators can change those limits with `VPA_PRESENTATION_MAX_BYTES` and `VPA_PRESENTATION_MAX_PAGES` (the page limit cannot exceed 200).
+The hard upload ceilings are 100 MiB and 200 pages. Operators can use `VPA_PRESENTATION_MAX_BYTES` to reduce the byte limit below 100 MiB and can configure `VPA_PRESENTATION_MAX_PAGES` only up to 200 pages; neither setting can raise its hard ceiling.
 
 ### Workflow
 
@@ -124,8 +124,8 @@ Copy `.env.example` to `.env` and adjust:
 | `VPA_SERVER_PORT` | `3000` | Server port |
 | `VPA_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app API base URL |
-| `VPA_PRESENTATION_MAX_BYTES` | `104857600` | Maximum PDF presentation upload size in bytes (100 MB by default) |
-| `VPA_PRESENTATION_MAX_PAGES` | `200` | Maximum pages in one PDF presentation (up to 200) |
+| `VPA_PRESENTATION_MAX_BYTES` | `104857600` | Maximum PDF presentation upload size in bytes; configurable only below the hard 100 MiB ceiling |
+| `VPA_PRESENTATION_MAX_PAGES` | `200` | Maximum pages in one PDF presentation; configurable up to the hard 200-page ceiling |
 | `VPA_LLM_PROVIDER` | `fake` | Bootstrap catalog provider: `fake`, `claude-code`, `gemini`, or `anthropic`; runtime jobs use role assignments |
 | `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.5-flash-lite`) |
 | `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` and to enable Gemini TTS |

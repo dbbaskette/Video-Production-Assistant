@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PresentationJob, Scene } from '@vpa/shared';
-import { presentationsApi } from '../lib/api.js';
+import { StoryboardSchema, type PresentationJob, type Scene, type Storyboard } from '@vpa/shared';
+import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { presentationActions, presentationProgress, type PresentationAction } from '../lib/presentation-import-ui.js';
+import { invalidatePresentationSceneQueries } from '../lib/presentation-query-refresh.js';
 import { useModalFocus } from './ui/useModalFocus.js';
 
 const POLL_INTERVAL_MS = 1_000;
@@ -12,6 +13,8 @@ export interface PresentationRemovalContext {
   presentationId: string;
   previousScenes: Scene[];
   removedSceneIds: string[];
+  freshScenes: Scene[] | null;
+  refreshFailed: boolean;
 }
 
 export interface PresentationImportsProps {
@@ -23,6 +26,8 @@ export interface PresentationImportsProps {
 export function PresentationImports({ projectId, scenes, onRemoved }: PresentationImportsProps) {
   const queryClient = useQueryClient();
   const regionId = useId();
+  const disclosureRef = useRef<HTMLButtonElement>(null);
+  const removalRestoreFocusRef = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(true);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const pendingIdsRef = useRef(new Set<string>());
@@ -57,7 +62,7 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
     previousJobsRef.current = current;
     if (!previous) return;
 
-    const storyboardChanged = presentationsQuery.data.some((item) => {
+    const changedPresentations = presentationsQuery.data.filter((item) => {
       const before = previous.get(item.id);
       if (!before) return false;
       const committedNow = before.deterministic_commit !== 'committed'
@@ -67,10 +72,24 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
         && presentationProgress(item).terminal;
       return committedNow || narrationFinished;
     });
-    if (storyboardChanged) {
-      void queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    if (changedPresentations.length > 0) {
+      void (async () => {
+        await queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+        const refreshedStoryboard = queryClient.getQueryData<Storyboard | null>([
+          'storyboard',
+          projectId,
+        ]);
+        for (const item of changedPresentations) {
+          await invalidatePresentationSceneQueries(
+            queryClient,
+            projectId,
+            item.id,
+            refreshedStoryboard?.scenes ?? scenes,
+          );
+        }
+      })();
     }
-  }, [presentationsQuery.data, projectId, queryClient]);
+  }, [presentationsQuery.data, projectId, queryClient, scenes]);
 
   const beginItemAction = (id: string): boolean => {
     if (pendingIdsRef.current.has(id)) return false;
@@ -104,6 +123,22 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
         ? await presentationsApi.retryImport(projectId, job.id)
         : await presentationsApi.retryNarration(projectId, job.id);
       updateJob(next);
+      if (action === 'retry-narration') {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] }),
+          queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }),
+        ]);
+        const refreshedStoryboard = queryClient.getQueryData<Storyboard | null>([
+          'storyboard',
+          projectId,
+        ]);
+        await invalidatePresentationSceneQueries(
+          queryClient,
+          projectId,
+          job.id,
+          refreshedStoryboard?.scenes ?? scenes,
+        );
+      }
     } catch {
       setActionErrors((current) => ({
         ...current,
@@ -128,6 +163,7 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
         }));
         return;
       }
+      removalRestoreFocusRef.current = null;
       setRemoval({ job: fresh, previousScenes: scenes });
     } catch {
       setActionErrors((current) => ({
@@ -149,12 +185,6 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
       .map((scene) => scene.id);
     try {
       await presentationsApi.remove(projectId, job.id);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }),
-        queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] }),
-      ]);
-      setRemoval(null);
-      onRemoved?.({ presentationId: job.id, previousScenes, removedSceneIds });
     } catch {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }),
@@ -164,15 +194,79 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
       setRemovalNotice(
         'Removal could not be confirmed. Presentation and storyboard details were refreshed; check the current scenes before trying again.',
       );
-    } finally {
       removalInFlightRef.current = false;
       setRemovalPending(false);
+      return;
     }
+
+    // DELETE is authoritative. Close the modal before the row is removed so
+    // focus restoration can target the persistent disclosure, then acquire
+    // both server-owned views through observable, strict calls.
+    removalRestoreFocusRef.current = disclosureRef.current;
+    setRemoval(null);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    queryClient.setQueryData<PresentationJob[]>(['presentations', projectId], (current) => (
+      current?.filter((item) => item.id !== job.id) ?? []
+    ));
+
+    const [storyboardResult, presentationsResult] = await Promise.allSettled([
+      storyboardApi.get(projectId).then((value) => StoryboardSchema.nullable().parse(value)),
+      presentationsApi.list(projectId),
+    ]);
+    const freshScenes = storyboardResult.status === 'fulfilled'
+      ? storyboardResult.value?.scenes ?? []
+      : null;
+    if (storyboardResult.status === 'fulfilled') {
+      queryClient.setQueryData(['storyboard', projectId], storyboardResult.value);
+    } else {
+      queryClient.setQueryData<Storyboard | null>(['storyboard', projectId], (current) => (
+        current
+          ? {
+              ...current,
+              scenes: current.scenes.filter((scene) => !removedSceneIds.includes(scene.id)),
+            }
+          : current
+      ));
+    }
+    if (presentationsResult.status === 'fulfilled') {
+      queryClient.setQueryData(
+        ['presentations', projectId],
+        presentationsResult.value.filter((item) => item.id !== job.id),
+      );
+    }
+
+    const refreshFailed = storyboardResult.status === 'rejected'
+      || presentationsResult.status === 'rejected';
+    if (refreshFailed) {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['presentations', projectId],
+          refetchType: 'none',
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['storyboard', projectId],
+          refetchType: 'none',
+        }),
+      ]);
+      setRemovalNotice(
+        'Presentation was removed, but current project details could not be refreshed. Reload this page before continuing.',
+      );
+    }
+    removalInFlightRef.current = false;
+    setRemovalPending(false);
+    onRemoved?.({
+      presentationId: job.id,
+      previousScenes,
+      removedSceneIds,
+      freshScenes,
+      refreshFailed,
+    });
   };
 
   return (
     <section className="presentation-imports" aria-labelledby={`${regionId}-heading`}>
       <button
+        ref={disclosureRef}
         type="button"
         className="presentation-imports__disclosure"
         aria-expanded={open}
@@ -222,6 +316,7 @@ export function PresentationImports({ projectId, scenes, onRemoved }: Presentati
         <PresentationRemovalDialog
           job={removal.job}
           pending={removalPending}
+          restoreFocusRef={removalRestoreFocusRef}
           onCancel={() => {
             if (!removalPending) setRemoval(null);
           }}
@@ -300,11 +395,13 @@ function PresentationImportRow({
 function PresentationRemovalDialog({
   job,
   pending,
+  restoreFocusRef,
   onCancel,
   onConfirm,
 }: {
   job: PresentationJob;
   pending: boolean;
+  restoreFocusRef: React.RefObject<HTMLElement>;
   onCancel(): void;
   onConfirm(): void;
 }) {
@@ -316,6 +413,7 @@ function PresentationRemovalDialog({
     open: true,
     dialogRef,
     initialFocusRef: cancelRef,
+    restoreFocusRef,
     escapeDisabled: pending,
     onEscape: onCancel,
   });

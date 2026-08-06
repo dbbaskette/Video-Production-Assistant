@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { PresentationJob } from '@vpa/shared';
+import type { PresentationJob, Storyboard } from '@vpa/shared';
 import { presentationsApi } from '../lib/api.js';
 import { presentationProgress } from '../lib/presentation-import-ui.js';
+import { invalidatePresentationSceneQueries } from '../lib/presentation-query-refresh.js';
 
 export interface PresentationProgressProps {
   projectId: string;
@@ -75,9 +76,23 @@ export function PresentationProgress({
     const imported = job.status === 'ready' || job.status === 'partial';
     if (!imported || invalidatedRef.current || !observedNonterminalRef.current) return;
     invalidatedRef.current = true;
-    void queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-    void queryClient.invalidateQueries({ queryKey: ['presentations', projectId] });
-  }, [job.status, projectId, queryClient]);
+    void (async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] }),
+        queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }),
+      ]);
+      const storyboard = queryClient.getQueryData<Storyboard | null>([
+        'storyboard',
+        projectId,
+      ]);
+      await invalidatePresentationSceneQueries(
+        queryClient,
+        projectId,
+        job.id,
+        storyboard?.scenes ?? [],
+      );
+    })();
+  }, [job.id, job.status, projectId, queryClient]);
 
   useEffect(() => {
     if (!view.terminal || terminalNotifiedRef.current) return;
