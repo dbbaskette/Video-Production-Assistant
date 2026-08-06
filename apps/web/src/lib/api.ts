@@ -1039,6 +1039,14 @@ export interface TtsScratchClip {
   bytes: number;
 }
 
+export interface GenerateProjectNarrationOptions {
+  engine: string;
+  voice: string;
+  speed: number;
+  expressiveness: Expressiveness;
+  overwrite: boolean;
+}
+
 export const ttsApi = {
   async listEngines(): Promise<TtsEngineInfo[]> {
     return request<TtsEngineInfo[]>('GET', '/api/tts/engines');
@@ -1072,6 +1080,12 @@ export const voiceApi = {
 };
 
 export const narrationApi = {
+  async generateProject(
+    projectId: string,
+    options: GenerateProjectNarrationOptions,
+  ): Promise<{ jobId: string; status: 'running' }> {
+    return request('POST', `/api/projects/${projectId}/narration/generate-project`, options);
+  },
   async get(projectId: string, sceneId: string): Promise<NarrationState> {
     return request<NarrationState>('GET', `/api/projects/${projectId}/scenes/${sceneId}/narration`);
   },
@@ -1654,7 +1668,7 @@ export const jobsApi = {
       try { onEvent(JSON.parse(e.data)); } catch { /* ignore parse errors */ }
     };
     es.onmessage = handler;
-    for (const evt of ['persisted', 'extracting', 'extracted', 'extracting-tokens', 'tokens-ready', 'writing-rationale', 'done', 'error']) {
+    for (const evt of ['start', 'progress', 'cancel', 'persisted', 'extracting', 'extracted', 'extracting-tokens', 'tokens-ready', 'writing-rationale', 'done', 'error']) {
       es.addEventListener(evt, handler);
     }
     return () => es.close();

@@ -74,8 +74,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
 
-  // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
-  app.get('/api/tts/engines', async () => {
+  const listAdvertisedEngines = async () => {
     const engines = tts.listEngines();
     let clones: Awaited<ReturnType<VoiceCloneStore['list']>> = [];
     try {
@@ -108,6 +107,11 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       }
       return engine;
     });
+  };
+
+  // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
+  app.get('/api/tts/engines', async () => {
+    return listAdvertisedEngines();
   });
 
   // GET /api/voices — list voice profiles
@@ -158,7 +162,8 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'Invalid project narration settings', code: 'invalid_request' });
     }
 
-    const engine = tts.listEngines().find((candidate) => candidate.id === parsed.data.engine);
+    const engine = (await listAdvertisedEngines())
+      .find((candidate) => candidate.id === parsed.data.engine);
     if (!engine || !engine.voices.some((candidate) => candidate.id === parsed.data.voice)) {
       return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
     }
