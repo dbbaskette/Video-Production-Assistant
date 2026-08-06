@@ -64,6 +64,16 @@ a developer-experience extra.
 
 ## What It Does
 
+### Presentation imports
+
+VPA accepts PDF presentations and creates one editable storyboard scene for each page, in the PDF's original order. Slide animations, presentation transitions, embedded audio or video, and speaker notes do not carry over; each visible page becomes a static slide. PowerPoint and Google Slides are not imported directly yet—export them to PDF first. Direct PPTX and Google Slides adapters can use that same PDF path in the future.
+
+Draft narration is optional. When enabled, the **Understand visual media** assignment must use a compatible Gemini model to inspect each slide, while the independent **Write and refine content** assignment turns the resulting text brief into narration. Successful slide imports remain usable when narration needs attention. VPA preserves names, descriptions, and narration that you edit while generation is running; retries fill only missing or failed work. You can delete one imported scene without removing the deck record, retry an eligible failed import or narration pass, or use **Remove imported deck** to delete every remaining scene and the deck's owned assets.
+
+A slide with prepared narration lasts exactly as long as its narration audio. Without narration, it holds for five seconds; the one-second compatibility clip is not the final scene duration.
+
+The default upload limit is 100 MB and 200 pages. Operators can change those limits with `VPA_PRESENTATION_MAX_BYTES` and `VPA_PRESENTATION_MAX_PAGES` (the page limit cannot exceed 200).
+
 ### Workflow
 
 The left sidebar lays out the workflow as a sequence of dedicated phase pages. Every per-scene operation (narration, lower thirds, frame style, transition) is reachable from either the per-scene Recording tab OR the project-wide overview page for that phase — pick whichever fits the moment.
@@ -114,6 +124,8 @@ Copy `.env.example` to `.env` and adjust:
 | `VPA_SERVER_PORT` | `3000` | Server port |
 | `VPA_SERVER_HOST` | `127.0.0.1` | Server bind address |
 | `VITE_VPA_API_BASE` | `http://localhost:3000` | Web app API base URL |
+| `VPA_PRESENTATION_MAX_BYTES` | `104857600` | Maximum PDF presentation upload size in bytes (100 MB by default) |
+| `VPA_PRESENTATION_MAX_PAGES` | `200` | Maximum pages in one PDF presentation (up to 200) |
 | `VPA_LLM_PROVIDER` | `fake` | Bootstrap catalog provider: `fake`, `claude-code`, `gemini`, or `anthropic`; runtime jobs use role assignments |
 | `VPA_LLM_MODEL` | — | Optional model override (e.g. `sonnet`, `gemini-2.5-flash-lite`) |
 | `GEMINI_API_KEY` | — | Required when `VPA_LLM_PROVIDER=gemini` and to enable Gemini TTS |

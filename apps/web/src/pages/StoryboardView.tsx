@@ -20,10 +20,14 @@ import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 import { Video, FileText, Volume2, Tag, Clapperboard } from 'lucide-react';
-import type { PresentationJob, Scene, ProjectTrackerEntry } from '@vpa/shared';
+import type { PresentationJob, Scene, Storyboard, ProjectTrackerEntry } from '@vpa/shared';
 import type { LucideIcon } from 'lucide-react';
 import { PresentationImportDialog } from '../components/PresentationImportDialog.js';
 import { PresentationProgress } from '../components/PresentationProgress.js';
+import {
+  PresentationImports,
+  type PresentationRemovalContext,
+} from '../components/PresentationImports.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -67,6 +71,21 @@ export function StoryboardView() {
 
   const scenes = storyboard?.scenes ?? [];
   const selectedSceneId = searchParams.get('scene') ?? scenes[0]?.id ?? null;
+
+  const normalizeAfterRemoval = useCallback((
+    previousScenes: readonly { id: string }[],
+    nextScenes: readonly { id: string }[],
+  ) => {
+    setSearchParams(
+      (current) => normalizeStoryboardAfterRemoval(current, previousScenes, nextScenes),
+      { replace: true },
+    );
+  }, [setSearchParams]);
+
+  const handlePresentationRemoved = useCallback((context: PresentationRemovalContext) => {
+    const latest = queryClient.getQueryData<Storyboard | null>(['storyboard', projectId]);
+    normalizeAfterRemoval(context.previousScenes, latest?.scenes ?? []);
+  }, [normalizeAfterRemoval, projectId, queryClient]);
 
   useEffect(() => {
     if (!hasPresentationId || !presentationIdValid) {
@@ -166,8 +185,6 @@ export function StoryboardView() {
     <div style={{ padding: 40, color: 'var(--danger)' }}>
       Failed to load storyboard: {error instanceof Error ? error.message : 'unknown'}
     </div>
-  ) : !storyboard ? (
-    <EmptyStoryboard projectId={projectId!} onAddPresentation={() => setImportOpen(true)} />
   ) : (
     <div
       className="storyboard-layout"
@@ -201,7 +218,7 @@ export function StoryboardView() {
           </button>
         </header>
 
-        {storyboard.project.objective && (
+        {storyboard?.project.objective && (
           <p
             style={{
               fontSize: 11,
@@ -241,9 +258,16 @@ export function StoryboardView() {
               }}
               onMoveUp={() => moveScene(idx, idx - 1)}
               onMoveDown={() => moveScene(idx, idx + 1)}
+              onRemoved={(nextScenes) => normalizeAfterRemoval(scenes, nextScenes)}
             />
           ))}
         </div>
+
+        <PresentationImports
+          projectId={projectId!}
+          scenes={scenes}
+          onRemoved={handlePresentationRemoved}
+        />
 
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
           <Link
@@ -278,9 +302,7 @@ export function StoryboardView() {
             embedded
           />
         ) : (
-          <div style={{ padding: 60, textAlign: 'center', color: 'var(--fg-muted)' }}>
-            Select a scene from the left to start editing.
-          </div>
+          <EmptyStoryboard projectId={projectId!} onAddPresentation={() => setImportOpen(true)} />
         )}
       </section>
     </div>
@@ -311,6 +333,28 @@ export function normalizeStoryboardSearch(
   return next;
 }
 
+export function normalizeStoryboardAfterRemoval(
+  search: URLSearchParams,
+  previousScenes: readonly { id: string }[],
+  nextScenes: readonly { id: string }[],
+): URLSearchParams {
+  const next = new URLSearchParams(search);
+  const selectedId = search.get('scene');
+  if (selectedId && nextScenes.some((scene) => scene.id === selectedId)) return next;
+
+  const previousIndex = selectedId
+    ? previousScenes.findIndex((scene) => scene.id === selectedId)
+    : 0;
+  const safeIndex = previousIndex >= 0 ? previousIndex : 0;
+  const selected = nextScenes[safeIndex]
+    ?? nextScenes[safeIndex - 1]
+    ?? nextScenes[0]
+    ?? null;
+  if (selected) next.set('scene', selected.id);
+  else next.delete('scene');
+  return next;
+}
+
 function isValidPresentationId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -326,6 +370,7 @@ function SceneRow({
   onSelect,
   onMoveUp,
   onMoveDown,
+  onRemoved,
 }: {
   scene: Scene;
   index: number;
@@ -335,6 +380,7 @@ function SceneRow({
   onSelect: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onRemoved: (nextScenes: Scene[]) => void;
 }) {
   const queryClient = useQueryClient();
   const ui = useUi();
@@ -353,8 +399,17 @@ function SceneRow({
 
   const removeMutation = useMutation({
     mutationFn: () => storyboardApi.removeScene(projectId, scene.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    onSuccess: async (nextStoryboard) => {
+      queryClient.setQueryData(['storyboard', projectId], nextStoryboard);
+      const invalidations: Promise<unknown>[] = [
+        queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] }),
+      ];
+      if (scene.presentation_source) {
+        invalidations.push(queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }));
+      }
+      await Promise.all(invalidations);
+      const latest = queryClient.getQueryData<Storyboard | null>(['storyboard', projectId]);
+      onRemoved(latest?.scenes ?? nextStoryboard.scenes);
     },
   });
 
@@ -551,6 +606,7 @@ function RowControls({
         onClick={onMoveUp}
         disabled={index === 0}
         title="Move up"
+        aria-label="Move up"
         style={miniBtnStyle(index === 0)}
       >
         ↑
@@ -560,17 +616,19 @@ function RowControls({
         onClick={onMoveDown}
         disabled={index === total - 1}
         title="Move down"
+        aria-label="Move down"
         style={miniBtnStyle(index === total - 1)}
       >
         ↓
       </button>
-      <button type="button" onClick={onEdit} title="Rename" style={miniBtnStyle(false)}>
+      <button type="button" onClick={onEdit} title="Rename" aria-label="Rename" style={miniBtnStyle(false)}>
         ✏️
       </button>
       <button
         type="button"
         onClick={onRemove}
         title="Remove"
+        aria-label="Remove"
         style={{ ...miniBtnStyle(false), color: 'var(--danger)' }}
       >
         ✕

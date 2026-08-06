@@ -5,6 +5,7 @@ import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { chooseFile, flushPromises, renderComponent } from '../components/component-test-utils.js';
 import {
   StoryboardView,
+  normalizeStoryboardAfterRemoval,
   normalizeStoryboardSearch,
   removePresentationSearch,
 } from './StoryboardView.js';
@@ -27,8 +28,23 @@ const storyboard = {
   scenes: [{ id: 'scene-one', name: 'Slide 1', description: '', type: 'slide' as const }],
 };
 
+const presentationScene = (id: string, presentationId = PRESENTATION_ID) => ({
+  id,
+  name: id,
+  description: '',
+  type: 'slide' as const,
+  presentation_source: {
+    presentation_id: presentationId,
+    page_number: 1,
+    page_count: 2,
+    image: `presentations/${presentationId}/pages/page-0001.png`,
+    hold_duration_sec: 5,
+  },
+});
+
 vi.mock('./ScenePage.js', () => ({ ScenePage: ({ sceneId }: { sceneId: string }) => <div>Scene {sceneId}</div> }));
-vi.mock('../components/ui/UiProvider.js', () => ({ useUi: () => ({ confirm: vi.fn() }) }));
+const confirmMock = vi.hoisted(() => vi.fn());
+vi.mock('../components/ui/UiProvider.js', () => ({ useUi: () => ({ confirm: confirmMock }) }));
 const previewMock = vi.hoisted(() => vi.fn());
 vi.mock('../lib/presentation-preview.js', () => ({
   PresentationPreviewError: class extends Error {},
@@ -87,9 +103,11 @@ async function waitForUi(assertion: () => void): Promise<void> {
 
 describe('Storyboard presentation integration', () => {
   beforeEach(() => {
+    confirmMock.mockReset().mockResolvedValue(false);
     previewMock.mockReset().mockResolvedValue({ pageCount: 2, thumbnails: [] });
     vi.spyOn(storyboardApi, 'get').mockResolvedValue(storyboard);
     vi.spyOn(presentationsApi, 'upload').mockResolvedValue(PROCESSING);
+    vi.spyOn(presentationsApi, 'list').mockResolvedValue([]);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -101,6 +119,122 @@ describe('Storyboard presentation integration', () => {
     expect(removed.toString()).toBe('scene=s1&tab=narration&safe=1');
     expect(normalizeStoryboardSearch(new URLSearchParams('tab=script'), 'first')?.toString()).toBe('tab=script&scene=first');
     expect(normalizeStoryboardSearch(new URLSearchParams('scene=explicit&tab=script'), 'first')).toBeNull();
+
+    const previous = [
+      { id: 'before' },
+      { id: 'removed-a' },
+      { id: 'removed-b' },
+      { id: 'after' },
+    ];
+    const next = [{ id: 'before' }, { id: 'after' }];
+    expect(normalizeStoryboardAfterRemoval(
+      new URLSearchParams('scene=removed-a&tab=narration&safe=1'),
+      previous,
+      next,
+    ).toString()).toBe('scene=after&tab=narration&safe=1');
+    expect(normalizeStoryboardAfterRemoval(
+      new URLSearchParams('scene=before&tab=narration&safe=1'),
+      previous,
+      next,
+    ).toString()).toBe('scene=before&tab=narration&safe=1');
+  });
+
+  it('keeps the real presentation ledger mounted through empty and populated storyboard states', async () => {
+    vi.mocked(storyboardApi.get)
+      .mockResolvedValueOnce(null as never)
+      .mockResolvedValue(storyboard);
+    vi.mocked(presentationsApi.list).mockResolvedValue([READY]);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard`);
+
+    await waitForUi(() => expect(view.container.textContent).toContain('No storyboard yet'));
+    await waitForUi(() => expect(view.container.textContent).toContain('deck.pdf'));
+    expect(view.container.querySelectorAll('.presentation-imports')).toHaveLength(1);
+    act(() => buttonByText(view.container, 'Add presentation').click());
+    expect(view.container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('uses the refetched storyboard to select the next scene after deck removal and preserves URL context', async () => {
+    const before = {
+      ...storyboard,
+      scenes: [
+        presentationScene('slide-a'),
+        { id: 'unrelated', name: 'Unrelated', description: '', type: 'browser' as const },
+        presentationScene('slide-b'),
+      ],
+    };
+    const after = { ...storyboard, scenes: [before.scenes[1]!] };
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(before).mockResolvedValue(after);
+    vi.mocked(presentationsApi.list).mockResolvedValueOnce([
+      { ...READY, remaining_scene_count: 2 },
+    ]).mockResolvedValue([]);
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue({ ...READY, remaining_scene_count: 2 });
+    const remove = vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    const view = renderStoryboard(
+      `/project/${PROJECT_ID}/storyboard?scene=slide-a&tab=narration&safe=1`,
+    );
+
+    await waitForUi(() => expect(view.container.textContent).toContain('Remove imported deck'));
+    act(() => buttonByText(view.container, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')?.textContent)
+      .toContain('2 remaining scenes will be deleted'));
+    act(() => buttonByText(view.container.querySelector('[role="dialog"]')!, 'Remove imported deck').click());
+    await waitForUi(() => expect(remove).toHaveBeenCalledOnce());
+    await waitForUi(() => expect(view.container.querySelector('output')?.textContent).toContain('scene=unrelated'));
+    const location = view.container.querySelector('output')?.textContent ?? '';
+    expect(location).toContain('tab=narration');
+    expect(location).toContain('safe=1');
+    view.unmount();
+  });
+
+  it('keeps an explicit surviving selection after deck removal', async () => {
+    const before = {
+      ...storyboard,
+      scenes: [
+        presentationScene('slide-a'),
+        { id: 'survivor', name: 'Survivor', description: '', type: 'browser' as const },
+      ],
+    };
+    const after = { ...storyboard, scenes: [before.scenes[1]!] };
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(before).mockResolvedValue(after);
+    vi.mocked(presentationsApi.list).mockResolvedValueOnce([READY]).mockResolvedValue([]);
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue(READY);
+    vi.spyOn(presentationsApi, 'remove').mockResolvedValue();
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=survivor&tab=script`);
+
+    await waitForUi(() => expect(view.container.textContent).toContain('Remove imported deck'));
+    act(() => buttonByText(view.container, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')).not.toBeNull());
+    act(() => buttonByText(view.container.querySelector('[role="dialog"]')!, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('output')?.textContent).toContain('scene=survivor'));
+    expect(view.container.querySelector('output')?.textContent).toContain('tab=script');
+    view.unmount();
+  });
+
+  it('refetches the presentation count after deleting one imported scene', async () => {
+    const before = {
+      ...storyboard,
+      scenes: [presentationScene('slide-a'), presentationScene('slide-b')],
+    };
+    const afterOne = { ...storyboard, scenes: [before.scenes[1]!] };
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(before).mockResolvedValue(afterOne);
+    vi.mocked(presentationsApi.list)
+      .mockResolvedValueOnce([{ ...READY, remaining_scene_count: 2 }])
+      .mockResolvedValue([{ ...READY, remaining_scene_count: 1 }]);
+    vi.spyOn(storyboardApi, 'removeScene').mockResolvedValue(afterOne);
+    vi.spyOn(presentationsApi, 'get').mockResolvedValue({ ...READY, remaining_scene_count: 1 });
+    confirmMock.mockResolvedValue(true);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=slide-a&tab=recording`);
+
+    await waitForUi(() => expect(view.container.textContent).toContain('2 scenes remain'));
+    act(() => view.container.querySelector<HTMLButtonElement>('button[title="Remove"]')!.click());
+    await waitForUi(() => expect(storyboardApi.removeScene).toHaveBeenCalledWith(PROJECT_ID, 'slide-a'));
+    await waitForUi(() => expect(view.container.textContent).toContain('1 scene remains'));
+    expect(view.container.textContent).toContain('deck.pdf');
+    act(() => buttonByText(view.container, 'Remove imported deck').click());
+    await waitForUi(() => expect(view.container.querySelector('[role="dialog"]')?.textContent)
+      .toContain('1 remaining scene will be deleted'));
+    view.unmount();
   });
 
   it('opens one rail dialog and shows accepted progress without overriding explicit scene selection', async () => {
@@ -233,3 +367,10 @@ describe('Storyboard presentation integration', () => {
     view.unmount();
   });
 });
+
+function buttonByText(container: ParentNode, label: string): HTMLButtonElement {
+  const match = [...container.querySelectorAll('button')]
+    .find((candidate) => candidate.textContent?.trim() === label);
+  if (!match) throw new Error(`Missing button: ${label}`);
+  return match;
+}
