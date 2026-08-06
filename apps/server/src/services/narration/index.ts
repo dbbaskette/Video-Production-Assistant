@@ -367,7 +367,7 @@ function planBatchNarration(scene: Scene, input: BatchVoiceSelection): BatchNarr
     const chunk = stored.find((candidate) => candidate.index === index);
     if (selector === 'all') return true;
     if (selector === 'missing') {
-      if (stored.length === 0 && scene.narration?.audio) return false;
+      if (scene.narration?.audio) return false;
       return !chunk?.audio || chunk.text !== paragraphs[index] || Boolean(chunk.failed);
     }
     if (selector === 'failed') return Boolean(chunk?.failed);

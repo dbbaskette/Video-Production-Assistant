@@ -348,6 +348,12 @@ describe('narration routes', () => {
     release();
     await waitForJobStatus(batch.json().jobId, 'cancelled');
     expect(jobQueue.get(batch.json().jobId)?.result).toMatchObject({ cancelled: true });
+    const repeated = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${batch.json().jobId}/cancel`,
+    });
+    expect(repeated.json()).toMatchObject({ cancelled: false, status: 'cancelled' });
+    expect(jobQueue.get(batch.json().jobId)?.status).toBe('cancelled');
   });
 
   it('POST generate creates narration with audio + subtitles', async () => {

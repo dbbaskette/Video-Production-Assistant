@@ -73,12 +73,22 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   const { store, tts, router, workspaceRoot, vpaHome } = deps;
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
-  const activeNarrationRequests = new Set<string>();
+  const activeNarrationRequests = new Map<string, symbol>();
+  const requestReservations = new WeakMap<object, { projectId: string; token: symbol }>();
   const activeNarrationJobs = (projectId: string) => jobQueue
     .list({ activeOnly: true, projectId })
     .filter((job) => job.type === 'narration-generate-project' || job.type === 'narration-generate-all');
   const hasActiveNarrationWork = (projectId: string) =>
     activeNarrationRequests.has(projectId) || activeNarrationJobs(projectId).length > 0;
+  const reserveNarration = (projectId: string): symbol | null => {
+    if (hasActiveNarrationWork(projectId)) return null;
+    const token = Symbol(projectId);
+    activeNarrationRequests.set(projectId, token);
+    return token;
+  };
+  const releaseNarration = (projectId: string, token: symbol) => {
+    if (activeNarrationRequests.get(projectId) === token) activeNarrationRequests.delete(projectId);
+  };
   const conflict = (reply: FastifyReply) => reply.status(409).send({
     error: 'Narration generation is already running for this project',
     code: 'narration_job_active',
@@ -93,11 +103,22 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
     if (!id || !mutating || !route?.includes('/narration')
       || route === '/api/projects/:id/narration/generate-project') return;
-    if (hasActiveNarrationWork(id)) return conflict(reply);
-    activeNarrationRequests.add(id);
-    const release = () => activeNarrationRequests.delete(id);
-    reply.raw.once('finish', release);
-    reply.raw.once('close', release);
+    const token = reserveNarration(id);
+    if (!token) return conflict(reply);
+    requestReservations.set(req, { projectId: id, token });
+  });
+  const releaseRequestReservation = (req: object) => {
+    const reservation = requestReservations.get(req);
+    if (!reservation) return;
+    requestReservations.delete(req);
+    releaseNarration(reservation.projectId, reservation.token);
+  };
+  app.addHook('onSend', async (req, _reply, payload) => {
+    releaseRequestReservation(req);
+    return payload;
+  });
+  app.addHook('onError', async (req) => {
+    releaseRequestReservation(req);
   });
 
   const listAdvertisedEngines = async () => {
@@ -194,25 +215,25 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
     }
 
-    if (hasActiveNarrationWork(id)) return conflict(reply);
-    activeNarrationRequests.add(id);
+    const reservation = reserveNarration(id);
+    if (!reservation) return conflict(reply);
 
     let project;
     try {
       project = await resolveProject(store, id);
     } catch {
-      activeNarrationRequests.delete(id);
+      releaseNarration(id, reservation);
       return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
     }
     let storyboard;
     try {
       storyboard = await loadStoryboard(project.path);
     } catch (error) {
-      activeNarrationRequests.delete(id);
+      releaseNarration(id, reservation);
       throw error;
     }
     if (!storyboard) {
-      activeNarrationRequests.delete(id);
+      releaseNarration(id, reservation);
       return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
     }
 
@@ -221,7 +242,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       projectId: id,
       label: 'Project narration',
     });
-    activeNarrationRequests.delete(id);
+    releaseNarration(id, reservation);
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', {
       totalScenes: scenes.length,
@@ -406,7 +427,6 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         code: 'narration_generation_failed',
       });
     } finally {
-      activeNarrationRequests.delete(id);
     }
   });
 
@@ -458,7 +478,6 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         code: 'narration_chunk_generation_failed',
       });
     } finally {
-      activeNarrationRequests.delete(id);
     }
   });
 
@@ -546,7 +565,6 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         writer = await router.resolveText('writing', project);
       }
     } catch (error) {
-      activeNarrationRequests.delete(id);
       if (error instanceof ModelRoutingError) {
         return reply.status(error.statusCode).send({
           error: error.message,
@@ -561,7 +579,6 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       projectId: id,
       label: `TTS: ${sceneId}`,
     });
-    activeNarrationRequests.delete(id);
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { sceneId, engine: body.engine, voice: body.voice, selector: body.selector ?? 'missing' });
 
@@ -610,7 +627,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const { jobId } = req.params as { jobId: string };
     const j = jobQueue.get(jobId);
     if (!j) return reply.status(404).send({ error: 'Job not found', code: 'not_found' });
-    if (j.status === 'completed' || j.status === 'failed') {
+    if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
       return { cancelled: false, status: j.status };
     }
     if (j.type === 'narration-generate-project' || j.type === 'narration-generate-all') {

@@ -387,6 +387,7 @@ describe('narration service', () => {
   it('preserves legacy scene audio by default and clears it when overwriting with chunks', async () => {
     const sb = makeSampleStoryboard();
     sb.scenes[0]!.narration!.audio = 'narration/legacy.mp3';
+    sb.scenes[0]!.narration!.chunks = [{ index: 0, text: 'Stale partial chunk.', audio: 'partial.mp3' }];
     await saveStoryboard(projectPath, sb);
 
     const preserved = await generateAllChunks(
