@@ -14,7 +14,7 @@ test('dashboard renders, creates a project, lists it', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Ideate a new demo' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await page.getByPlaceholder('my-demo').fill('e2e-smoke');
+  await page.getByPlaceholder('MCP Demo Test').fill('e2e-smoke');
   await page.getByRole('button', { name: 'Create' }).click();
 
   await expect(page.getByRole('dialog')).toBeHidden();

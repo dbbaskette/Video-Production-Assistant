@@ -70,7 +70,11 @@ test('scene page loads from storyboard and shows recording tab', async ({ page }
   await expect(page).toHaveURL(/\/project\/[^/]+\/storyboard/);
 
   // Pick the generated browser scene in the master-detail storyboard.
-  await page.getByRole('button', { name: /browser/ }).first().click();
+  await page.locator('.scene-row')
+    .filter({ has: page.locator('.scene-row__type', { hasText: 'browser' }) })
+    .first()
+    .locator('.scene-row__select')
+    .click();
 
   // Embedded scene editor should expose all workflow tabs.
   await expect(page.getByRole('button', { name: 'Recording', exact: true })).toBeVisible();
