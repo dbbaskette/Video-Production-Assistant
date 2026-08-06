@@ -6,7 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { TtsService, createFakeTtsProvider } from '../tts/index.js';
 import { createFakeLlm } from '../llm/index.js';
 import { saveStoryboard, loadStoryboard } from '../storyboard/index.js';
-import { generateNarration, generateAllChunks, splitScriptIntoChunks } from './index.js';
+import {
+  generateNarration,
+  generateAllChunks,
+  inspectNarrationBatch,
+  splitScriptIntoChunks,
+} from './index.js';
 import type { Storyboard } from '@vpa/shared';
 
 // The `fake` TTS engine never routes through the xAI expressiveness pass, so
@@ -58,6 +63,45 @@ describe('narration service', () => {
 
   afterEach(async () => {
     await rm(projectPath, { recursive: true, force: true });
+  });
+
+  it('inspects the exact chunks a batch would generate', () => {
+    const scripted = makeSampleStoryboard().scenes[0]!;
+
+    expect(inspectNarrationBatch(scripted, {
+      engine: 'xai',
+      voice: 'Ara',
+      selector: 'missing',
+    })).toEqual({ targetCount: 1, requiresWriting: true });
+
+    scripted.narration!.chunks = [{
+      index: 0,
+      text: scripted.narration!.script!,
+      audio: 'narration/scene-01-chunk-00.mp3',
+    }];
+
+    expect(inspectNarrationBatch(scripted, {
+      engine: 'fake',
+      voice: 'Kore',
+      selector: 'missing',
+    })).toEqual({ targetCount: 0, requiresWriting: false });
+  });
+
+  it('includes explicit dialog speaker engines when inspecting a batch', () => {
+    const scene = makeSampleStoryboard().scenes[0]!;
+    scene.narration = {
+      mode: 'dialog',
+      script: '[Speaker A] Hello there.',
+      speakers: {
+        A: { engine: 'xai', voice: 'Ara' },
+      },
+    };
+
+    expect(inspectNarrationBatch(scene, {
+      engine: 'fake',
+      voice: 'Kore',
+      selector: 'missing',
+    })).toEqual({ targetCount: 1, requiresWriting: true });
   });
 
   it('generates narration with audio + subtitles', async () => {

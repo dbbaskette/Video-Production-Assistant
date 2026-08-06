@@ -330,7 +330,12 @@ interface BatchNarrationPlan {
   targets: PlannedBatchChunk[];
 }
 
-type BatchVoiceSelection = Pick<BatchInput, 'engine' | 'voice' | 'speed' | 'selector'>;
+export type BatchVoiceSelection = Pick<BatchInput, 'engine' | 'voice' | 'speed' | 'selector'>;
+
+export interface NarrationBatchInspection {
+  targetCount: number;
+  requiresWriting: boolean;
+}
 
 /**
  * Build the exact set of chunks a batch request can synthesize, including
@@ -385,8 +390,19 @@ function planBatchNarration(scene: Scene, input: BatchVoiceSelection): BatchNarr
   return { derived, stored, targets };
 }
 
+export function inspectNarrationBatch(
+  scene: Scene,
+  input: BatchVoiceSelection,
+): NarrationBatchInspection {
+  const plan = planBatchNarration(scene, input);
+  return {
+    targetCount: plan.targets.length,
+    requiresWriting: plan.targets.some((chunk) => chunk.engine === 'xai'),
+  };
+}
+
 export function batchRequiresWriting(scene: Scene, input: BatchVoiceSelection): boolean {
-  return planBatchNarration(scene, input).targets.some((chunk) => chunk.engine === 'xai');
+  return inspectNarrationBatch(scene, input).requiresWriting;
 }
 
 /**
