@@ -168,8 +168,9 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
     }
 
-    if (jobQueue.list({ activeOnly: true, projectId: id })
-      .some((candidate) => candidate.type === 'narration-generate-project')) {
+    const projectNarrationIsActive = () => jobQueue.list({ activeOnly: true, projectId: id })
+      .some((candidate) => candidate.type === 'narration-generate-project');
+    if (projectNarrationIsActive()) {
       return reply.status(409).send({
         error: 'Project narration is already running',
         code: 'narration_job_active',
@@ -185,6 +186,15 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const storyboard = await loadStoryboard(project.path);
     if (!storyboard) {
       return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    }
+
+    // Project and storyboard lookup both yield. Recheck immediately before the
+    // synchronous create so concurrent requests cannot both reserve a job.
+    if (projectNarrationIsActive()) {
+      return reply.status(409).send({
+        error: 'Project narration is already running',
+        code: 'narration_job_active',
+      });
     }
 
     const scenes = storyboard.scenes.map(({ id: sceneId, name }) => ({ id: sceneId, name }));

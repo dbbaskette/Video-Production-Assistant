@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene, Storyboard } from '@vpa/shared';
+import type { LlmClient } from '../llm/index.js';
 import { inspectNarrationBatch } from './index.js';
 import { generateProjectNarration } from './project-generation.js';
 
@@ -123,7 +124,9 @@ describe('generateProjectNarration', () => {
       script: '[Speaker A] Hello.',
       speakers: { A: { engine: 'xai', voice: 'Ara', speed: 1 } },
     };
-    const writer = { complete: vi.fn() } as any;
+    const writer: LlmClient = {
+      complete: vi.fn().mockResolvedValue({ text: 'prepared' }),
+    };
     const resolveWriter = vi.fn().mockResolvedValue(writer);
     const generateScene = vi.fn().mockResolvedValue({ total: 1, completed: 1, failed: 0 });
 
