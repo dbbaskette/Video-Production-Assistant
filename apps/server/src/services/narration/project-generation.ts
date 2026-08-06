@@ -40,6 +40,7 @@ export interface ProjectNarrationProgress {
   type: 'scene-start' | 'scene-complete' | 'scene-skipped' | 'scene-failed' | 'cancelled' | 'done';
   sceneId?: string;
   sceneName?: string;
+  sceneNumber?: number;
   totalScenes: number;
   processedScenes: number;
   generatedScenes: number;
@@ -86,6 +87,7 @@ export async function generateProjectNarration(
     failures: [],
   };
   let processedScenes = 0;
+  let currentSceneNumber = 0;
 
   const emit = (
     type: ProjectNarrationProgress['type'],
@@ -95,6 +97,7 @@ export async function generateProjectNarration(
     type,
     sceneId: current?.id,
     sceneName: current?.name,
+    sceneNumber: current ? currentSceneNumber : undefined,
     totalScenes: result.totalScenes,
     processedScenes,
     generatedScenes: result.generatedScenes,
@@ -106,7 +109,8 @@ export async function generateProjectNarration(
     message,
   });
 
-  for (const snapshot of input.scenes) {
+  for (const [sceneOffset, snapshot] of input.scenes.entries()) {
+    currentSceneNumber = sceneOffset + 1;
     if (dependencies.isCancelled()) {
       result.cancelled = true;
       emit('cancelled', 'Project narration cancelled');

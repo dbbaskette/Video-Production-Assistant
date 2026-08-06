@@ -103,6 +103,21 @@ describe('ProjectNarrationPanel', () => {
       engine: 'gemini', voice: 'Kore', speed: 1, expressiveness: 'heavy', overwrite: false,
     });
     act(() => listener({
+      type: 'progress',
+      data: {
+        sceneNumber: 1,
+        totalScenes: 3,
+        sceneName: 'One',
+        generatedScenes: 0,
+        preservedScenes: 0,
+        noScriptScenes: 0,
+        failedScenes: 0,
+      },
+    }));
+    expect(view.container.textContent).toContain('Narrating 1 of 3');
+    expect(view.container.textContent).toContain('0 generated');
+    expect(view.container.textContent).toContain('0 failed');
+    act(() => listener({
       type: 'done',
       data: {
         totalScenes: 3, generatedScenes: 1, generatedChunks: 1, preservedScenes: 1,

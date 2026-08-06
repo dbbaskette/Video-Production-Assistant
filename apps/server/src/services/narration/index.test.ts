@@ -343,7 +343,7 @@ describe('narration service', () => {
     expect(updated!.scenes[0]!.narration!.chunks![0]!.text).toBe('Only one paragraph.');
   });
 
-  it('merges generated audio without overwriting a script edit made during TTS', async () => {
+  it('discards generated audio when the script changes during TTS', async () => {
     let release!: () => void;
     let started!: () => void;
     const began = new Promise<void>((resolve) => { started = resolve; });
@@ -375,10 +375,41 @@ describe('narration service', () => {
     edited!.scenes[0]!.narration!.script = 'Edited while audio was generating.';
     await saveStoryboard(projectPath, edited!);
     release();
-    await generation;
+    const result = await generation;
 
     const updated = await loadStoryboard(projectPath);
     expect(updated!.scenes[0]!.narration!.script).toBe('Edited while audio was generating.');
+    expect(result).toMatchObject({ completed: 0, failed: 1 });
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.audio).toBeUndefined();
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.failed?.reason).toBe('Narration generation failed');
+  });
+
+  it('preserves legacy scene audio by default and clears it when overwriting with chunks', async () => {
+    const sb = makeSampleStoryboard();
+    sb.scenes[0]!.narration!.audio = 'narration/legacy.mp3';
+    await saveStoryboard(projectPath, sb);
+
+    const preserved = await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+    expect(preserved.total).toBe(0);
+    expect((await loadStoryboard(projectPath))!.scenes[0]!.narration!.audio).toBe('narration/legacy.mp3');
+
+    const overwritten = await generateAllChunks(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice', selector: 'all' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+      () => {},
+    );
+    expect(overwritten.completed).toBe(1);
+    const updated = await loadStoryboard(projectPath);
+    expect(updated!.scenes[0]!.narration!.audio).toBeUndefined();
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.audio).toContain('scene-01-chunk-00.mp3');
   });
 
   it('persists a stable public failure reason instead of provider diagnostics', async () => {

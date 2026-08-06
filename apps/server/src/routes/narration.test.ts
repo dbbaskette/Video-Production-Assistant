@@ -12,7 +12,7 @@ import type { LlmClient } from '../services/llm/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import { jobQueue } from '../lib/job-queue.js';
 
-async function waitForJobStatus(jobId: string, target: 'completed' | 'failed'): Promise<void> {
+async function waitForJobStatus(jobId: string, target: 'completed' | 'failed' | 'cancelled'): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const status = jobQueue.get(jobId)?.status;
@@ -307,8 +307,47 @@ describe('narration routes', () => {
     expect(overlappingScene.statusCode).toBe(409);
 
     release();
-    await waitForJobStatus(startedJob.json().jobId, 'completed');
+    await waitForJobStatus(startedJob.json().jobId, 'cancelled');
     expect(jobQueue.get(startedJob.json().jobId)?.result).toMatchObject({ cancelled: true });
+  });
+
+  it('retains scene-batch ownership until cancellation reaches a safe boundary', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    ctx.tts.register({
+      id: 'slow-scene',
+      displayName: 'Slow scene',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        started();
+        await gate;
+        return { audio: Buffer.from('audio'), durationSec: 1, timings: [] };
+      },
+    });
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const batch = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'slow-scene', voice: 'voice' },
+    });
+    await began;
+    await ctx.app.inject({ method: 'POST', url: `/api/jobs/${batch.json().jobId}/cancel` });
+    expect(jobQueue.get(batch.json().jobId)?.status).toBe('cancelling');
+
+    const overlap = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow-scene', voice: 'voice', overwrite: false },
+    });
+    expect(overlap.statusCode).toBe(409);
+
+    release();
+    await waitForJobStatus(batch.json().jobId, 'cancelled');
+    expect(jobQueue.get(batch.json().jobId)?.result).toMatchObject({ cancelled: true });
   });
 
   it('POST generate creates narration with audio + subtitles', async () => {

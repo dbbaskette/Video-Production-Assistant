@@ -86,17 +86,24 @@ export function ProjectNarrationPanel({
         const progress = event.data as {
           processedScenes?: unknown;
           totalScenes?: unknown;
+          sceneNumber?: unknown;
           sceneName?: unknown;
+          generatedScenes?: unknown;
           preservedScenes?: unknown;
           noScriptScenes?: unknown;
+          failedScenes?: unknown;
         };
-        const completed = typeof progress?.processedScenes === 'number' ? progress.processedScenes : null;
+        const position = typeof progress?.sceneNumber === 'number'
+          ? progress.sceneNumber
+          : (typeof progress?.processedScenes === 'number' ? progress.processedScenes : null);
         const total = typeof progress?.totalScenes === 'number' ? progress.totalScenes : null;
         const sceneName = typeof progress?.sceneName === 'string' ? progress.sceneName : '';
+        const generated = typeof progress?.generatedScenes === 'number' ? progress.generatedScenes : 0;
         const preserved = typeof progress?.preservedScenes === 'number' ? progress.preservedScenes : 0;
         const skipped = typeof progress?.noScriptScenes === 'number' ? progress.noScriptScenes : 0;
-        setStatus(completed !== null && total !== null
-          ? `Narrating ${completed} of ${total}${sceneName ? ` · ${sceneName}` : ''} · ${preserved} preserved · ${skipped} skipped`
+        const failed = typeof progress?.failedScenes === 'number' ? progress.failedScenes : 0;
+        setStatus(position !== null && total !== null
+          ? `Narrating ${position} of ${total}${sceneName ? ` · ${sceneName}` : ''} · ${generated} generated · ${preserved} preserved · ${skipped} skipped · ${failed} failed`
           : 'Project narration is running');
       } else if (event.type === 'done') {
         const result = parseProjectNarrationResult(event.data);

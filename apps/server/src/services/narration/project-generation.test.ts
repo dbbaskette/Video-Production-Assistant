@@ -43,13 +43,14 @@ describe('generateProjectNarration', () => {
     const current = storyboard([one, two, three]);
     const generateScene = vi.fn().mockResolvedValue({ total: 1, completed: 1, failed: 0 });
     const resolveWriter = vi.fn();
+    const onProgress = vi.fn();
 
     const result = await generateProjectNarration(input(current.scenes), {
       loadStoryboard: vi.fn().mockResolvedValue(current),
       inspectBatch: inspectNarrationBatch,
       resolveWriter,
       generateScene,
-      onProgress: vi.fn(),
+      onProgress,
       isCancelled: () => false,
     });
 
@@ -61,6 +62,14 @@ describe('generateProjectNarration', () => {
       expect.any(Function),
     );
     expect(resolveWriter).not.toHaveBeenCalled();
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'scene-start',
+      sceneNumber: 1,
+      generatedScenes: 0,
+      preservedScenes: 0,
+      noScriptScenes: 0,
+      failedScenes: 0,
+    }));
     expect(result).toMatchObject({
       totalScenes: 3,
       generatedScenes: 1,

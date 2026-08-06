@@ -38,6 +38,8 @@ export interface ChunkNarrationInput {
   /** Trailing silence after this chunk. When omitted, the chunk's existing
    *  gap is preserved (a single-chunk regen shouldn't drop a set pause). */
   gapSec?: number;
+  /** Clear the legacy scene-wide audio fields when migrating to chunks. */
+  replaceLegacyAudio?: boolean;
 }
 
 export interface ChunkNarrationResult {
@@ -231,21 +233,29 @@ export async function generateChunkNarration(
   // Generate audio for this chunk
   const ttsResult = await tts.generate(engine, prepared, { voice, speed, expressiveness: level });
 
-  // Write chunk audio file
+  // Prepare the final chunk path. The write happens inside the serialized
+  // storyboard mutation after confirming the script still matches.
   const narrationDir = join(projectPath, 'narration');
   await mkdir(narrationDir, { recursive: true });
 
   const chunkTag = String(chunkIndex).padStart(2, '0');
   const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}.mp3`;
-  await writeFile(join(projectPath, audioRelPath), ttsResult.audio);
 
   // Merge the result into a fresh storyboard snapshot after the potentially
   // long model/TTS call. This preserves script, speaker, ordering, and other
   // edits made while audio was being synthesized.
-  await mutateStoryboard(projectPath, (current) => {
+  await mutateStoryboard(projectPath, async (current) => {
     if (!current) throw new Error('No storyboard found');
     const currentScene = current.scenes.find((candidate) => candidate.id === sceneId);
     if (!currentScene) throw new Error(`Scene not found: ${sceneId}`);
+    const currentIsDialog = (currentScene.narration?.mode ?? 'monologue') === 'dialog';
+    const currentDerived = currentScene.narration?.script
+      ? splitScriptIntoChunks(currentScene.narration.script, currentIsDialog)
+      : [];
+    if (currentDerived[chunkIndex]?.text !== text) {
+      throw new Error('Narration script changed during generation');
+    }
+    await writeFile(join(projectPath, audioRelPath), ttsResult.audio);
     const existingChunks = currentScene.narration?.chunks ?? [];
     const chunkIdx = existingChunks.findIndex((chunk) => chunk.index === chunkIndex);
     const existingSpeaker = chunkIdx >= 0 ? existingChunks[chunkIdx]!.speaker : undefined;
@@ -275,6 +285,11 @@ export async function generateChunkNarration(
       chunks: updatedChunks,
       [modeChunksKey]: updatedChunks,
     };
+    if (input.replaceLegacyAudio) {
+      delete narration.audio;
+      delete narration.subtitles;
+      delete narration.timings;
+    }
     return updateScene(current, sceneId, { narration });
   });
 
@@ -352,6 +367,7 @@ function planBatchNarration(scene: Scene, input: BatchVoiceSelection): BatchNarr
     const chunk = stored.find((candidate) => candidate.index === index);
     if (selector === 'all') return true;
     if (selector === 'missing') {
+      if (stored.length === 0 && scene.narration?.audio) return false;
       return !chunk?.audio || chunk.text !== paragraphs[index] || Boolean(chunk.failed);
     }
     if (selector === 'failed') return Boolean(chunk?.failed);
@@ -453,7 +469,7 @@ export async function generateAllChunks(
   workspaceRoot: string,
   onProgress: (p: BatchProgress) => void,
   isCancelled: () => boolean = () => false,
-): Promise<{ total: number; completed: number; failed: number }> {
+): Promise<{ total: number; completed: number; failed: number; cancelled?: boolean }> {
   const { projectPath, sceneId, engine, voice, speed, expressiveness, selector = 'missing' } = input;
 
   const sb = await loadStoryboard(projectPath);
@@ -523,7 +539,7 @@ export async function generateAllChunks(
         failed: failedCount,
         message: `Cancelled after ${completed} of ${total} chunks`,
       });
-      return { total, completed, failed: failedCount };
+      return { total, completed, failed: failedCount, cancelled: true };
     }
     onProgress({
       type: 'chunk-start',
@@ -538,7 +554,18 @@ export async function generateAllChunks(
         // Only pass a token-seeded gap when the script actually has one (>0);
         // omitting it lets generateChunkNarration PRESERVE a manually-set
         // (UI) gap instead of an explicit 0 clobbering it.
-        { projectPath, sceneId, chunkIndex: i, text, engine: chunkEngine, voice: chunkVoice, speed: chunkSpeed, expressiveness, gapSec: gapSec || undefined },
+        {
+          projectPath,
+          sceneId,
+          chunkIndex: i,
+          text,
+          engine: chunkEngine,
+          voice: chunkVoice,
+          speed: chunkSpeed,
+          expressiveness,
+          gapSec: gapSec || undefined,
+          replaceLegacyAudio: selector === 'all',
+        },
         tts,
         llm,
         workspaceRoot,
