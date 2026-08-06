@@ -57,13 +57,14 @@ import {
 import type { WorkspaceOutletContext } from './ProjectWorkspace.js';
 
 const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
+const NOOP_SET_FOCUS = () => undefined;
 
 export function StoryboardView() {
   const { projectId } = useParams<{ projectId: string }>();
   const {
     project,
     focusMode = false,
-    setFocusMode = () => undefined,
+    setFocusMode = NOOP_SET_FOCUS,
   } = useOutletContext<WorkspaceOutletContext>();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -186,6 +187,10 @@ export function StoryboardView() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [focusMode, setFocusMode]);
+
+  useEffect(() => () => {
+    setFocusMode(false);
+  }, [setFocusMode]);
 
   const closePresentation = useCallback(() => {
     setActivePresentation(null);
@@ -632,6 +637,7 @@ function SceneRow({
   const chunks = scene.narration?.chunks ?? [];
   const narratedChunks = chunks.filter((chunk) => !!chunk.audio).length;
   const totalChunks = chunks.length;
+  const statusDescriptionId = `scene-status-${scene.id}`;
 
   if (editing) {
     const cancel = () => {
@@ -697,6 +703,7 @@ function SceneRow({
         type="button"
         className="scene-row__select"
         aria-label={`Select scene ${scene.name}`}
+        aria-describedby={statusDescriptionId}
         aria-pressed={selected}
         onClick={onSelect}
       >
@@ -710,7 +717,7 @@ function SceneRow({
           </span>
         </span>
         <span className="scene-row__title" title={scene.name}>{scene.name}</span>
-        <span className="scene-row__statuses">
+        <span className="scene-row__statuses" id={statusDescriptionId}>
           <StatusChip
             icon={Video}
             label="Recording"

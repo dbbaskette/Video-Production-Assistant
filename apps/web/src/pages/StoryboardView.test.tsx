@@ -1,5 +1,13 @@
 import { act, useState } from 'react';
-import { MemoryRouter, Outlet, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
+import {
+  MemoryRouter,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { chooseFile, flushPromises, renderComponent } from '../components/component-test-utils.js';
@@ -106,6 +114,11 @@ function SearchControls() {
   );
 }
 
+function LeaveStoryboard() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('..')}>Leave storyboard</button>;
+}
+
 function WorkspaceHarness() {
   const [focusMode, setFocusMode] = useState(false);
   return (
@@ -130,7 +143,8 @@ function renderStoryboard(entry: string) {
     >
       <Routes>
         <Route path="/project/:projectId" element={<WorkspaceHarness />}>
-          <Route path="storyboard" element={<><StoryboardView /><Location /><SearchControls /></>} />
+          <Route path="storyboard" element={<><StoryboardView /><Location /><SearchControls /><LeaveStoryboard /></>} />
+          <Route index element={<div>Overview screen</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -513,6 +527,13 @@ describe('Storyboard presentation integration', () => {
     expect(selected.querySelector('.scene-row__identity')?.textContent).toContain('02browser');
     expect(selected.querySelector('.scene-row__title')?.textContent).toBe('Browser checkout');
     expect(selected.querySelectorAll('.scene-status')).toHaveLength(3);
+    const select = selected.querySelector<HTMLButtonElement>('.scene-row__select')!;
+    const statusDescriptionId = select.getAttribute('aria-describedby');
+    expect(statusDescriptionId).toBe('scene-status-scene-browser');
+    const statusDescription = selected.querySelector(`#${statusDescriptionId}`);
+    expect(statusDescription?.textContent).toContain('RecordingReady');
+    expect(statusDescription?.textContent).toContain('ScriptReady');
+    expect(statusDescription?.textContent).toContain('NarrationMissing');
     expect(selected.querySelector('.scene-row__actions')).not.toBeNull();
     expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('Browser checkout');
     expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('browser');
@@ -536,6 +557,20 @@ describe('Storyboard presentation integration', () => {
     expect(view.container.querySelector('.storyboard-rail')).not.toBeNull();
     expect(view.container.querySelector('output[aria-label="Location"]')?.textContent)
       .toContain('scene=scene-browser');
+    view.unmount();
+  });
+
+  it('exits focus mode when navigating to a sibling project page', async () => {
+    vi.mocked(storyboardApi.get).mockResolvedValueOnce(workflowStoryboard);
+    const view = renderStoryboard(`/project/${PROJECT_ID}/storyboard?scene=scene-browser`);
+    await waitForUi(() => expect(buttonByLabel(view.container, 'Focus editor')).not.toBeNull());
+
+    act(() => buttonByLabel(view.container, 'Focus editor').click());
+    expect(view.container.querySelector('.project-sidebar')).toBeNull();
+
+    act(() => buttonByText(view.container, 'Leave storyboard').click());
+    await waitForUi(() => expect(view.container.textContent).toContain('Overview screen'));
+    expect(view.container.querySelector('.project-sidebar')).not.toBeNull();
     view.unmount();
   });
 });
