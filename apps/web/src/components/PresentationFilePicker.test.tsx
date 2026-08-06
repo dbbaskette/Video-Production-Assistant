@@ -1,14 +1,12 @@
 import { act, StrictMode, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PresentationPreview } from '../lib/presentation-preview.js';
+import {
+  createPresentationPreviewer,
+  type PresentationCanvas,
+  type PresentationPdfDocument,
+  type PresentationPreview,
+} from '../lib/presentation-preview.js';
 import { chooseFile, flushPromises, renderComponent } from './component-test-utils.js';
-
-vi.mock('../lib/presentation-preview.js', () => ({
-  PresentationPreviewError: class MockPresentationPreviewError extends Error {
-    constructor(readonly code: string) { super(code); }
-  },
-  previewPresentation: vi.fn(),
-}));
 
 const previewMock = vi.fn();
 
@@ -17,13 +15,19 @@ import {
   formatFileSize,
   resolvePresentationPreview,
   type PresentationPreviewResult,
+  type PresentationPreviewResultOperation,
 } from './PresentationFilePicker.js';
 
-const resolvePreviewMock = vi.fn<[File], Promise<PresentationPreviewResult>>();
+const startPreviewMock = vi.fn<[File], PresentationPreviewResultOperation>();
 
-function Harness({ onPreviewChange = vi.fn(), disabled = false }: {
+function operation(result: PresentationPreviewResult): PresentationPreviewResultOperation {
+  return { promise: Promise.resolve(result), cancel: vi.fn() };
+}
+
+function Harness({ onPreviewChange = vi.fn(), disabled = false, startPreview = startPreviewMock }: {
   onPreviewChange?: (state: { valid: boolean; preview: PresentationPreview | null }) => void;
   disabled?: boolean;
+  startPreview?: (file: File) => PresentationPreviewResultOperation;
 }) {
   const [file, setFile] = useState<File | null>(null);
   return (
@@ -32,7 +36,7 @@ function Harness({ onPreviewChange = vi.fn(), disabled = false }: {
       disabled={disabled}
       onChange={setFile}
       onPreviewChange={onPreviewChange}
-      resolvePreview={resolvePreviewMock}
+      startPreview={startPreview}
     />
   );
 }
@@ -40,12 +44,12 @@ function Harness({ onPreviewChange = vi.fn(), disabled = false }: {
 describe('PresentationFilePicker', () => {
   beforeEach(() => {
     previewMock.mockReset();
-    resolvePreviewMock.mockReset();
+    startPreviewMock.mockReset();
   });
   afterEach(() => { document.body.innerHTML = ''; });
 
   it('shows a contained four-slide contact sheet and continuation count', async () => {
-    resolvePreviewMock.mockResolvedValue({
+    startPreviewMock.mockReturnValue(operation({
       kind: 'ready',
       preview: {
         pageCount: 7,
@@ -54,7 +58,7 @@ describe('PresentationFilePicker', () => {
           dataUrl: `data:image/png;base64,${index + 1}`,
         })),
       },
-    });
+    }));
     const view = renderComponent(<Harness />);
     chooseFile(view.container.querySelector('input[type="file"]')!, new File([new Uint8Array(1536)], 'roadmap.pdf'));
     await flushPromises();
@@ -75,11 +79,14 @@ describe('PresentationFilePicker', () => {
 
   it('ignores a stale preview after the file is replaced', async () => {
     let resolveOld!: (value: PresentationPreview) => void;
-    resolvePreviewMock
-      .mockImplementationOnce(() => new Promise<PresentationPreviewResult>((resolve) => {
-        resolveOld = (preview) => resolve({ kind: 'ready', preview });
+    startPreviewMock
+      .mockImplementationOnce(() => ({
+        promise: new Promise<PresentationPreviewResult>((resolve) => {
+          resolveOld = (preview) => resolve({ kind: 'ready', preview });
+        }),
+        cancel: vi.fn(),
       }))
-      .mockResolvedValueOnce({ kind: 'ready', preview: { pageCount: 2, thumbnails: [] } });
+      .mockReturnValueOnce(operation({ kind: 'ready', preview: { pageCount: 2, thumbnails: [] } }));
     const onPreviewChange = vi.fn();
     const view = renderComponent(<Harness onPreviewChange={onPreviewChange} />);
     const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -100,10 +107,10 @@ describe('PresentationFilePicker', () => {
   });
 
   it('keeps an invalid selection, alerts with replacement guidance, and removes once', async () => {
-    resolvePreviewMock.mockResolvedValue({
+    startPreviewMock.mockReturnValue(operation({
       kind: 'error',
       message: 'This PDF could not be previewed',
-    });
+    }));
     const onPreviewChange = vi.fn();
     const view = renderComponent(<Harness onPreviewChange={onPreviewChange} />);
     chooseFile(view.container.querySelector('input[type="file"]')!, new File(['broken'], 'broken.pdf'));
@@ -122,8 +129,75 @@ describe('PresentationFilePicker', () => {
     view.unmount();
   });
 
+  it('keeps a visible, associated replacement control after selection', async () => {
+    startPreviewMock.mockReturnValue(operation({ kind: 'ready', preview: { pageCount: 1, thumbnails: [] } }));
+    const view = renderComponent(<Harness />);
+    const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(input.getAttribute('aria-label')).toBe('Presentation PDF');
+    chooseFile(input, new File(['deck'], 'deck.pdf'));
+    await flushPromises();
+
+    const replace = [...view.container.querySelectorAll('label')]
+      .find((label) => label.textContent === 'Replace PDF')!;
+    expect(replace.htmlFor).toBe(input.id);
+    expect(replace.hidden).toBe(false);
+    view.unmount();
+  });
+
+  it('cancels and releases real PDF preview resources when the picker unmounts', async () => {
+    let rejectRender!: (error: unknown) => void;
+    const renderPromise = new Promise<void>((_resolve, reject) => { rejectRender = reject; });
+    const renderCancel = vi.fn(() => rejectRender(new Error('cancelled')));
+    const pageCleanup = vi.fn();
+    const documentDestroy = vi.fn(async () => undefined);
+    const render = vi.fn(() => ({ promise: renderPromise, cancel: renderCancel }));
+    const document: PresentationPdfDocument = {
+      numPages: 1,
+      getPage: vi.fn(async () => ({
+        getViewport: ({ scale }: { scale: number }) => ({ width: 640 * scale, height: 480 * scale }),
+        render,
+        cleanup: pageCleanup,
+      })),
+      destroy: documentDestroy,
+    };
+    const previewer = createPresentationPreviewer({
+      loadPdf: () => ({ promise: Promise.resolve(document), destroy: vi.fn(async () => undefined), onPassword: null }),
+      canvasFactory: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => ({} as CanvasRenderingContext2D),
+        toDataURL: () => 'data:image/png;base64,page',
+      } satisfies PresentationCanvas),
+    });
+    const startPreview = (file: File): PresentationPreviewResultOperation => {
+      const work = previewer.start(file);
+      return {
+        promise: work.promise.then(
+          (preview) => ({ kind: 'ready' as const, preview }),
+          () => ({ kind: 'superseded' as const }),
+        ),
+        cancel: work.cancel,
+      };
+    };
+    const onPreviewChange = vi.fn();
+    const view = renderComponent(<Harness startPreview={startPreview} onPreviewChange={onPreviewChange} />);
+    const selected = new File(['deck'], 'deck.pdf');
+    Object.defineProperty(selected, 'arrayBuffer', {
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    chooseFile(view.container.querySelector('input[type="file"]')!, selected);
+    await vi.waitFor(() => expect(render).toHaveBeenCalledOnce());
+    const callsAtUnmount = onPreviewChange.mock.calls.length;
+
+    view.unmount();
+    await vi.waitFor(() => expect(documentDestroy).toHaveBeenCalledOnce());
+    expect(renderCancel).toHaveBeenCalledOnce();
+    expect(pageCleanup).toHaveBeenCalledOnce();
+    expect(onPreviewChange).toHaveBeenCalledTimes(callsAtUnmount);
+  });
+
   it('disables native selection and removal controls', async () => {
-    resolvePreviewMock.mockResolvedValue({ kind: 'ready', preview: { pageCount: 1, thumbnails: [] } });
+    startPreviewMock.mockReturnValue(operation({ kind: 'ready', preview: { pageCount: 1, thumbnails: [] } }));
     const view = renderComponent(<Harness disabled />);
     const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
     expect(input.accept).toBe('.pdf');
@@ -133,7 +207,7 @@ describe('PresentationFilePicker', () => {
   });
 
   it('does not emit a completed preview after unmount', async () => {
-    resolvePreviewMock.mockResolvedValue({ kind: 'ready', preview: { pageCount: 3, thumbnails: [] } });
+    startPreviewMock.mockReturnValue(operation({ kind: 'ready', preview: { pageCount: 3, thumbnails: [] } }));
     const onPreviewChange = vi.fn();
     const view = renderComponent(<Harness onPreviewChange={onPreviewChange} />);
     chooseFile(view.container.querySelector('input[type="file"]')!, new File(['deck'], 'deck.pdf'));
@@ -158,7 +232,7 @@ describe('PresentationFilePicker', () => {
   });
 
   it('still completes the current preview under React Strict Mode', async () => {
-    resolvePreviewMock.mockResolvedValue({ kind: 'ready', preview: { pageCount: 2, thumbnails: [] } });
+    startPreviewMock.mockReturnValue(operation({ kind: 'ready', preview: { pageCount: 2, thumbnails: [] } }));
     const onPreviewChange = vi.fn();
     const view = renderComponent(<StrictMode><Harness onPreviewChange={onPreviewChange} /></StrictMode>);
     chooseFile(view.container.querySelector('input[type="file"]')!, new File(['deck'], 'strict.pdf'));

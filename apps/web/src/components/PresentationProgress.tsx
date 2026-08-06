@@ -25,6 +25,7 @@ export function PresentationProgress({
   const invalidatedRef = useRef(false);
   const terminalNotifiedRef = useRef(false);
   const jobIdRef = useRef(initialJob.id);
+  const observedNonterminalRef = useRef(!presentationProgress(initialJob).terminal);
   const view = presentationProgress(job);
 
   useEffect(() => {
@@ -32,9 +33,16 @@ export function PresentationProgress({
       jobIdRef.current = initialJob.id;
       invalidatedRef.current = false;
       terminalNotifiedRef.current = false;
+      observedNonterminalRef.current = !presentationProgress(initialJob).terminal;
       setClosed(false);
+    } else if (!presentationProgress(initialJob).terminal) {
+      observedNonterminalRef.current = true;
     }
-    setJob(initialJob);
+    setJob((current) => (
+      current.id !== initialJob.id || initialJob.updated_at >= current.updated_at
+        ? initialJob
+        : current
+    ));
     setPollError(false);
   }, [initialJob]);
 
@@ -65,11 +73,11 @@ export function PresentationProgress({
 
   useEffect(() => {
     const imported = job.status === 'ready' || job.status === 'partial';
-    if (!imported || invalidatedRef.current || presentationProgress(initialJob).terminal) return;
+    if (!imported || invalidatedRef.current || !observedNonterminalRef.current) return;
     invalidatedRef.current = true;
     void queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
     void queryClient.invalidateQueries({ queryKey: ['presentations', projectId] });
-  }, [initialJob, job.status, projectId, queryClient]);
+  }, [job.status, projectId, queryClient]);
 
   useEffect(() => {
     if (!view.terminal || terminalNotifiedRef.current) return;

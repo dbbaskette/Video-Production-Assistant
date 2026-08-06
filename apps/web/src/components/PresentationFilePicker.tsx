@@ -2,7 +2,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import {
   PresentationPreviewError,
   previewPresentation,
+  startPresentationPreview,
   type PresentationPreview,
+  type PresentationPreviewOperation,
 } from '../lib/presentation-preview.js';
 
 export interface PresentationFilePickerProps {
@@ -26,10 +28,10 @@ export function PresentationFilePicker({
   disabled = false,
   onChange,
   onPreviewChange,
-  resolvePreview = resolvePresentationPreview,
+  startPreview = startResolvedPresentationPreview,
 }: PresentationFilePickerProps & {
-  /** Test seam for resolved preview states; application callers use the PDF reader. */
-  resolvePreview?: (file: File) => Promise<PresentationPreviewResult>;
+  /** Test seam for cancellable preview work; application callers use the PDF reader. */
+  startPreview?: (file: File) => PresentationPreviewResultOperation;
 }) {
   const inputId = useId();
   const generationRef = useRef(0);
@@ -57,7 +59,8 @@ export function PresentationFilePicker({
 
     setState({ kind: 'loading' });
     onPreviewChangeRef.current?.({ valid: false, preview: null });
-    void resolvePreview(file).then((result) => {
+    const operation = startPreview(file);
+    void operation.promise.then((result) => {
       if (!mountedRef.current || generationRef.current !== generation) return;
       if (result.kind === 'superseded') return;
       if (result.kind === 'error') {
@@ -68,7 +71,8 @@ export function PresentationFilePicker({
       setState({ kind: 'ready', preview: result.preview });
       onPreviewChangeRef.current?.({ valid: true, preview: result.preview });
     });
-  }, [file, resolvePreview]);
+    return () => operation.cancel();
+  }, [file, startPreview]);
 
   return (
     <div className="presentation-file-picker" aria-busy={state.kind === 'loading'}>
@@ -77,6 +81,7 @@ export function PresentationFilePicker({
         className="presentation-file-picker__input"
         type="file"
         accept=".pdf"
+        aria-label="Presentation PDF"
         disabled={disabled}
         onChange={(event) => {
           const selected = event.currentTarget.files?.[0] ?? null;
@@ -106,6 +111,9 @@ export function PresentationFilePicker({
                   : ''}
               </span>
             </div>
+            <label className="presentation-file-picker__replace" htmlFor={inputId}>
+              Replace PDF
+            </label>
             <button
               type="button"
               className="presentation-file-picker__remove"
@@ -155,6 +163,22 @@ export type PresentationPreviewResult =
   | { kind: 'error'; message: string }
   | { kind: 'superseded' };
 
+export interface PresentationPreviewResultOperation {
+  promise: Promise<PresentationPreviewResult>;
+  cancel(): void;
+}
+
+export function startResolvedPresentationPreview(file: File): PresentationPreviewResultOperation {
+  const operation: PresentationPreviewOperation = startPresentationPreview(file);
+  return {
+    promise: operation.promise.then(
+      (preview) => ({ kind: 'ready', preview }),
+      (error: unknown) => normalizePreviewError(error),
+    ),
+    cancel: operation.cancel,
+  };
+}
+
 export async function resolvePresentationPreview(
   file: File,
   previewFile: typeof previewPresentation = previewPresentation,
@@ -162,16 +186,20 @@ export async function resolvePresentationPreview(
   try {
     return { kind: 'ready', preview: await previewFile(file) };
   } catch (error) {
-    if (error instanceof PresentationPreviewError && error.code === 'superseded') {
-      return { kind: 'superseded' };
-    }
-    return {
-      kind: 'error',
-      message: error instanceof PresentationPreviewError
-        ? error.message
-        : 'This PDF could not be previewed',
-    };
+    return normalizePreviewError(error);
   }
+}
+
+function normalizePreviewError(error: unknown): PresentationPreviewResult {
+  if (error instanceof PresentationPreviewError && error.code === 'superseded') {
+    return { kind: 'superseded' };
+  }
+  return {
+    kind: 'error',
+    message: error instanceof PresentationPreviewError
+      ? error.message
+      : 'This PDF could not be previewed',
+  };
 }
 
 export function formatFileSize(sizeBytes: number): string {

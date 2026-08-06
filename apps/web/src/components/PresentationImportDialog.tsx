@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { PresentationJob } from '@vpa/shared';
 import { presentationsApi } from '../lib/api.js';
 import { PresentationFilePicker } from './PresentationFilePicker.js';
+import { useModalFocus } from './ui/useModalFocus.js';
 
 export interface PresentationImportDialogProps {
   projectId: string;
@@ -20,6 +21,10 @@ export function PresentationImportDialog({
   const acceptedRef = useRef(false);
   const uploadingRef = useRef(false);
   const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  const sessionRef = useRef(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [previewValid, setPreviewValid] = useState(false);
   const [generateNarration, setGenerateNarration] = useState(true);
@@ -28,10 +33,15 @@ export function PresentationImportDialog({
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      sessionRef.current += 1;
+    };
   }, []);
 
   useEffect(() => {
+    openRef.current = open;
+    sessionRef.current += 1;
     if (open) return;
     acceptedRef.current = false;
     uploadingRef.current = false;
@@ -42,22 +52,31 @@ export function PresentationImportDialog({
     setError(false);
   }, [open]);
 
+  useModalFocus({
+    open,
+    dialogRef,
+    initialFocusRef: cancelRef,
+    escapeDisabled: uploading,
+    onEscape: onClose,
+  });
+
   if (!open) return null;
 
   const upload = async () => {
     if (!file || !previewValid || uploadingRef.current || acceptedRef.current) return;
     uploadingRef.current = true;
+    const session = sessionRef.current;
     setUploading(true);
     setError(false);
     try {
       const job = await presentationsApi.upload(projectId, file, generateNarration);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !openRef.current || sessionRef.current !== session) return;
       if (acceptedRef.current) return;
       acceptedRef.current = true;
       onAccepted(job);
       onClose();
     } catch {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !openRef.current || sessionRef.current !== session) return;
       uploadingRef.current = false;
       setError(true);
       setUploading(false);
@@ -67,12 +86,18 @@ export function PresentationImportDialog({
   return (
     <div
       className="dialog-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={headingId}
       onClick={() => { if (!uploading) onClose(); }}
     >
-      <div className="dialog presentation-dialog" onClick={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="dialog presentation-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        aria-busy={uploading}
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+      >
         <h2 id={headingId}>Add a presentation</h2>
         <p className="presentation-dialog__lead">
           Upload a PDF to add one narratable scene per slide. A revised deck adds new scenes.
@@ -105,7 +130,7 @@ export function PresentationImportDialog({
           </p>
         )}
         <div className="dialog__actions presentation-dialog__actions">
-          <button type="button" disabled={uploading} onClick={onClose}>Cancel</button>
+          <button ref={cancelRef} type="button" disabled={uploading} onClick={onClose}>Cancel</button>
           <button
             type="button"
             className="primary"

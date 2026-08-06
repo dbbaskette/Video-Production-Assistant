@@ -6,6 +6,7 @@ import { BrandPicker } from './BrandPicker.js';
 import { CreateProgressModal, type CreateStage } from './CreateProgressModal.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
 import { PresentationFilePicker } from './PresentationFilePicker.js';
+import { useModalFocus } from './ui/useModalFocus.js';
 
 /**
  * The Dashboard has two hero cards that both end up here:
@@ -64,6 +65,11 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   const [createdPresentationProjectId, setCreatedPresentationProjectId] = useState<string | null>(null);
   const [presentationUploadError, setPresentationUploadError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const mountedRef = useRef(true);
+  const openRef = useRef(open);
+  const sessionRef = useRef(0);
 
   // Pre-select default brand when brands load
   useEffect(() => {
@@ -109,7 +115,10 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
 
   useEffect(() => {
     // Clear any live poll if the dialog unmounts.
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      sessionRef.current += 1;
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
@@ -127,6 +136,24 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     setPresentationUploadError(false);
   };
 
+  useEffect(() => {
+    openRef.current = open;
+    sessionRef.current += 1;
+    if (open) return;
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    resetForm();
+    setCreateError(null);
+    setProgress(null);
+    setBusy(false);
+    busyRef.current = false;
+    navigatedRef.current = false;
+  }, [open]);
+
+  const sessionIsCurrent = (session: number) => (
+    mountedRef.current && openRef.current && sessionRef.current === session
+  );
+
   const navigateToProject = (projectId: string) => {
     if (navigatedRef.current) return;
     navigatedRef.current = true;
@@ -140,11 +167,12 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     onClose();
   };
 
-  const pollExtraction = (projectId: string) => {
+  const pollExtraction = (projectId: string, session: number) => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
         const docs = await sourceDocsApi.list(projectId);
+        if (!sessionIsCurrent(session)) return;
         const stillExtracting = docs.some((d) => d.status === 'extracting');
         setProgress((p) =>
           p ? { ...p, docs, stage: stillExtracting ? 'extracting' : 'done' } : p,
@@ -167,9 +195,10 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     setCreateError(null);
     setPresentationUploadError(false);
     navigatedRef.current = false;
+    const session = sessionRef.current;
 
     if (mode === 'presentation' && createdPresentationProjectId) {
-      await uploadPresentation(createdPresentationProjectId);
+      await uploadPresentation(createdPresentationProjectId, session);
       return;
     }
 
@@ -188,6 +217,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       });
       projectId = project.id;
     } catch (err) {
+      if (!sessionIsCurrent(session)) return;
       // Project creation itself failed — no modal, show inline error.
       setCreateError(err);
       setProgress(null);
@@ -196,9 +226,11 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       return;
     }
 
+    if (!sessionIsCurrent(session)) return;
+
     if (mode === 'presentation') {
       setCreatedPresentationProjectId(projectId);
-      await uploadPresentation(projectId);
+      await uploadPresentation(projectId, session);
       return;
     }
 
@@ -210,14 +242,16 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     setProgress((p) => (p ? { ...p, projectId, stage: 'uploading' } : p));
     try {
       const { created } = await sourceDocsApi.uploadFiles(projectId, pendingDocs);
+      if (!sessionIsCurrent(session)) return;
       const stillExtracting = created.some((d) => d.status === 'extracting');
       setProgress((p) =>
         p ? { ...p, projectId, docs: created, stage: stillExtracting ? 'extracting' : 'done' } : p,
       );
       if (stillExtracting) {
-        pollExtraction(projectId);
+        pollExtraction(projectId, session);
       }
     } catch (err) {
+      if (!sessionIsCurrent(session)) return;
       // Upload failed — the project exists, so let the user proceed anyway.
       console.warn('Source-doc upload failed during project create:', err);
       setProgress((p) =>
@@ -233,7 +267,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     }
   };
 
-  const uploadPresentation = async (projectId: string) => {
+  const uploadPresentation = async (projectId: string, session: number) => {
     if (!presentationFile || !presentationPreviewValid) {
       setBusy(false);
       busyRef.current = false;
@@ -241,6 +275,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     }
     try {
       const job = await presentationsApi.upload(projectId, presentationFile, generateNarration);
+      if (!sessionIsCurrent(session)) return;
       if (navigatedRef.current) return;
       navigatedRef.current = true;
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -250,6 +285,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       onCreated(projectId, { presentationId: job.id });
       onClose();
     } catch {
+      if (!sessionIsCurrent(session)) return;
       setPresentationUploadError(true);
       setBusy(false);
       busyRef.current = false;
@@ -278,11 +314,34 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     presentationFile !== null ||
     generateNarration !== true ||
     createdPresentationProjectId !== null;
+  const discardAndClose = () => {
+    sessionRef.current += 1;
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    resetForm();
+    setCreateError(null);
+    setProgress(null);
+    setBusy(false);
+    busyRef.current = false;
+    navigatedRef.current = false;
+    onClose();
+  };
   const guardedClose = useUnsavedGuard({
     hasUnsavedChanges,
-    message:
-      'Discard the project info you typed? Your name, objective, parent directory, and queued reference docs will be lost.',
-    onConfirmDiscard: onClose,
+    message: createdPresentationProjectId
+      ? 'Discard this import setup? The empty project will remain, but the selected PDF and local import choices will be cleared.'
+      : mode === 'presentation'
+        ? 'Discard this project setup? The project name, selected PDF, and local import choices will be cleared.'
+        : 'Discard the project info you typed? Your name, objective, parent directory, and queued reference docs will be lost.',
+    onConfirmDiscard: discardAndClose,
+  });
+
+  useModalFocus({
+    open: open && !progress,
+    dialogRef,
+    initialFocusRef: nameInputRef,
+    escapeDisabled: busy,
+    onEscape: guardedClose,
   });
 
   if (!open) return null;
@@ -306,12 +365,18 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   return (
     <div
       className="dialog-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={headingId}
       onClick={() => { if (!busy) guardedClose(); }}
     >
-      <div className={`dialog${mode === 'presentation' ? ' presentation-dialog' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className={`dialog${mode === 'presentation' ? ' presentation-dialog' : ''}`}
+        role={progress ? undefined : 'dialog'}
+        aria-modal={progress ? undefined : 'true'}
+        aria-labelledby={headingId}
+        aria-busy={busy}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Heading row — Lucide icon + serif h2 reads as editorial without
             leaning on emoji. Mode-coloured (accent for ideate / fg-muted
             for recordings) so the user can tell visually which path. */}
@@ -332,6 +397,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
         <div className="dialog__field">
           <label className="dialog__label">Name</label>
           <input
+            ref={nameInputRef}
             value={rawName}
             onChange={(e) => setRawName(e.target.value)}
             placeholder="MCP Demo Test"

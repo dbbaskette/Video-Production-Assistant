@@ -102,6 +102,16 @@ interface PreviewGeneration {
   releaseChain?: Promise<void>;
 }
 
+export interface PresentationPreviewOperation {
+  promise: Promise<PresentationPreview>;
+  cancel(): void;
+}
+
+export interface PresentationPreviewer {
+  (file: File): Promise<PresentationPreview>;
+  start(file: File): PresentationPreviewOperation;
+}
+
 /**
  * Creates a browser-local convenience preview. A `.pdf` suffix is accepted
  * case-insensitively; the server remains authoritative for file and page
@@ -109,10 +119,10 @@ interface PreviewGeneration {
  */
 export function createPresentationPreviewer(
   dependencies: PresentationPreviewDependencies,
-): (file: File) => Promise<PresentationPreview> {
+): PresentationPreviewer {
   let active: PreviewGeneration | undefined;
 
-  return async (file: File): Promise<PresentationPreview> => {
+  const start = (file: File): PresentationPreviewOperation => {
     const previous = active;
     if (previous) {
       previous.cancelled = true;
@@ -121,6 +131,22 @@ export function createPresentationPreviewer(
 
     const owner: PreviewGeneration = { cancelled: false };
     active = owner;
+    const promise = runPreview(file, owner);
+    return {
+      promise,
+      cancel() {
+        if (owner.cancelled) return;
+        owner.cancelled = true;
+        if (active === owner) active = undefined;
+        void releaseGeneration(owner);
+      },
+    };
+  };
+
+  const runPreview = async (
+    file: File,
+    owner: PreviewGeneration,
+  ): Promise<PresentationPreview> => {
     let completedPreview: PresentationPreview | undefined;
     try {
       if (!/\.pdf$/i.test(file.name)) throw new PresentationPreviewError('invalid-file-type');
@@ -290,6 +316,10 @@ export function createPresentationPreviewer(
     if (!completedPreview) throw new PresentationPreviewError('invalid-pdf');
     return completedPreview;
   };
+
+  const previewer = ((file: File) => start(file).promise) as PresentationPreviewer;
+  previewer.start = start;
+  return previewer;
 }
 
 function ensureCurrent(owner: PreviewGeneration, active: PreviewGeneration | undefined): void {
@@ -366,4 +396,8 @@ const defaultPreviewer = createPresentationPreviewer({
 
 export function previewPresentation(file: File): Promise<PresentationPreview> {
   return defaultPreviewer(file);
+}
+
+export function startPresentationPreview(file: File): PresentationPreviewOperation {
+  return defaultPreviewer.start(file);
 }

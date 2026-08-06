@@ -372,6 +372,29 @@ describe('previewPresentation', () => {
     expect(newer.documentDestroy).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps an older operation cancel handle scoped away from newer work', async () => {
+    let resolveOld!: (document: PresentationPdfDocument) => void;
+    const oldPdf = harness({ taskPromise: new Promise((resolve) => { resolveOld = resolve; }) });
+    const newer = harness({ pageCount: 1 });
+    const loadPdf = vi.fn()
+      .mockImplementationOnce(oldPdf.loadPdf)
+      .mockImplementationOnce(newer.loadPdf);
+    const previewer = createPresentationPreviewer({ loadPdf, canvasFactory: newer.canvasFactory });
+
+    const old = previewer.start(file('old.pdf'));
+    const oldRejection = expect(old.promise).rejects.toMatchObject({ code: 'superseded' });
+    await vi.waitFor(() => expect(loadPdf).toHaveBeenCalledTimes(1));
+    old.cancel();
+    const current = previewer.start(file('current.pdf'));
+    old.cancel();
+    resolveOld(deferredDocument(1).document);
+
+    await oldRejection;
+    await expect(current.promise).resolves.toMatchObject({ pageCount: 1 });
+    expect(newer.taskDestroy).not.toHaveBeenCalled();
+    expect(newer.documentDestroy).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['resolve', 'reject'] as const)(
     'rejects stale success after deferred document cleanup (%s) without touching the newer owner',
     async (cleanupOutcome) => {

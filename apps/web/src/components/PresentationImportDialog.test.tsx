@@ -8,6 +8,7 @@ const previewMock = vi.hoisted(() => vi.fn());
 vi.mock('../lib/presentation-preview.js', () => ({
   PresentationPreviewError: class extends Error {},
   previewPresentation: previewMock,
+  startPresentationPreview: (file: File) => ({ promise: previewMock(file), cancel: vi.fn() }),
 }));
 
 const JOB = {
@@ -98,5 +99,53 @@ describe('PresentationImportDialog', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(onAccepted).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('traps focus, closes on safe Escape, and restores the opener', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Open presentation';
+    document.body.append(opener);
+    opener.focus();
+    const onClose = vi.fn();
+    const view = renderComponent(
+      <PresentationImportDialog projectId={JOB.project_id} open onAccepted={vi.fn()} onClose={onClose} />,
+    );
+    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('Cancel'));
+    const cancel = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Cancel')!;
+    const submit = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Add presentation')!;
+    submit.disabled = false;
+    submit.focus();
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })));
+    expect(document.activeElement).toBe(view.container.querySelector('input[type="file"]'));
+
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(onClose).toHaveBeenCalledOnce();
+    view.unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('ignores an old upload response after close and reopen creates a new dialog session', async () => {
+    let resolveUpload!: (value: typeof JOB) => void;
+    vi.spyOn(presentationsApi, 'upload').mockImplementation(() => new Promise((resolve) => { resolveUpload = resolve; }));
+    const onAccepted = vi.fn();
+    const onClose = vi.fn();
+    const props = { projectId: JOB.project_id, onAccepted, onClose };
+    const view = renderComponent(<PresentationImportDialog {...props} open />);
+    chooseFile(view.container.querySelector('input[type="file"]')!, new File(['pdf'], 'deck.pdf'));
+    await flushPromises();
+    act(() => [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Add presentation')!.click());
+    view.rerender(<PresentationImportDialog {...props} open={false} />);
+    view.rerender(<PresentationImportDialog {...props} open />);
+    resolveUpload(JOB);
+    await flushPromises();
+
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(view.container.textContent).toContain('Add a presentation');
+    view.unmount();
   });
 });

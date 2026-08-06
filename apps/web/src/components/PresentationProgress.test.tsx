@@ -75,6 +75,29 @@ describe('PresentationProgress', () => {
     view.unmount();
   });
 
+  it('invalidates once when the same job transitions to ready through a new owner snapshot', async () => {
+    const get = vi.spyOn(presentationsApi, 'get');
+    const onTerminal = vi.fn();
+    const view = renderComponent(
+      <PresentationProgress projectId={PROJECT_ID} initialJob={PROCESSING} onClose={vi.fn()} onTerminal={onTerminal} />,
+    );
+    const invalidate = vi.spyOn(view.client, 'invalidateQueries').mockResolvedValue(undefined);
+
+    view.rerender(
+      <PresentationProgress projectId={PROJECT_ID} initialJob={READY} onClose={vi.fn()} onTerminal={onTerminal} />,
+    );
+    await flushPromises();
+
+    expect(get).not.toHaveBeenCalled();
+    expect(invalidate.mock.calls.map(([arg]) => arg)).toEqual([
+      { queryKey: ['storyboard', PROJECT_ID] },
+      { queryKey: ['presentations', PROJECT_ID] },
+    ]);
+    expect(onTerminal).toHaveBeenCalledOnce();
+    expect(onTerminal).toHaveBeenCalledWith(READY);
+    view.unmount();
+  });
+
   it('stops polling immediately when close is requested even before parent unmount', async () => {
     const get = vi.spyOn(presentationsApi, 'get');
     const view = renderComponent(<PresentationProgress projectId={PROJECT_ID} initialJob={PROCESSING} onClose={vi.fn()} />);
