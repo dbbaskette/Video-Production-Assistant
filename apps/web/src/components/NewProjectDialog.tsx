@@ -1,10 +1,11 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useId } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { Lightbulb, Video } from 'lucide-react';
-import { api, ApiError, brandsApi, sourceDocsApi, type SourceDoc } from '../lib/api.js';
+import { Lightbulb, Presentation, Video } from 'lucide-react';
+import { api, ApiError, brandsApi, presentationsApi, sourceDocsApi, type SourceDoc } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
 import { CreateProgressModal, type CreateStage } from './CreateProgressModal.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
+import { PresentationFilePicker } from './PresentationFilePicker.js';
 
 /**
  * The Dashboard has two hero cards that both end up here:
@@ -16,12 +17,12 @@ import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
  * dialog's heading + lead paragraph + Create button label so there's
  * no ambiguity inside the modal itself.
  */
-export type NewProjectMode = 'ideate' | 'recordings';
+export type NewProjectMode = 'ideate' | 'recordings' | 'presentation';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onCreated: (id: string) => void;
+  onCreated: (id: string, result?: { presentationId: string }) => void;
   mode?: NewProjectMode;
 }
 
@@ -39,10 +40,16 @@ const COPY_BY_MODE: Record<
     lead: 'Create the project shell first; you\'ll upload your existing MP4s on the next screen and we\'ll auto-build a storyboard with one scene per file.',
     createLabel: 'Create & upload recordings',
   },
+  presentation: {
+    heading: 'Create a narrated presentation',
+    lead: 'Upload a PDF deck. VPA creates one scene per slide and can draft narration for each one.',
+    createLabel: 'Create & import presentation',
+  },
 };
 
 export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: Props) {
   const copy = COPY_BY_MODE[mode];
+  const headingId = useId();
   const queryClient = useQueryClient();
   const defaults = useQuery({ queryKey: ['defaults'], queryFn: api.getDefaults });
   const brandsQuery = useQuery({ queryKey: ['brands'], queryFn: () => brandsApi.list() });
@@ -51,6 +58,11 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   const [objective, setObjective] = useState('');
   const [brand, setBrand] = useState<{ id: string; applied_version: number } | null>(null);
   const [pendingDocs, setPendingDocs] = useState<File[]>([]);
+  const [presentationFile, setPresentationFile] = useState<File | null>(null);
+  const [presentationPreviewValid, setPresentationPreviewValid] = useState(false);
+  const [generateNarration, setGenerateNarration] = useState(true);
+  const [createdPresentationProjectId, setCreatedPresentationProjectId] = useState<string | null>(null);
+  const [presentationUploadError, setPresentationUploadError] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Pre-select default brand when brands load
@@ -83,6 +95,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   // we poll the doc list so the user can watch extraction finish — or hit
   // "Continue in background" and jump straight into the project.
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [createError, setCreateError] = useState<unknown>(null);
   const [progress, setProgress] = useState<{
     projectId: string | null;
@@ -107,6 +120,11 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     setObjective('');
     setBrand(null);
     setPendingDocs([]);
+    setPresentationFile(null);
+    setPresentationPreviewValid(false);
+    setGenerateNarration(true);
+    setCreatedPresentationProjectId(null);
+    setPresentationUploadError(false);
   };
 
   const navigateToProject = (projectId: string) => {
@@ -117,6 +135,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     resetForm();
     setProgress(null);
     setBusy(false);
+    busyRef.current = false;
     onCreated(projectId);
     onClose();
   };
@@ -142,10 +161,18 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
   };
 
   const runCreate = async () => {
-    if (!nameValid || busy) return;
+    if (!canCreate || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setCreateError(null);
+    setPresentationUploadError(false);
     navigatedRef.current = false;
+
+    if (mode === 'presentation' && createdPresentationProjectId) {
+      await uploadPresentation(createdPresentationProjectId);
+      return;
+    }
+
     const hasDocs = pendingDocs.length > 0;
     if (hasDocs) {
       setProgress({ projectId: null, stage: 'creating', docs: [], totalDocs: pendingDocs.length });
@@ -165,6 +192,13 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       setCreateError(err);
       setProgress(null);
       setBusy(false);
+      busyRef.current = false;
+      return;
+    }
+
+    if (mode === 'presentation') {
+      setCreatedPresentationProjectId(projectId);
+      await uploadPresentation(projectId);
       return;
     }
 
@@ -199,13 +233,51 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     }
   };
 
+  const uploadPresentation = async (projectId: string) => {
+    if (!presentationFile || !presentationPreviewValid) {
+      setBusy(false);
+      busyRef.current = false;
+      return;
+    }
+    try {
+      const job = await presentationsApi.upload(projectId, presentationFile, generateNarration);
+      if (navigatedRef.current) return;
+      navigatedRef.current = true;
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      resetForm();
+      setBusy(false);
+      busyRef.current = false;
+      onCreated(projectId, { presentationId: job.id });
+      onClose();
+    } catch {
+      setPresentationUploadError(true);
+      setBusy(false);
+      busyRef.current = false;
+    }
+  };
+
+  const openEmptyPresentationProject = () => {
+    if (!createdPresentationProjectId || navigatedRef.current) return;
+    navigatedRef.current = true;
+    const projectId = createdPresentationProjectId;
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    resetForm();
+    setBusy(false);
+    busyRef.current = false;
+    onCreated(projectId);
+    onClose();
+  };
+
   // Guard against losing typed input on overlay-click or Cancel. Considers
   // any of (name, objective, parent dir, queued docs) as "unsaved".
   const hasUnsavedChanges =
     rawName.trim().length > 0 ||
     objective.trim().length > 0 ||
     parentDir.trim().length > 0 ||
-    pendingDocs.length > 0;
+    pendingDocs.length > 0 ||
+    presentationFile !== null ||
+    generateNarration !== true ||
+    createdPresentationProjectId !== null;
   const guardedClose = useUnsavedGuard({
     hasUnsavedChanges,
     message:
@@ -222,6 +294,8 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
         : null;
   const placeholderRoot = defaults.data?.projectsDefault ?? '~/Movies/VPA';
   const nameValid = slug.length > 0;
+  const canCreate = nameValid
+    && (mode !== 'presentation' || (!!presentationFile && presentationPreviewValid));
   const nameInvalidReason =
     rawName.length === 0
       ? null
@@ -234,19 +308,22 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       className="dialog-overlay"
       role="dialog"
       aria-modal="true"
-      onClick={guardedClose}
+      aria-labelledby={headingId}
+      onClick={() => { if (!busy) guardedClose(); }}
     >
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+      <div className={`dialog${mode === 'presentation' ? ' presentation-dialog' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Heading row — Lucide icon + serif h2 reads as editorial without
             leaning on emoji. Mode-coloured (accent for ideate / fg-muted
             for recordings) so the user can tell visually which path. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
           {mode === 'ideate' ? (
             <Lightbulb size={20} strokeWidth={1.6} color="var(--accent)" aria-hidden />
-          ) : (
+          ) : mode === 'recordings' ? (
             <Video size={20} strokeWidth={1.6} color="var(--accent)" aria-hidden />
+          ) : (
+            <Presentation size={20} strokeWidth={1.6} color="var(--accent)" aria-hidden />
           )}
-          <h2 style={{ margin: 0 }}>{copy.heading}</h2>
+          <h2 id={headingId} style={{ margin: 0 }}>{copy.heading}</h2>
         </div>
         <p style={{ margin: '0 0 18px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
           {copy.lead}
@@ -304,7 +381,37 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
           <BrandPicker value={brand} onChange={setBrand} />
         </div>
 
-        <div className="dialog__field">
+        {mode === 'presentation' && (
+          <>
+            <div className="dialog__field">
+              <label className="dialog__label">Presentation PDF</label>
+              <PresentationFilePicker
+                file={presentationFile}
+                disabled={busy}
+                onChange={(file) => {
+                  setPresentationFile(file);
+                  setPresentationPreviewValid(false);
+                  if (!createdPresentationProjectId) setPresentationUploadError(false);
+                }}
+                onPreviewChange={({ valid }) => setPresentationPreviewValid(valid)}
+              />
+            </div>
+            <label className="presentation-dialog__narration">
+              <input
+                type="checkbox"
+                checked={generateNarration}
+                disabled={busy}
+                onChange={(event) => setGenerateNarration(event.currentTarget.checked)}
+              />
+              Generate draft narration
+            </label>
+            <p className="presentation-dialog__note">
+              Slide animations and embedded media become static images.
+            </p>
+          </>
+        )}
+
+        {mode !== 'presentation' && <div className="dialog__field">
           <label className="dialog__label">
             Reference docs (optional) — used as AI context for every generated line
           </label>
@@ -377,21 +484,33 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
               ))}
             </ul>
           )}
-        </div>
+        </div>}
 
         {errorMsg && (
           <div style={{ color: 'var(--danger)', fontSize: 13 }}>{errorMsg}</div>
         )}
+        {presentationUploadError && (
+          <p className="presentation-file-picker__error" role="alert">
+            The PDF could not be uploaded. Try the upload again, choose another PDF, or open the empty project.
+          </p>
+        )}
 
         <div className="dialog__actions">
           <button onClick={guardedClose} disabled={busy}>Cancel</button>
+          {presentationUploadError && createdPresentationProjectId && (
+            <button type="button" onClick={openEmptyPresentationProject} disabled={busy}>
+              Open empty project
+            </button>
+          )}
           <button
             className="primary"
-            disabled={!nameValid || busy}
+            disabled={!canCreate || busy}
             onClick={() => runCreate()}
-            title={!nameValid ? 'Enter a project name to enable Create' : undefined}
+            title={!canCreate ? 'Enter a project name and choose a valid PDF' : undefined}
           >
-            {busy ? 'Creating…' : copy.createLabel}
+            {busy
+              ? createdPresentationProjectId ? 'Uploading…' : 'Creating…'
+              : presentationUploadError ? 'Try upload again' : copy.createLabel}
           </button>
         </div>
       </div>
@@ -409,6 +528,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
             if (pollRef.current) clearInterval(pollRef.current);
             setProgress(null);
             setBusy(false);
+            busyRef.current = false;
           }}
         />
       )}

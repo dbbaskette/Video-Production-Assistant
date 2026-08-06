@@ -12,16 +12,18 @@
  * an empty right pane.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi } from '../lib/api.js';
+import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 import { Video, FileText, Volume2, Tag, Clapperboard } from 'lucide-react';
-import type { Scene, ProjectTrackerEntry } from '@vpa/shared';
+import type { PresentationJob, Scene, ProjectTrackerEntry } from '@vpa/shared';
 import type { LucideIcon } from 'lucide-react';
+import { PresentationImportDialog } from '../components/PresentationImportDialog.js';
+import { PresentationProgress } from '../components/PresentationProgress.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -34,11 +36,22 @@ export function StoryboardView() {
   const { project } = useOutletContext<WorkspaceContext>();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const [importOpen, setImportOpen] = useState(false);
+  const [activePresentation, setActivePresentation] = useState<PresentationJob | null>(null);
+  const presentationId = searchParams.get('presentation');
+  const presentationIdValid = presentationId !== null && isValidPresentationId(presentationId);
 
   const { data: storyboard, isLoading, error } = useQuery({
     queryKey: ['storyboard', projectId],
     queryFn: () => storyboardApi.get(projectId!),
     enabled: !!projectId,
+  });
+
+  const presentationQuery = useQuery({
+    queryKey: ['presentation', projectId, presentationId],
+    queryFn: () => presentationsApi.get(projectId!, presentationId!),
+    enabled: !!projectId && presentationIdValid,
+    retry: false,
   });
 
   const reorderMutation = useMutation({
@@ -52,17 +65,65 @@ export function StoryboardView() {
   const scenes = storyboard?.scenes ?? [];
   const selectedSceneId = searchParams.get('scene') ?? scenes[0]?.id ?? null;
 
+  useEffect(() => {
+    if (presentationQuery.data) setActivePresentation(presentationQuery.data);
+  }, [presentationQuery.data]);
+
   // When the URL doesn't carry ?scene yet but scenes are loaded, normalise
   // so the URL reflects the displayed selection (makes deep-linking + the
   // SaveIndicator's tab-survives-refresh behavior consistent).
   useEffect(() => {
-    if (!searchParams.get('scene') && scenes.length > 0) {
-      const next = new URLSearchParams(searchParams);
-      next.set('scene', scenes[0]!.id);
-      setSearchParams(next, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenes.length]);
+    const next = normalizeStoryboardSearch(searchParams, scenes[0]?.id ?? null);
+    if (next) setSearchParams(next, { replace: true });
+  }, [scenes, searchParams, setSearchParams]);
+
+  const closePresentation = useCallback(() => {
+    setActivePresentation(null);
+    setSearchParams((current) => removePresentationSearch(current), { replace: true });
+  }, [setSearchParams]);
+
+  const handleTerminal = useCallback(() => {
+    setSearchParams((current) => removePresentationSearch(current), { replace: true });
+  }, [setSearchParams]);
+
+  const acceptPresentation = useCallback((job: PresentationJob) => {
+    setActivePresentation(job);
+    setImportOpen(false);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('presentation', job.id);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const presentationSurface = activePresentation ? (
+    <PresentationProgress
+      key={activePresentation.id}
+      projectId={projectId!}
+      initialJob={activePresentation}
+      onClose={closePresentation}
+      onTerminal={handleTerminal}
+    />
+  ) : presentationId && (!presentationIdValid || presentationQuery.isError) ? (
+    <section className="presentation-progress presentation-progress--error" role="alert">
+      <div className="presentation-progress__heading-row">
+        <div>
+          <h3>Presentation progress unavailable</h3>
+          <p>Close this update and add the PDF again if you still need these slides.</p>
+        </div>
+        <button type="button" onClick={closePresentation}>Close</button>
+      </div>
+    </section>
+  ) : null;
+
+  const importDialog = importOpen ? (
+    <PresentationImportDialog
+      projectId={projectId!}
+      open
+      onAccepted={acceptPresentation}
+      onClose={() => setImportOpen(false)}
+    />
+  ) : null;
 
   if (isLoading) {
     return <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading storyboard…</div>;
@@ -76,7 +137,15 @@ export function StoryboardView() {
     );
   }
 
-  if (!storyboard) return <EmptyStoryboard projectId={projectId!} />;
+  if (!storyboard) {
+    return (
+      <>
+        <EmptyStoryboard projectId={projectId!} onAddPresentation={() => setImportOpen(true)} />
+        {presentationSurface}
+        {importDialog}
+      </>
+    );
+  }
 
   const moveScene = (fromIndex: number, toIndex: number) => {
     const ids = scenes.map((s) => s.id);
@@ -86,16 +155,17 @@ export function StoryboardView() {
   };
 
   return (
+    <>
     <div
+      className="storyboard-layout"
       style={{
-        display: 'grid',
-        gridTemplateColumns: '320px 1fr',
         height: '100%',
         minHeight: 'calc(100vh - 56px)', // navbar + breathing room
       }}
     >
       {/* ── Left rail: scene list ────────────────────────────── */}
       <aside
+        className="storyboard-rail"
         style={{
           borderRight: '1px solid var(--border)',
           background: 'var(--bg-elev)',
@@ -108,7 +178,16 @@ export function StoryboardView() {
           <p style={{ color: 'var(--fg-muted)', margin: '4px 0 0', fontSize: 12 }}>
             {scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}
           </p>
+          <button
+            type="button"
+            className="storyboard-add-presentation"
+            onClick={() => setImportOpen(true)}
+          >
+            Add presentation
+          </button>
         </header>
+
+        {presentationSurface}
 
         {storyboard.project.objective && (
           <p
@@ -174,7 +253,7 @@ export function StoryboardView() {
       </aside>
 
       {/* ── Right rail: embedded scene editor ────────────────── */}
-      <section style={{ overflowY: 'auto', padding: '24px 32px' }}>
+      <section className="storyboard-detail" style={{ overflowY: 'auto', padding: '24px 32px' }}>
         {selectedSceneId ? (
           // Key forces a fresh mount when switching scenes so per-scene
           // local state in ScenePage (active tab, dirty editors, etc.)
@@ -193,7 +272,29 @@ export function StoryboardView() {
         )}
       </section>
     </div>
+    {importDialog}
+    </>
   );
+}
+
+export function removePresentationSearch(search: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(search);
+  next.delete('presentation');
+  return next;
+}
+
+export function normalizeStoryboardSearch(
+  search: URLSearchParams,
+  firstSceneId: string | null,
+): URLSearchParams | null {
+  if (!firstSceneId || search.has('scene')) return null;
+  const next = new URLSearchParams(search);
+  next.set('scene', firstSceneId);
+  return next;
+}
+
+function isValidPresentationId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 // ── Left-rail scene row ─────────────────────────────────────────────
@@ -312,8 +413,18 @@ function SceneRow({
   }
 
   return (
-    <button
+    <div
+      className="scene-row"
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       style={{
         display: 'block',
         textAlign: 'left',
@@ -400,7 +511,7 @@ function SceneRow({
         />
         <Badge ok={hasLowerThirds} icon={Tag} />
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -502,7 +613,13 @@ function Badge({
   );
 }
 
-function EmptyStoryboard({ projectId }: { projectId: string }) {
+function EmptyStoryboard({
+  projectId,
+  onAddPresentation,
+}: {
+  projectId: string;
+  onAddPresentation(): void;
+}) {
   return (
     <div style={{ padding: '60px 48px', textAlign: 'center' }}>
       <Clapperboard
@@ -529,6 +646,13 @@ function EmptyStoryboard({ projectId }: { projectId: string }) {
       >
         Start Ideation
       </Link>
+      <button
+        type="button"
+        className="storyboard-empty-add-presentation"
+        onClick={onAddPresentation}
+      >
+        Add presentation
+      </button>
     </div>
   );
 }

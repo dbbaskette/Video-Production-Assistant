@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { Lightbulb, Video } from 'lucide-react';
+import { Lightbulb, Presentation, Video } from 'lucide-react';
 import { ProjectList } from '../components/ProjectList.js';
 import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
@@ -43,7 +43,7 @@ function BrandsSection() {
   );
 }
 
-type Modal = 'none' | 'new' | 'open' | 'new-ideation';
+type Modal = 'none' | 'new' | 'open' | 'new-ideation' | 'new-presentation';
 
 export function Dashboard() {
   const [modal, setModal] = useState<Modal>('none');
@@ -65,6 +65,11 @@ export function Dashboard() {
     navigate(`/project/${id}/recordings`);
   };
 
+  const handlePresentationCreated = (id: string, result?: { presentationId: string }) => {
+    const suffix = result ? `?presentation=${encodeURIComponent(result.presentationId)}` : '';
+    navigate(`/project/${id}/storyboard${suffix}`);
+  };
+
   return (
     <main className="page">
       <header style={{ marginBottom: 32 }}>
@@ -84,6 +89,17 @@ export function Dashboard() {
           <div className="hero-card__title">Ideate a new demo</div>
           <div className="hero-card__desc">
             Drop docs and describe what to demo. AI proposes a storyboard.
+          </div>
+        </button>
+        <button
+          className="hero-card hero-card--presentation"
+          aria-label="I have a presentation"
+          onClick={() => setModal('new-presentation')}
+        >
+          <span className="hero-card__icon"><Presentation size={28} strokeWidth={1.5} /></span>
+          <div className="hero-card__title">I have a presentation</div>
+          <div className="hero-card__desc">
+            Upload a PDF; we'll create one narratable scene per slide.
           </div>
         </button>
         <button
@@ -122,6 +138,12 @@ export function Dashboard() {
         mode="ideate"
         onClose={() => setModal('none')}
         onCreated={handleIdeationCreated}
+      />
+      <NewProjectDialog
+        open={modal === 'new-presentation'}
+        mode="presentation"
+        onClose={() => setModal('none')}
+        onCreated={handlePresentationCreated}
       />
       <OpenFolderDialog
         open={modal === 'open'}
