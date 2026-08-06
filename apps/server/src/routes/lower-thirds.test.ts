@@ -59,6 +59,7 @@ function modelSummary(role: ResolvedModelSummary['role']): ResolvedModelSummary 
     name: role === 'video-understanding' ? 'Gemini 2.5 Pro' : `Codex ${role}`,
     capabilities: {
       text: role !== 'video-understanding',
+      image: role === 'video-understanding',
       video: role === 'video-understanding',
     },
     ready: true,
@@ -209,6 +210,22 @@ function makeSampleStoryboard(projectId: string): Storyboard {
   };
 }
 
+function makePresentationScene(scene: Storyboard['scenes'][number]): void {
+  scene.type = 'slide';
+  scene.recording = {
+    source: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/clips/page-0001.mp4',
+    source_kind: 'presentation',
+    duration_sec: 1,
+  };
+  scene.presentation_source = {
+    presentation_id: '1e570aa5-20ce-4779-ad9a-d4db3ae73991',
+    page_number: 1,
+    page_count: 1,
+    image: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/pages/page-0001.png',
+    hold_duration_sec: 5,
+  };
+}
+
 describe('lower-thirds routes', () => {
   let ctx: Awaited<ReturnType<typeof buildTestServer>>;
   let projectId: string;
@@ -288,6 +305,23 @@ describe('lower-thirds routes', () => {
     expect(ctx.readBriefStatus).not.toHaveBeenCalled();
     expect(ctx.ensureBrief).not.toHaveBeenCalled();
     expect((await loadStoryboard(projectPath))!.scenes[0]!.lower_thirds).toEqual(res.json().lowerThirds);
+  });
+
+  it('uses the meaningful presentation hold for lower-third recommendations', async () => {
+    const storyboard = makeSampleStoryboard(projectId);
+    makePresentationScene(storyboard.scenes[0]!);
+    await saveStoryboard(projectPath, storyboard);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/lower-thirds/recommend`,
+      payload: { groundInVideo: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const writerPrompt = ctx.writerComplete.mock.calls.at(-1)![0].userPrompt;
+    expect(writerPrompt).toContain('Recording duration: 5s');
+    expect(writerPrompt).not.toContain('Recording duration: 1s');
   });
 
   it('stages a video brief before writing and persists only validated segment times', async () => {

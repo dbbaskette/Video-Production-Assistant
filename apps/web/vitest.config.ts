@@ -2,9 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // pure-logic utils only; switch to 'jsdom' when component tests are added (Task 8)
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    environmentMatchGlobs: [['src/**/*.test.tsx', 'jsdom']],
+    include: ['src/**/*.test.{ts,tsx}'],
     globals: false,
   },
 });

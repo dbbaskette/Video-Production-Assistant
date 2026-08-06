@@ -2,13 +2,27 @@ import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/prompts.js';
 import type { Storyboard } from '@vpa/shared';
 import { computeProjectWpm } from '../script/wpm.js';
+import { isFlexiblePresentationScene } from '../render/scene-duration.js';
+import { z } from 'zod';
 
 export interface ReviewItem {
   sceneId: string;
   severity: 'info' | 'warn' | 'issue';
-  category: string;
+  category: ReviewCategory;
   message: string;
 }
+
+const ReviewCategorySchema = z.enum([
+  'description',
+  'recording',
+  'script',
+  'narration',
+  'narration_too_long',
+  'pacing',
+  'lower_thirds',
+  'general',
+]);
+export type ReviewCategory = z.infer<typeof ReviewCategorySchema>;
 
 export interface ReviewResult {
   items: ReviewItem[];
@@ -22,6 +36,14 @@ export interface ReviewResult {
   reviewedAt: string;
   inputFingerprint?: string;
 }
+
+const ReviewItemSchema = z.object({
+  sceneId: z.string().min(1).max(120),
+  severity: z.enum(['info', 'warn', 'issue']),
+  category: ReviewCategorySchema,
+  message: z.string().min(1).max(2_000),
+}).strict();
+const ReviewItemsSchema = z.array(ReviewItemSchema).max(500);
 
 function buildStoryboardContext(sb: Storyboard): string {
   // Empirical TTS rate — measured from existing chunks. Falls back to 150 wpm
@@ -40,11 +62,17 @@ function buildStoryboardContext(sb: Storyboard): string {
   ];
 
   for (const scene of sb.scenes) {
+    const flexiblePresentation = isFlexiblePresentationScene(scene);
     lines.push(`## ${scene.id}: ${scene.name}`);
     lines.push(`Type: ${scene.type}`);
     lines.push(`Description: ${scene.description}`);
 
-    if (scene.recording) {
+    if (flexiblePresentation) {
+      lines.push(
+        `Recording: ${scene.recording!.source} ` +
+        `(presentation slide; ${scene.presentation_source!.hold_duration_sec}s hold without narration)`,
+      );
+    } else if (scene.recording) {
       lines.push(`Recording: ${scene.recording.source} (${scene.recording.duration_sec ?? '?'}s)`);
     } else {
       lines.push('Recording: none');
@@ -66,7 +94,11 @@ function buildStoryboardContext(sb: Storyboard): string {
       // rate — earlier the model defaulted to ~80 wpm and warned about
       // scripts that were actually well under target.
       const durSec = scene.recording?.duration_sec;
-      if (durSec && durSec > 0) {
+      if (flexiblePresentation) {
+        lines.push(
+          `Script: ${wordCount} words (flexible presentation visual; skip narration length check).`,
+        );
+      } else if (durSec && durSec > 0) {
         const targetWords = Math.round((durSec / 60) * wpmInfo.wpm);
         const ratio = wordCount / targetWords;
         let verdict: string;
@@ -95,7 +127,12 @@ function buildStoryboardContext(sb: Storyboard): string {
       const spokenSec = chunks.reduce((a, c) => a + (c.durationSec ?? 0), 0);
       const gapSec = chunks.reduce((a, c) => a + (c.gapSec ?? 0), 0);
       const recSec = scene.recording?.duration_sec;
-      if (recSec && spokenSec > 0) {
+      if (flexiblePresentation && spokenSec > 0) {
+        lines.push(
+          `Narration timing: ${spokenSec.toFixed(0)}s spoken + ${gapSec.toFixed(1)}s pauses. ` +
+          'Narration sets final length; skip narration length check.',
+        );
+      } else if (recSec && spokenSec > 0) {
         const deadAir = recSec - (spokenSec + gapSec);
         lines.push(
           `Narration timing: ${spokenSec.toFixed(0)}s spoken + ${gapSec.toFixed(1)}s pauses ` +
@@ -152,7 +189,16 @@ export async function runQualityReview(
   const jsonStr = text.startsWith('[')
     ? text
     : text.replace(/^```json\s*/, '').replace(/```\s*$/, '');
-  const items = JSON.parse(jsonStr) as ReviewItem[];
+  const parsedItems = ReviewItemsSchema.parse(JSON.parse(jsonStr));
+  const flexibleSceneIds = new Set(
+    storyboard.scenes.filter(isFlexiblePresentationScene).map((scene) => scene.id),
+  );
+  const items = parsedItems.filter(
+    (item) => !(
+      flexibleSceneIds.has(item.sceneId)
+      && item.category === 'narration_too_long'
+    ),
+  );
 
   const info = items.filter((i) => i.severity === 'info').length;
   const warn = items.filter((i) => i.severity === 'warn').length;

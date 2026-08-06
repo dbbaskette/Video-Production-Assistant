@@ -1,3 +1,6 @@
+import type { Scene } from '@vpa/shared';
+import { recordingInfoDurationLabel } from '../lib/scene-duration.js';
+
 interface VideoMeta {
   duration_sec: number;
   width: number;
@@ -12,12 +15,11 @@ interface RecordingInfoProps {
   duration_sec?: number;
   ingested_at?: string;
   metadata?: VideoMeta | null;
+  scene?: Scene;
 }
 
-function formatDuration(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.round(sec % 60);
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+export function resolveRecordingDurationLabel(scene: Scene | undefined, durationSec?: number): string | null {
+  return recordingInfoDurationLabel(scene, durationSec);
 }
 
 function formatBytes(bytes: number): string {
@@ -26,7 +28,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function RecordingInfo({ source, duration_sec, ingested_at, metadata }: RecordingInfoProps) {
+export function RecordingInfo({
+  source,
+  duration_sec,
+  ingested_at,
+  metadata,
+  scene,
+}: RecordingInfoProps) {
+  const durationLabel = resolveRecordingDurationLabel(scene, duration_sec);
   return (
     <div
       style={{
@@ -42,8 +51,8 @@ export function RecordingInfo({ source, duration_sec, ingested_at, metadata }: R
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
-        {duration_sec != null && (
-          <MetaItem label="Duration" value={formatDuration(duration_sec)} />
+        {durationLabel != null && (
+          <MetaItem label="Duration" value={durationLabel} />
         )}
         {metadata && (
           <>

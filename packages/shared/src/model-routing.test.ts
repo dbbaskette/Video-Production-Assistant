@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ModelRoutingResponseSchema,
   ModelRoutingUpdateSchema,
+  ModelCapabilitiesSchema,
   ModelTaskRoleSchema,
   ProjectModelRoutingSchema,
 } from './model-routing.js';
@@ -15,6 +16,15 @@ const project = {
 };
 
 describe('model routing contracts', () => {
+  it('requires the distinct image capability on every model summary', () => {
+    expect(ModelCapabilitiesSchema.parse({ text: true, image: true, video: true })).toEqual({
+      text: true,
+      image: true,
+      video: true,
+    });
+    expect(ModelCapabilitiesSchema.safeParse({ text: true, video: true }).success).toBe(false);
+  });
+
   it('defines the three supported API task roles', () => {
     expect(ModelTaskRoleSchema.options).toEqual([
       'video-understanding', 'writing', 'general',
@@ -79,7 +89,7 @@ describe('model routing contracts', () => {
           provider: 'codex-cli',
           model: 'default',
           name: 'Codex',
-          capabilities: { text: true, video: false },
+          capabilities: { text: true, image: false, video: false },
           ready: true,
         },
         {

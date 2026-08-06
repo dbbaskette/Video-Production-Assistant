@@ -9,8 +9,8 @@ import type { ModelEntry } from './api.js';
 export const MODEL_ASSIGNMENT_ROWS = [
   [
     'video-understanding',
-    'Watch and analyze video',
-    'Creates visual and timing briefs from recordings.',
+    'Understand visual media',
+    'Creates visual and timing briefs from recordings and presentation slides.',
   ],
   [
     'writing',
@@ -111,7 +111,9 @@ export function mergePendingRouting(
 
 export function optionsForRole(models: ModelEntry[], role: ModelTaskRole): ModelEntry[] {
   if (role === 'video-understanding') {
-    return models.filter((model) => model.provider === 'gemini' && model.capabilities.video);
+    return models.filter((model) => (
+      model.provider === 'gemini' && model.capabilities.image && model.capabilities.video
+    ));
   }
   return models.filter((model) => model.capabilities.text);
 }

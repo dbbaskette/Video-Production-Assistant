@@ -6,28 +6,13 @@ import type { ReviewItem } from '../lib/api.js';
 import { SEVERITY_COLOR, reviewSummaryColor, reviewSummaryLabel } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
+import {
+  canTightenQualityReviewCategory,
+  qualityReviewCategoryTab,
+} from '../lib/quality-review.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
-}
-
-/**
- * Map a quality-review item's `category` to the relevant Scene-page tab so
- * clicking the issue jumps the user directly to where they need to act.
- * `general` and unknown categories fall through to no tab (just opens the
- * scene at its default tab).
- */
-function categoryToTab(category: string): string | null {
-  switch (category) {
-    case 'recording': return 'Recording';
-    case 'script':    return 'Script';
-    case 'narration': return 'Narration';
-    case 'pacing':    return 'Script'; // pauses are authored via [pause Xs] in the script
-    case 'lower_thirds': return 'Lower Thirds';
-    case 'description': return null; // no dedicated tab; scene name/desc shown across
-    case 'general': return null;
-    default: return null;
-  }
 }
 
 // Severity palette + labels: single source of truth in lib/palette.ts.
@@ -257,14 +242,14 @@ export function ReviewPage() {
               </Link>
             </div>
             {items.map((item, idx) => {
-              const tab = categoryToTab(item.category);
+              const tab = qualityReviewCategoryTab(item.category);
               const base = `/project/${projectId}/storyboard?scene=${encodeURIComponent(sceneId)}`;
               const target = tab ? `${base}&tab=${encodeURIComponent(tab)}` : base;
               // Narration warnings are usually "script too long for the clip".
               // The actionable fix is to tighten the script, not to tweak TTS
               // speed on the Narration tab — surface a recommend button that
               // does the right thing in one click.
-              const canTighten = item.category === 'narration';
+              const canTighten = canTightenQualityReviewCategory(item.category);
               return (
                 <div
                   key={idx}

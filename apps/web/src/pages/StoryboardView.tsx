@@ -12,16 +12,22 @@
  * an empty right pane.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useSearchParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi } from '../lib/api.js';
+import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
 import { Video, FileText, Volume2, Tag, Clapperboard } from 'lucide-react';
-import type { Scene, ProjectTrackerEntry } from '@vpa/shared';
+import type { PresentationJob, Scene, Storyboard, ProjectTrackerEntry } from '@vpa/shared';
 import type { LucideIcon } from 'lucide-react';
+import { PresentationImportDialog } from '../components/PresentationImportDialog.js';
+import { PresentationProgress } from '../components/PresentationProgress.js';
+import {
+  PresentationImports,
+  type PresentationRemovalContext,
+} from '../components/PresentationImports.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -34,11 +40,25 @@ export function StoryboardView() {
   const { project } = useOutletContext<WorkspaceContext>();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const [importOpen, setImportOpen] = useState(false);
+  const [activePresentation, setActivePresentation] = useState<PresentationJob | null>(null);
+  const presentationId = searchParams.get('presentation');
+  const hasPresentationId = presentationId !== null;
+  const presentationIdValid = presentationId !== null && isValidPresentationId(presentationId);
 
   const { data: storyboard, isLoading, error } = useQuery({
     queryKey: ['storyboard', projectId],
     queryFn: () => storyboardApi.get(projectId!),
     enabled: !!projectId,
+  });
+
+  const presentationQuery = useQuery({
+    queryKey: ['presentation', projectId, presentationId],
+    queryFn: () => presentationsApi.get(projectId!, presentationId!),
+    enabled: !!projectId
+      && presentationIdValid
+      && activePresentation?.id !== presentationId,
+    retry: false,
   });
 
   const reorderMutation = useMutation({
@@ -52,31 +72,111 @@ export function StoryboardView() {
   const scenes = storyboard?.scenes ?? [];
   const selectedSceneId = searchParams.get('scene') ?? scenes[0]?.id ?? null;
 
+  const normalizeAfterRemoval = useCallback((
+    previousScenes: readonly { id: string }[],
+    nextScenes: readonly { id: string }[],
+  ) => {
+    setSearchParams(
+      (current) => normalizeStoryboardAfterRemoval(current, previousScenes, nextScenes),
+      { replace: true },
+    );
+  }, [setSearchParams]);
+
+  const handlePresentationRemoved = useCallback((context: PresentationRemovalContext) => {
+    if (context.freshScenes) {
+      normalizeAfterRemoval(context.previousScenes, context.freshScenes);
+      return;
+    }
+    setSearchParams(
+      (current) => normalizeStoryboardAfterUnavailableRemoval(current, context.removedSceneIds),
+      { replace: true },
+    );
+  }, [normalizeAfterRemoval, setSearchParams]);
+
+  useEffect(() => {
+    if (!hasPresentationId || !presentationIdValid) {
+      if (hasPresentationId) setActivePresentation(null);
+      return;
+    }
+    setActivePresentation((current) => current?.id === presentationId ? current : null);
+  }, [hasPresentationId, presentationId, presentationIdValid]);
+
+  useEffect(() => {
+    if (presentationQuery.data?.id === presentationId) {
+      setActivePresentation(presentationQuery.data);
+    }
+  }, [presentationId, presentationQuery.data]);
+
   // When the URL doesn't carry ?scene yet but scenes are loaded, normalise
   // so the URL reflects the displayed selection (makes deep-linking + the
   // SaveIndicator's tab-survives-refresh behavior consistent).
   useEffect(() => {
-    if (!searchParams.get('scene') && scenes.length > 0) {
-      const next = new URLSearchParams(searchParams);
-      next.set('scene', scenes[0]!.id);
-      setSearchParams(next, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenes.length]);
+    const next = normalizeStoryboardSearch(searchParams, scenes[0]?.id ?? null);
+    if (next) setSearchParams(next, { replace: true });
+  }, [scenes, searchParams, setSearchParams]);
 
-  if (isLoading) {
-    return <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading storyboard…</div>;
-  }
+  const closePresentation = useCallback(() => {
+    setActivePresentation(null);
+    setSearchParams((current) => removePresentationSearch(current), { replace: true });
+  }, [setSearchParams]);
 
-  if (error) {
-    return (
-      <div style={{ padding: 40, color: 'var(--danger)' }}>
-        Failed to load storyboard: {error instanceof Error ? error.message : 'unknown'}
+  const handleTerminal = useCallback((job: PresentationJob) => {
+    setActivePresentation(job);
+    setSearchParams((current) => removePresentationSearch(current), { replace: true });
+  }, [setSearchParams]);
+
+  const acceptPresentation = useCallback((job: PresentationJob) => {
+    setActivePresentation(job);
+    setImportOpen(false);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('presentation', job.id);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const ownedPresentation = activePresentation
+    && (activePresentation.id === presentationId || presentationId === null)
+    ? activePresentation
+    : null;
+  const presentationSurface = ownedPresentation ? (
+    <PresentationProgress
+      key={ownedPresentation.id}
+      projectId={projectId!}
+      initialJob={ownedPresentation}
+      onClose={closePresentation}
+      onTerminal={handleTerminal}
+    />
+  ) : presentationIdValid && presentationQuery.isPending ? (
+    <section className="presentation-progress" aria-live="polite">
+      <div className="presentation-progress__heading-row">
+        <div>
+          <h3>Loading presentation progress…</h3>
+          <p>Checking the latest slide import status.</p>
+        </div>
+        <button type="button" onClick={closePresentation}>Close</button>
       </div>
-    );
-  }
+    </section>
+  ) : hasPresentationId && (!presentationIdValid || presentationQuery.isError) ? (
+    <section className="presentation-progress presentation-progress--error" role="alert">
+      <div className="presentation-progress__heading-row">
+        <div>
+          <h3>Presentation progress unavailable</h3>
+          <p>Close this update and add the PDF again if you still need these slides.</p>
+        </div>
+        <button type="button" onClick={closePresentation}>Close</button>
+      </div>
+    </section>
+  ) : null;
 
-  if (!storyboard) return <EmptyStoryboard projectId={projectId!} />;
+  const importDialog = importOpen ? (
+    <PresentationImportDialog
+      projectId={projectId!}
+      open
+      onAccepted={acceptPresentation}
+      onClose={() => setImportOpen(false)}
+    />
+  ) : null;
 
   const moveScene = (fromIndex: number, toIndex: number) => {
     const ids = scenes.map((s) => s.id);
@@ -85,17 +185,24 @@ export function StoryboardView() {
     reorderMutation.mutate(ids);
   };
 
-  return (
+  const storyboardBody = isLoading ? (
+    <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading storyboard…</div>
+  ) : error ? (
+    <div style={{ padding: 40, color: 'var(--danger)' }}>
+      Failed to load storyboard: {error instanceof Error ? error.message : 'unknown'}
+    </div>
+  ) : (
     <div
+      className="storyboard-layout"
       style={{
-        display: 'grid',
-        gridTemplateColumns: '320px 1fr',
         height: '100%',
         minHeight: 'calc(100vh - 56px)', // navbar + breathing room
       }}
     >
+
       {/* ── Left rail: scene list ────────────────────────────── */}
       <aside
+        className="storyboard-rail"
         style={{
           borderRight: '1px solid var(--border)',
           background: 'var(--bg-elev)',
@@ -108,9 +215,16 @@ export function StoryboardView() {
           <p style={{ color: 'var(--fg-muted)', margin: '4px 0 0', fontSize: 12 }}>
             {scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}
           </p>
+          <button
+            type="button"
+            className="storyboard-add-presentation"
+            onClick={() => setImportOpen(true)}
+          >
+            Add presentation
+          </button>
         </header>
 
-        {storyboard.project.objective && (
+        {storyboard?.project.objective && (
           <p
             style={{
               fontSize: 11,
@@ -150,9 +264,16 @@ export function StoryboardView() {
               }}
               onMoveUp={() => moveScene(idx, idx - 1)}
               onMoveDown={() => moveScene(idx, idx + 1)}
+              onRemoved={(nextScenes) => normalizeAfterRemoval(scenes, nextScenes)}
             />
           ))}
         </div>
+
+        <PresentationImports
+          projectId={projectId!}
+          scenes={scenes}
+          onRemoved={handlePresentationRemoved}
+        />
 
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
           <Link
@@ -174,7 +295,7 @@ export function StoryboardView() {
       </aside>
 
       {/* ── Right rail: embedded scene editor ────────────────── */}
-      <section style={{ overflowY: 'auto', padding: '24px 32px' }}>
+      <section className="storyboard-detail" style={{ overflowY: 'auto', padding: '24px 32px' }}>
         {selectedSceneId ? (
           // Key forces a fresh mount when switching scenes so per-scene
           // local state in ScenePage (active tab, dirty editors, etc.)
@@ -187,13 +308,71 @@ export function StoryboardView() {
             embedded
           />
         ) : (
-          <div style={{ padding: 60, textAlign: 'center', color: 'var(--fg-muted)' }}>
-            Select a scene from the left to start editing.
-          </div>
+          <EmptyStoryboard projectId={projectId!} onAddPresentation={() => setImportOpen(true)} />
         )}
       </section>
     </div>
   );
+
+  return (
+    <div className="storyboard-view">
+      <div className="storyboard-presentation-owner">{presentationSurface}</div>
+      {storyboardBody}
+      {importDialog}
+    </div>
+  );
+}
+
+export function removePresentationSearch(search: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(search);
+  next.delete('presentation');
+  return next;
+}
+
+export function normalizeStoryboardSearch(
+  search: URLSearchParams,
+  firstSceneId: string | null,
+): URLSearchParams | null {
+  if (!firstSceneId || search.has('scene')) return null;
+  const next = new URLSearchParams(search);
+  next.set('scene', firstSceneId);
+  return next;
+}
+
+export function normalizeStoryboardAfterRemoval(
+  search: URLSearchParams,
+  previousScenes: readonly { id: string }[],
+  nextScenes: readonly { id: string }[],
+): URLSearchParams {
+  const next = new URLSearchParams(search);
+  const selectedId = search.get('scene');
+  if (selectedId && nextScenes.some((scene) => scene.id === selectedId)) return next;
+
+  const previousIndex = selectedId
+    ? previousScenes.findIndex((scene) => scene.id === selectedId)
+    : 0;
+  const safeIndex = previousIndex >= 0 ? previousIndex : 0;
+  const selected = nextScenes[safeIndex]
+    ?? nextScenes[safeIndex - 1]
+    ?? nextScenes[0]
+    ?? null;
+  if (selected) next.set('scene', selected.id);
+  else next.delete('scene');
+  return next;
+}
+
+export function normalizeStoryboardAfterUnavailableRemoval(
+  search: URLSearchParams,
+  potentiallyRemovedSceneIds: readonly string[],
+): URLSearchParams {
+  const next = new URLSearchParams(search);
+  const selectedId = search.get('scene');
+  if (selectedId && potentiallyRemovedSceneIds.includes(selectedId)) next.delete('scene');
+  return next;
+}
+
+function isValidPresentationId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 // ── Left-rail scene row ─────────────────────────────────────────────
@@ -207,6 +386,7 @@ function SceneRow({
   onSelect,
   onMoveUp,
   onMoveDown,
+  onRemoved,
 }: {
   scene: Scene;
   index: number;
@@ -216,6 +396,7 @@ function SceneRow({
   onSelect: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onRemoved: (nextScenes: Scene[]) => void;
 }) {
   const queryClient = useQueryClient();
   const ui = useUi();
@@ -234,8 +415,17 @@ function SceneRow({
 
   const removeMutation = useMutation({
     mutationFn: () => storyboardApi.removeScene(projectId, scene.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+    onSuccess: async (nextStoryboard) => {
+      queryClient.setQueryData(['storyboard', projectId], nextStoryboard);
+      const invalidations: Promise<unknown>[] = [
+        queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] }),
+      ];
+      if (scene.presentation_source) {
+        invalidations.push(queryClient.invalidateQueries({ queryKey: ['presentations', projectId] }));
+      }
+      await Promise.all(invalidations);
+      const latest = queryClient.getQueryData<Storyboard | null>(['storyboard', projectId]);
+      onRemoved(latest?.scenes ?? nextStoryboard.scenes);
     },
   });
 
@@ -312,20 +502,35 @@ function SceneRow({
   }
 
   return (
-    <button
-      onClick={onSelect}
+    <div
+      className="scene-row"
       style={{
-        display: 'block',
-        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'flex-start',
         background: selected ? 'var(--accent-bg)' : 'var(--bg)',
         border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
         borderRadius: 6,
-        padding: '10px 12px',
-        cursor: 'pointer',
         color: 'var(--fg)',
         width: '100%',
       }}
     >
+      <button
+        type="button"
+        className="scene-row__select"
+        aria-label={`Select scene ${scene.name}`}
+        aria-pressed={selected}
+        onClick={onSelect}
+        style={{
+          minWidth: 0,
+          flex: 1,
+          padding: '10px 8px 10px 12px',
+          border: 0,
+          background: 'transparent',
+          color: 'inherit',
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)', fontWeight: 600, minWidth: 16 }}>
           {index + 1}
@@ -357,33 +562,6 @@ function SceneRow({
         >
           {scene.name}
         </span>
-        {/* Hover-only controls — render always but de-emphasise to keep layout stable */}
-        <RowControls
-          index={index}
-          total={total}
-          onMoveUp={(e) => {
-            e.stopPropagation();
-            onMoveUp();
-          }}
-          onMoveDown={(e) => {
-            e.stopPropagation();
-            onMoveDown();
-          }}
-          onEdit={(e) => {
-            e.stopPropagation();
-            setEditing(true);
-          }}
-          onRemove={async (e) => {
-            e.stopPropagation();
-            const ok = await ui.confirm({
-              title: `Remove "${scene.name}"?`,
-              body: 'The scene and any associated metadata will be removed from the storyboard. This action cannot be undone.',
-              confirmLabel: 'Remove',
-              destructive: true,
-            });
-            if (ok) removeMutation.mutate();
-          }}
-        />
       </div>
 
       {/* Status badges row — Lucide icons + tiny labels render as a
@@ -400,7 +578,25 @@ function SceneRow({
         />
         <Badge ok={hasLowerThirds} icon={Tag} />
       </div>
-    </button>
+      </button>
+      {/* Independent actions stay outside the scene-selection button. */}
+      <RowControls
+        index={index}
+        total={total}
+        onMoveUp={onMoveUp}
+        onMoveDown={onMoveDown}
+        onEdit={() => setEditing(true)}
+        onRemove={async () => {
+          const ok = await ui.confirm({
+            title: `Remove "${scene.name}"?`,
+            body: 'The scene and any associated metadata will be removed from the storyboard. This action cannot be undone.',
+            confirmLabel: 'Remove',
+            destructive: true,
+          });
+          if (ok) removeMutation.mutate();
+        }}
+      />
+    </div>
   );
 }
 
@@ -414,35 +610,41 @@ function RowControls({
 }: {
   index: number;
   total: number;
-  onMoveUp: (e: React.MouseEvent) => void;
-  onMoveDown: (e: React.MouseEvent) => void;
-  onEdit: (e: React.MouseEvent) => void;
-  onRemove: (e: React.MouseEvent) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
 }) {
   return (
-    <span style={{ display: 'inline-flex', gap: 2, opacity: 0.6 }}>
+    <span style={{ display: 'inline-flex', flex: '0 0 auto', gap: 2, padding: '8px 8px 0 0', opacity: 0.6 }}>
       <button
+        type="button"
         onClick={onMoveUp}
         disabled={index === 0}
         title="Move up"
+        aria-label="Move up"
         style={miniBtnStyle(index === 0)}
       >
         ↑
       </button>
       <button
+        type="button"
         onClick={onMoveDown}
         disabled={index === total - 1}
         title="Move down"
+        aria-label="Move down"
         style={miniBtnStyle(index === total - 1)}
       >
         ↓
       </button>
-      <button onClick={onEdit} title="Rename" style={miniBtnStyle(false)}>
+      <button type="button" onClick={onEdit} title="Rename" aria-label="Rename" style={miniBtnStyle(false)}>
         ✏️
       </button>
       <button
+        type="button"
         onClick={onRemove}
         title="Remove"
+        aria-label="Remove"
         style={{ ...miniBtnStyle(false), color: 'var(--danger)' }}
       >
         ✕
@@ -502,7 +704,13 @@ function Badge({
   );
 }
 
-function EmptyStoryboard({ projectId }: { projectId: string }) {
+function EmptyStoryboard({
+  projectId,
+  onAddPresentation,
+}: {
+  projectId: string;
+  onAddPresentation(): void;
+}) {
   return (
     <div style={{ padding: '60px 48px', textAlign: 'center' }}>
       <Clapperboard
@@ -529,6 +737,13 @@ function EmptyStoryboard({ projectId }: { projectId: string }) {
       >
         Start Ideation
       </Link>
+      <button
+        type="button"
+        className="storyboard-empty-add-presentation"
+        onClick={onAddPresentation}
+      >
+        Add presentation
+      </button>
     </div>
   );
 }

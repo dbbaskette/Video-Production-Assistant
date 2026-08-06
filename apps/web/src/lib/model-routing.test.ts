@@ -30,7 +30,7 @@ const models: ModelEntry[] = [
     provider: 'gemini',
     model: 'gemini-2.5-pro',
     hasApiKey: true,
-    capabilities: { text: true, video: true },
+    capabilities: { text: true, image: true, video: true },
     ready: true,
   },
   {
@@ -39,7 +39,7 @@ const models: ModelEntry[] = [
     provider: 'claude-code',
     model: 'sonnet',
     hasApiKey: false,
-    capabilities: { text: true, video: false },
+    capabilities: { text: true, image: false, video: false },
     ready: true,
   },
   {
@@ -48,7 +48,7 @@ const models: ModelEntry[] = [
     provider: 'codex-cli',
     model: 'default',
     hasApiKey: false,
-    capabilities: { text: true, video: false },
+    capabilities: { text: true, image: false, video: false },
     ready: false,
     readinessMessage: 'Codex CLI is unavailable.',
   },
@@ -80,7 +80,7 @@ describe('model routing view models', () => {
     expect(isEffectiveProjectRoutingQuery(['project', 42, 'model-routing'])).toBe(false);
   });
 
-  it('offers Gemini video models only and every text-capable model for writing', () => {
+  it('offers Gemini image-and-video models only and every text-capable model for writing', () => {
     expect(optionsForRole(models, 'video-understanding').map((model) => model.id)).toEqual([
       'gemini-pro',
     ]);

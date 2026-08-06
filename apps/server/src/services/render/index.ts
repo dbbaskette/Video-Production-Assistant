@@ -22,6 +22,9 @@ import { resolveLtColors } from '../overlay/colors.js';
 import { buildTransitionClip } from './transition-clip.js';
 import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
 import { ensureSilenceClip } from './silence.js';
+import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
+
+export { RenderError };
 
 const execFileAsync = promisify(execFile);
 
@@ -651,6 +654,17 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   const args: string[] = ['-y', '-i', videoSrc];
   if (audioPath) args.push('-i', audioPath);
 
+  const baseDuration = resolveRenderSceneDuration(scene);
+  const [videoDuration, narrationDuration] = await Promise.all([
+    baseDuration.flexible || audioPath ? probeDuration(videoSrc) : Promise.resolve(baseDuration.targetSec),
+    audioPath ? probeDuration(audioPath) : Promise.resolve(undefined),
+  ]);
+  const resolvedDuration = resolveRenderSceneDuration(scene, narrationDuration);
+  // Imported slide clips are intentionally silent. Treat a persisted `mix`
+  // preference as replacement for this scene so the graph never references
+  // a nonexistent [0:a] stream. Ordinary recordings keep true mix behavior.
+  const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : audioMode;
+
   // Detect narration overrun — TTS audio is often a fraction of a second
   // longer than the recording, especially on the last paragraph. With the
   // old `-shortest` pattern, that tail got clipped mid-word (a real bug
@@ -658,12 +672,10 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   // at "have"). Fix: pad the video by holding the last frame for the
   // overrun so audio plays through cleanly.
   let videoPadSec = 0;
-  if (audioPath) {
-    const [vDur, aDur] = await Promise.all([
-      probeDuration(videoSrc),
-      probeDuration(audioPath),
-    ]);
-    const overrun = aDur - vDur;
+  if (resolvedDuration.flexible) {
+    videoPadSec = Math.max(0, resolvedDuration.targetSec - videoDuration);
+  } else if (narrationDuration !== undefined) {
+    const overrun = narrationDuration - videoDuration;
     // 50 ms threshold — ignore sub-frame fudge from probe rounding.
     if (overrun > 0.05) videoPadSec = overrun;
   }
@@ -682,7 +694,12 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     // stop_mode=clone holds the last decoded frame for stop_duration
     // seconds. Must run AFTER subtitles so the pad shows whatever the
     // last burnt-in subtitle was (subs are typically gone by then).
-    vFilters.push(`tpad=stop_mode=clone:stop_duration=${videoPadSec.toFixed(3)}`);
+    if (videoPadSec > 0.05) {
+      vFilters.push(`tpad=stop_mode=clone:stop_duration=${videoPadSec.toFixed(3)}`);
+    }
+  }
+  if (resolvedDuration.flexible) {
+    vFilters.push(`trim=duration=${resolvedDuration.targetSec.toFixed(3)},setpts=PTS-STARTPTS`);
   }
   const needsVideoReencode = vFilters.length > 0;
 
@@ -692,7 +709,7 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
 
   // Audio routing
   if (audioPath) {
-    if (audioMode === 'replace') {
+    if (effectiveAudioMode === 'replace') {
       // Drop original audio, use only narration.
       args.push('-map', needsVideoReencode ? '[v]' : '0:v:0', '-map', '1:a:0');
       args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
@@ -1278,15 +1295,4 @@ function paddedIndex(i: number): string {
 
 function slug(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'scene';
-}
-
-export class RenderError extends Error {
-  hint?: string;
-  stderrTail?: string;
-  constructor(message: string, opts: { hint?: string; stderrTail?: string } = {}) {
-    super(message);
-    this.name = 'RenderError';
-    this.hint = opts.hint;
-    this.stderrTail = opts.stderrTail;
-  }
 }

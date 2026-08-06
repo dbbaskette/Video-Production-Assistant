@@ -96,6 +96,15 @@ export class JobQueue {
     this.emit(id, 'done', result);
   }
 
+  finishCancelled(id: string, result?: unknown): void {
+    const job = this.jobs.get(id);
+    if (!job) throw new Error(`Job not found: ${id}`);
+    job.status = 'cancelled';
+    job.result = result;
+    job.updated = new Date().toISOString();
+    this.emit(id, 'done', result);
+  }
+
   fail(id: string, error: string): void {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`Job not found: ${id}`);

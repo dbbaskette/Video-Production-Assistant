@@ -12,7 +12,7 @@ import type { LlmClient } from '../services/llm/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import { jobQueue } from '../lib/job-queue.js';
 
-async function waitForJobStatus(jobId: string, target: 'completed' | 'failed'): Promise<void> {
+async function waitForJobStatus(jobId: string, target: 'completed' | 'failed' | 'cancelled'): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
     const status = jobQueue.get(jobId)?.status;
@@ -51,7 +51,7 @@ async function buildTestServer(writerOverride?: LlmClient) {
       provider: 'fake' as const,
       model: `fake-${role}`,
       name: role,
-      capabilities: { text: true, video: false },
+      capabilities: { text: true, image: false, video: false },
       ready: true as const,
     },
   }));
@@ -194,6 +194,166 @@ describe('narration routes', () => {
     expect(body.hasScript).toBe(true);
     expect(body.hasAudio).toBe(false);
     expect(body.audio).toBeNull();
+  });
+
+  it('POST project narration generates scripted scenes and skips empty scripts', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: {
+        engine: 'fake',
+        voice: 'alice',
+        speed: 1,
+        expressiveness: 'medium',
+        overwrite: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'running' });
+    await waitForJobStatus(res.json().jobId, 'completed');
+    expect(jobQueue.get(res.json().jobId)?.result).toMatchObject({
+      totalScenes: 2,
+      generatedScenes: 1,
+      noScriptScenes: 1,
+      failedScenes: 0,
+    });
+  });
+
+  it.each([
+    null,
+    'bad',
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: false, extra: true },
+    { engine: 'fake', voice: 'alice', speed: 0.49, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 2.01, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'extreme', overwrite: false },
+    { engine: 'fake', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: 'yes' },
+    { engine: 'unknown', voice: 'alice', speed: 1, expressiveness: 'medium', overwrite: false },
+    { engine: 'fake', voice: 'unknown', speed: 1, expressiveness: 'medium', overwrite: false },
+  ])('rejects invalid project narration input %#', async (payload) => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: payload === null || typeof payload === 'string' ? JSON.stringify(payload) : payload,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe('invalid_request');
+  });
+
+  it('allows only one active project narration job per project', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const active = jobQueue.create('narration-generate-project', { projectId, label: 'Narration' });
+    jobQueue.setStatus(active.id, 'running');
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'fake', voice: 'alice', overwrite: false },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe('narration_job_active');
+    jobQueue.setStatus(active.id, 'cancelled');
+  });
+
+  it('retains project ownership until a cancellation reaches a safe boundary', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    ctx.tts.register({
+      id: 'slow',
+      displayName: 'Slow',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        started();
+        await gate;
+        return { audio: Buffer.from('audio'), durationSec: 1, timings: [] };
+      },
+    });
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const startedJob = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow', voice: 'voice', overwrite: false },
+    });
+    await began;
+
+    const cancelled = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${startedJob.json().jobId}/cancel`,
+    });
+    expect(cancelled.json()).toMatchObject({ cancelled: true, status: 'cancelling' });
+    expect(jobQueue.get(startedJob.json().jobId)?.status).toBe('cancelling');
+
+    const overlappingProject = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow', voice: 'voice', overwrite: false },
+    });
+    expect(overlappingProject.statusCode).toBe(409);
+    const overlappingScene = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'slow', voice: 'voice' },
+    });
+    expect(overlappingScene.statusCode).toBe(409);
+
+    release();
+    await waitForJobStatus(startedJob.json().jobId, 'cancelled');
+    expect(jobQueue.get(startedJob.json().jobId)?.result).toMatchObject({ cancelled: true });
+  });
+
+  it('retains scene-batch ownership until cancellation reaches a safe boundary', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    ctx.tts.register({
+      id: 'slow-scene',
+      displayName: 'Slow scene',
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        started();
+        await gate;
+        return { audio: Buffer.from('audio'), durationSec: 1, timings: [] };
+      },
+    });
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    const batch = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/narration/generate-all`,
+      payload: { engine: 'slow-scene', voice: 'voice' },
+    });
+    await began;
+    await ctx.app.inject({ method: 'POST', url: `/api/jobs/${batch.json().jobId}/cancel` });
+    expect(jobQueue.get(batch.json().jobId)?.status).toBe('cancelling');
+
+    const overlap = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: { engine: 'slow-scene', voice: 'voice', overwrite: false },
+    });
+    expect(overlap.statusCode).toBe(409);
+
+    release();
+    await waitForJobStatus(batch.json().jobId, 'cancelled');
+    expect(jobQueue.get(batch.json().jobId)?.result).toMatchObject({ cancelled: true });
+    const repeated = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${batch.json().jobId}/cancel`,
+    });
+    expect(repeated.json()).toMatchObject({ cancelled: false, status: 'cancelled' });
+    expect(jobQueue.get(batch.json().jobId)?.status).toBe('cancelled');
   });
 
   it('POST generate creates narration with audio + subtitles', async () => {

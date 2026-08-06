@@ -12,6 +12,7 @@ import {
   updateScene,
   removeScene,
   reorderScenes,
+  mutateStoryboard,
 } from './index.js';
 
 const testProject: Project = {
@@ -63,6 +64,75 @@ describe('storyboard service', () => {
   });
 
   // ---- loadStoryboard ----
+
+  describe('mutateStoryboard', () => {
+    function deferred() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+
+    it('serializes same-project mutations so the second sees the first', async () => {
+      const firstEntered = deferred();
+      const releaseFirst = deferred();
+      const first = mutateStoryboard(dir, async (current) => {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+        const base = current ?? createStoryboard(testProject, []);
+        return { ...base, scenes: [...base.scenes, scene1] };
+      });
+
+      await firstEntered.promise;
+      let secondEntered = false;
+      const second = mutateStoryboard(dir, (current) => {
+        secondEntered = true;
+        const base = current ?? createStoryboard(testProject, []);
+        return { ...base, scenes: [...base.scenes, scene2] };
+      });
+      await Promise.resolve();
+      expect(secondEntered).toBe(false);
+
+      releaseFirst.resolve();
+      await Promise.all([first, second]);
+
+      expect((await loadStoryboard(dir))?.scenes).toEqual([scene1, scene2]);
+    });
+
+    it('allows mutations for different project roots to overlap', async () => {
+      const otherDir = await mkdtemp(path.join(tmpdir(), 'vpa-storyboard-other-'));
+      const firstEntered = deferred();
+      const releaseFirst = deferred();
+      const otherEntered = deferred();
+      let first: Promise<Storyboard> | undefined;
+      let other: Promise<Storyboard> | undefined;
+      try {
+        first = mutateStoryboard(dir, async (current) => {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+          return current ?? createStoryboard(testProject, [scene1]);
+        });
+        await firstEntered.promise;
+
+        other = mutateStoryboard(otherDir, (current) => {
+          otherEntered.resolve();
+          return current ?? createStoryboard(testProject, [scene2]);
+        });
+        await Promise.race([
+          otherEntered.promise,
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error('different-project mutation was serialized')), 250);
+          }),
+        ]);
+
+        releaseFirst.resolve();
+        await Promise.all([first, other]);
+      } finally {
+        releaseFirst.resolve();
+        await Promise.allSettled([first, other].filter((item): item is Promise<Storyboard> => !!item));
+        await rm(otherDir, { recursive: true, force: true });
+      }
+    });
+  });
 
   describe('loadStoryboard', () => {
     it('returns null for missing file', async () => {

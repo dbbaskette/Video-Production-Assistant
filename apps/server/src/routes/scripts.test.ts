@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
 import { ProjectStore } from '../services/project/store.js';
-import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
+import { saveStoryboard, loadStoryboard, mutateStoryboard } from '../services/storyboard/index.js';
 import type { LlmClient, LlmCompleteOptions } from '../services/llm/index.js';
 import {
   ModelRoutingError,
@@ -59,7 +59,11 @@ function modelSummary(role: 'video-understanding' | 'writing' | 'general') {
     provider: role === 'video-understanding' ? 'gemini' as const : 'fake' as const,
     model: `${role}-v1`,
     name: `${role} model`,
-    capabilities: { text: true, video: role === 'video-understanding' },
+    capabilities: {
+      text: true,
+      image: role === 'video-understanding',
+      video: role === 'video-understanding',
+    },
     ready: true as const,
   };
 }
@@ -189,6 +193,22 @@ function makeSampleStoryboard(projectId: string): Storyboard {
       { id: 'scene-01', name: 'Intro', description: 'Introduction to the demo', type: 'desktop' },
       { id: 'scene-02', name: 'Setup', description: 'Setting up the environment', type: 'terminal' },
     ],
+  };
+}
+
+function makePresentationScene(scene: Storyboard['scenes'][number]): void {
+  scene.type = 'slide';
+  scene.recording = {
+    source: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/clips/page-0001.mp4',
+    source_kind: 'presentation',
+    duration_sec: 1,
+  };
+  scene.presentation_source = {
+    presentation_id: '1e570aa5-20ce-4779-ad9a-d4db3ae73991',
+    page_number: 1,
+    page_count: 1,
+    image: 'presentations/1e570aa5-20ce-4779-ad9a-d4db3ae73991/pages/page-0001.png',
+    hold_duration_sec: 5,
   };
 }
 
@@ -753,6 +773,54 @@ describe('script routes', () => {
     expect(scene?.narration?.script).toBe(customScript);
   });
 
+  it('queues user-authored intent and script edits behind an import append', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    await saveStoryboard(projectPath, sb);
+    const importEntered = deferred();
+    const releaseImport = deferred();
+    const importedScene = {
+      id: 'scene-imported',
+      name: 'Imported slide',
+      description: 'Imported atomically',
+      type: 'slide' as const,
+    };
+    const importMutation = mutateStoryboard(projectPath, async (current) => {
+      importEntered.resolve();
+      await releaseImport.promise;
+      if (!current) throw new Error('expected storyboard');
+      return { ...current, scenes: [...current.scenes, importedScene] };
+    });
+    await importEntered.promise;
+
+    const intentEdit = ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/intent`,
+      payload: { intent: 'Show the imported workflow' },
+    });
+    const scriptEdit = ctx.app.inject({
+      method: 'PUT',
+      url: `/api/projects/${projectId}/scenes/scene-01/script`,
+      payload: { script: 'The final user-authored narration.' },
+    });
+    const releaseTimer = setTimeout(() => releaseImport.resolve(), 50);
+    try {
+      const [intentResponse, scriptResponse] = await Promise.all([intentEdit, scriptEdit]);
+      expect(intentResponse.statusCode).toBe(200);
+      expect(scriptResponse.statusCode).toBe(200);
+      await importMutation;
+    } finally {
+      clearTimeout(releaseTimer);
+      releaseImport.resolve();
+      await importMutation.catch(() => undefined);
+    }
+
+    const final = await loadStoryboard(projectPath);
+    const edited = final?.scenes.find(({ id }) => id === 'scene-01');
+    expect(final?.scenes.some(({ id }) => id === 'scene-imported')).toBe(true);
+    expect(edited?.intent).toBe('Show the imported workflow');
+    expect(edited?.narration?.script).toBe('The final user-authored narration.');
+  });
+
   it('PUT script returns 400 without script field', async () => {
     const sb = makeSampleStoryboard(projectId);
     await saveStoryboard(projectPath, sb);
@@ -837,6 +905,45 @@ describe('script routes', () => {
       expect.objectContaining({ id: projectId }),
     );
     expect((await loadStoryboard(projectPath))!.scenes[0]!.narration!.script).toBe(original);
+  });
+
+  it('does not tighten a flexible presentation scene even with an explicit target', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    makePresentationScene(sb.scenes[0]!);
+    sb.scenes[0]!.narration = { script: 'Keep this complete narration.' };
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/tighten`,
+      payload: { targetDurationSec: 1 },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({
+      error: 'Presentation narration sets the final scene length and does not need tightening.',
+      code: 'flexible_scene_duration',
+    });
+    expect(ctx.writerComplete).not.toHaveBeenCalled();
+  });
+
+  it('polishes a presentation script without fitting it to the physical clip', async () => {
+    const sb = makeSampleStoryboard(projectId);
+    makePresentationScene(sb.scenes[0]!);
+    await saveStoryboard(projectPath, sb);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/scenes/scene-01/script/polish`,
+      payload: { draft: 'A complete slide narration.', targetDurationSec: 1 },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().targetDurationSec).toBeNull();
+    expect(ctx.writerComplete.mock.calls.at(-1)![0].userPrompt)
+      .toContain('No recording length is available');
+    expect(ctx.writerComplete.mock.calls.at(-1)![0].userPrompt)
+      .not.toContain('Target word count:');
   });
 
   it('uses general only for oversized source-document summarization during polish', async () => {

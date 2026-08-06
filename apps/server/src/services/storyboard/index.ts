@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import {
   StoryboardSchema,
   type Storyboard,
@@ -9,6 +10,8 @@ import { loadYaml, dumpYaml } from '../../lib/yaml.js';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { projectFiles } from '../project/paths.js';
 import { writeSnapshotFromCurrent, pruneSnapshots } from './snapshots.js';
+
+const mutationTails = new Map<string, Promise<void>>();
 
 export async function loadStoryboard(projectRoot: string): Promise<Storyboard | null> {
   const files = projectFiles(projectRoot);
@@ -30,10 +33,31 @@ export async function saveStoryboard(projectRoot: string, storyboard: Storyboard
     await writeSnapshotFromCurrent(projectRoot);
     await pruneSnapshots(projectRoot);
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn('[storyboard] snapshot failed (proceeding with save):', err);
   }
   await atomicWriteFile(files.storyboard, dumpYaml(validated));
+}
+
+export async function mutateStoryboard(
+  projectRoot: string,
+  transform: (current: Storyboard | null) => Storyboard | Promise<Storyboard>,
+): Promise<Storyboard> {
+  const key = path.resolve(projectRoot);
+  const previous = mutationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = new Promise<void>((resolve) => { release = resolve; });
+  mutationTails.set(key, tail);
+
+  await previous;
+  try {
+    const current = await loadStoryboard(key);
+    const updated = StoryboardSchema.parse(await transform(current));
+    await saveStoryboard(key, updated);
+    return updated;
+  } finally {
+    release();
+    if (mutationTails.get(key) === tail) mutationTails.delete(key);
+  }
 }
 
 export function createStoryboard(project: Project, scenes: Scene[]): Storyboard {

@@ -13,7 +13,9 @@
  * Purely presentational — all orchestration lives in NewProjectDialog.
  */
 
+import { useId, useRef } from 'react';
 import type { SourceDoc } from '../lib/api.js';
+import { useModalFocus } from './ui/useModalFocus.js';
 
 export type CreateStage = 'creating' | 'uploading' | 'extracting' | 'done' | 'error';
 
@@ -82,6 +84,8 @@ export function CreateProgressModal({
   onContinueBackground,
   onClose,
 }: Props) {
+  const headingId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
   const created = stage !== 'creating';
   const uploaded = stage === 'extracting' || stage === 'done';
   const extractedCount = docs.filter((d) => d.status && d.status !== 'extracting').length;
@@ -89,16 +93,31 @@ export function CreateProgressModal({
   const failedCount = docs.filter((d) => d.status === 'failed').length;
   const allDone = stage === 'done' || (uploaded && extractedCount >= docs.length && docs.length > 0);
 
+  useModalFocus({
+    open: true,
+    dialogRef,
+    initialFocusRef: dialogRef,
+    escapeDisabled: stage !== 'error',
+    onEscape: onClose,
+  });
+
   return (
     <div
       className="dialog-overlay"
-      role="dialog"
-      aria-modal="true"
       style={{ zIndex: 1100 }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
-        <h2 style={{ margin: '0 0 4px', fontSize: 18 }}>
+      <div
+        ref={dialogRef}
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: 460 }}
+      >
+        <h2 id={headingId} style={{ margin: '0 0 4px', fontSize: 18 }}>
           {stage === 'error' ? 'Something went wrong' : allDone ? 'Project ready' : 'Setting up your project'}
         </h2>
         <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-muted)', lineHeight: 1.5 }}>

@@ -20,6 +20,7 @@ import { storyboardApi } from '../lib/api.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry, Scene, Expressiveness } from '@vpa/shared';
 import { LastSavedBadge } from '../components/ui/LastSavedBadge.js';
+import { ProjectNarrationPanel } from '../components/ProjectNarrationPanel.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -102,48 +103,13 @@ export function NarrationPage() {
       </p>
 
       {hasStoryboard && (
-        <div
-          style={{
-            marginTop: 20,
-            padding: '14px 16px',
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 14,
-            flexWrap: 'wrap',
-          }}
-        >
-          <div style={{ flex: '1 1 auto', minWidth: 240 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Default emotiveness</div>
-            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
-              How expressive narration sounds. Scenes inherit this until you override it on their Narration tab. Regenerate a scene's audio to apply a change.
-            </div>
-          </div>
-          <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-            {(['light', 'medium', 'heavy'] as const).map((lvl) => (
-              <button
-                key={lvl}
-                type="button"
-                disabled={setProjectExpressiveness.isPending}
-                onClick={() => setProjectExpressiveness.mutate(lvl)}
-                style={{
-                  padding: '7px 14px',
-                  fontSize: 12,
-                  textTransform: 'capitalize',
-                  cursor: 'pointer',
-                  border: 'none',
-                  borderLeft: lvl === 'light' ? 'none' : '1px solid var(--border)',
-                  background: projectExpressiveness === lvl ? 'var(--accent)' : 'var(--bg)',
-                  color: projectExpressiveness === lvl ? '#fff' : 'var(--fg)',
-                }}
-              >
-                {lvl}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ProjectNarrationPanel
+          projectId={projectId!}
+          scenes={scenes}
+          expressiveness={projectExpressiveness}
+          expressivenessPending={setProjectExpressiveness.isPending}
+          onExpressivenessChange={(level) => setProjectExpressiveness.mutate(level)}
+        />
       )}
 
       {hasStoryboard && (

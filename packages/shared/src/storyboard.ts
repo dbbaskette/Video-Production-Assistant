@@ -1,12 +1,21 @@
 import { z } from 'zod';
+import { isSafeProjectRelativePath, PresentationSourceSchema } from './presentation.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
   duration_sec: z.number().positive().optional(),
   ingested_at: z.string().datetime().optional(),
-  source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split']).optional(),
+  source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split', 'presentation']).optional(),
   capture_session_id: z.string().uuid().optional(),
   captured_at: z.string().datetime().optional(),
+}).superRefine((recording, ctx) => {
+  if (recording.source_kind === 'presentation' && !isSafeProjectRelativePath(recording.source)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: 'presentation recording source must be a safe project-relative path',
+    });
+  }
 });
 export type Recording = z.infer<typeof RecordingSchema>;
 
@@ -144,6 +153,7 @@ export const SceneSchema = z.object({
   intent: z.string().optional(),
   type: SceneTypeSchema.default('desktop'),
   recording: RecordingSchema.optional(),
+  presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),
   overlay_render: z.string().optional(),
@@ -204,6 +214,23 @@ export const SceneSchema = z.object({
       }),
     )
     .optional(),
+}).superRefine((scene, ctx) => {
+  const hasPresentationRecording = scene.recording?.source_kind === 'presentation';
+  const hasPresentationSource = scene.presentation_source !== undefined;
+  if (hasPresentationRecording !== hasPresentationSource) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: hasPresentationRecording ? ['presentation_source'] : ['recording', 'source_kind'],
+      message: 'presentation recording and presentation_source must be provided together',
+    });
+  }
+  if ((hasPresentationRecording || hasPresentationSource) && scene.type !== 'slide') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['type'],
+      message: 'presentation provenance requires a slide scene',
+    });
+  }
 });
 export type Scene = z.infer<typeof SceneSchema>;
 

@@ -4,7 +4,8 @@ import { stat, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
-import { renderFinalVideo, RenderError, probeAudioParams, probeVideoSize, runFfmpeg, type RenderOptions } from '../services/render/index.js';
+import { renderFinalVideo, probeAudioParams, probeVideoSize, runFfmpeg, type RenderOptions } from '../services/render/index.js';
+import { privateRenderDiagnostic, publicRenderFailure } from '../services/render/errors.js';
 import { buildTransitionClip } from '../services/render/transition-clip.js';
 import { jobQueue } from '../lib/job-queue.js';
 import { resolveTrackAudioPath, readMusicTrack } from './music.js';
@@ -22,6 +23,7 @@ interface Deps {
   vpaHome: string;
   workspaceRoot: string;
   registryFile: string;
+  renderVideo?: typeof renderFinalVideo;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -33,6 +35,7 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 
 export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store } = deps;
+  const renderVideo = deps.renderVideo ?? renderFinalVideo;
 
   // POST /api/projects/:id/render — start a render job. Returns the jobId
   // immediately; client subscribes to /api/jobs/:jobId/stream for progress.
@@ -188,7 +191,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
 
     void (async () => {
       try {
-        const result = await renderFinalVideo(projectPath, opts, (event) => {
+        const result = await renderVideo(projectPath, opts, (event) => {
           jobQueue.emit(job.id, 'progress', event);
         });
         const manifestOptions = {
@@ -223,9 +226,12 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           sceneCount: result.scenePaths.length,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const hint = err instanceof RenderError ? err.hint : undefined;
-        jobQueue.fail(job.id, hint ? `${message} — ${hint}` : message);
+        const failure = publicRenderFailure(err, 'project');
+        app.log.error(privateRenderDiagnostic(err), 'Project render failed');
+        jobQueue.fail(
+          job.id,
+          `${failure.code}: ${failure.error}${failure.hint ? ` — ${failure.hint}` : ''}`,
+        );
       }
     })();
 
@@ -376,8 +382,13 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           cacheTag: `${sceneId}-${safeT}-${durationSec.toFixed(2)}`,
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ error: `Preview build failed: ${msg}`, code: 'preview_failed' });
+        const failure = publicRenderFailure(err, 'transition-preview');
+        app.log.error(privateRenderDiagnostic(err), 'Transition preview render failed');
+        return reply.status(500).send({
+          error: failure.error,
+          code: failure.code,
+          ...(failure.hint ? { hint: failure.hint } : {}),
+        });
       }
     }
 
@@ -460,8 +471,13 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           cacheFile,
         ]);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return reply.status(500).send({ error: `Thumbnail build failed: ${msg}`, code: 'thumb_failed' });
+        const failure = publicRenderFailure(err, 'thumbnail');
+        app.log.error(privateRenderDiagnostic(err), 'Thumbnail render failed');
+        return reply.status(500).send({
+          error: failure.error,
+          code: failure.code,
+          ...(failure.hint ? { hint: failure.hint } : {}),
+        });
       }
     }
 

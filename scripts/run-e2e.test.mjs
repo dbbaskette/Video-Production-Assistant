@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverSpecs, selectE2eInvocation } from './run-e2e.mjs';
+import * as e2eRunner from './run-e2e.mjs';
+
+const { discoverSpecs, selectE2eInvocation } = e2eRunner;
 
 const specs = [
   'tests/e2e/brand-creation.spec.ts',
   'tests/e2e/model-routing.spec.ts',
+  'tests/e2e/presentation-import.spec.ts',
   'tests/e2e/script.spec.ts',
 ];
 
@@ -23,7 +26,7 @@ async function withTemporaryE2eDirectory(run) {
   }
 }
 
-test('generic E2E keeps the shared config and excludes the routing-only spec', () => {
+test('generic E2E keeps the shared config and excludes every isolated spec', () => {
   assert.deepEqual(selectE2eInvocation([], specs), {
     config: 'tests/e2e/playwright.config.ts',
     args: ['tests/e2e/brand-creation.spec.ts', 'tests/e2e/script.spec.ts'],
@@ -55,6 +58,87 @@ test('the routing spec selects only its isolated config', () => {
     config: 'tests/e2e/model-routing.playwright.config.ts',
     args: ['tests/e2e/model-routing.spec.ts'],
   });
+});
+
+test('the presentation spec selects only its dedicated non-reused config', () => {
+  assert.deepEqual(selectE2eInvocation(['tests/e2e/presentation-import.spec.ts'], specs), {
+    config: 'tests/e2e/presentation-import.playwright.config.ts',
+    args: ['tests/e2e/presentation-import.spec.ts'],
+  });
+});
+
+test('mixed shared and presentation specs fail closed', () => {
+  assert.throws(
+    () => selectE2eInvocation(
+      ['tests/e2e/brand-creation.spec.ts', 'tests/e2e/presentation-import.spec.ts'],
+      specs,
+    ),
+    /must run separately/,
+  );
+});
+
+test('mixed isolated presentation and routing specs fail closed', () => {
+  assert.throws(
+    () => selectE2eInvocation(
+      ['tests/e2e/model-routing.spec.ts', 'tests/e2e/presentation-import.spec.ts'],
+      specs,
+    ),
+    /must run separately/,
+  );
+});
+
+test('presentation harness owns unique roots, distinct ports, exact env, and scoped cleanup', async () => {
+  assert.equal(typeof e2eRunner.createPresentationE2eHarness, 'function');
+  assert.equal(typeof e2eRunner.removePresentationE2eHarness, 'function');
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'vpa-presentation-harness-test-'));
+  const sentinel = join(workspaceRoot, 'neighbor-sentinel');
+  await writeFile(sentinel, 'keep\n');
+  const allocated = [41001, 41001, 41002, 42001, 42002];
+  const allocatePort = async () => allocated.shift();
+  try {
+    const first = await e2eRunner.createPresentationE2eHarness({
+      temporaryDirectory: workspaceRoot,
+      allocatePort,
+    });
+    const second = await e2eRunner.createPresentationE2eHarness({
+      temporaryDirectory: workspaceRoot,
+      allocatePort,
+    });
+
+    assert.notEqual(first.root, second.root);
+    assert.notEqual(first.apiPort, first.webPort);
+    assert.notEqual(second.apiPort, second.webPort);
+    assert.deepEqual(first.env, {
+      VPA_PRESENTATION_E2E_ROOT: first.root,
+      VPA_PRESENTATION_E2E_HOME: first.vpaHome,
+      VPA_PRESENTATION_E2E_PROJECTS: first.projectsDefault,
+      VPA_PRESENTATION_E2E_API_PORT: String(first.apiPort),
+      VPA_PRESENTATION_E2E_WEB_PORT: String(first.webPort),
+    });
+
+    await e2eRunner.removePresentationE2eHarness(first);
+    await assert.rejects(() => import('node:fs/promises').then(({ lstat }) => lstat(first.root)));
+    assert.equal(await import('node:fs/promises').then(({ readFile }) => readFile(sentinel, 'utf8')), 'keep\n');
+    await e2eRunner.removePresentationE2eHarness(second);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('presentation harness removes its owned root when setup fails', async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'vpa-presentation-harness-failure-'));
+  try {
+    await assert.rejects(
+      () => e2eRunner.createPresentationE2eHarness({
+        temporaryDirectory: workspaceRoot,
+        allocatePort: async () => { throw new Error('port allocation failed'); },
+      }),
+      /port allocation failed/,
+    );
+    assert.deepEqual(await readdir(workspaceRoot), []);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test('mixed shared and routing specs fail closed', () => {

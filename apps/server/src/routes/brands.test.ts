@@ -84,7 +84,7 @@ beforeEach(async () => {
       provider: 'fake' as const,
       model: 'fake-general',
       name: 'General',
-      capabilities: { text: true, video: false },
+      capabilities: { text: true, image: false, video: false },
       ready: true as const,
     },
   }));

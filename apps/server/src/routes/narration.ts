@@ -1,4 +1,5 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { stat, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -7,7 +8,8 @@ import type { TtsService } from '../services/tts/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
 import type { Expressiveness } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
-import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, inspectNarrationBatch, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
+import { generateProjectNarration } from '../services/narration/project-generation.js';
 import { jobQueue } from '../lib/job-queue.js';
 import {
   listProfiles,
@@ -25,6 +27,14 @@ interface Deps {
   workspaceRoot: string;
   vpaHome: string;
 }
+
+const ProjectNarrationRequestSchema = z.object({
+  engine: z.string().min(1).max(100),
+  voice: z.string().min(1).max(200),
+  speed: z.number().finite().min(0.5).max(2).default(1),
+  expressiveness: z.enum(['light', 'medium', 'heavy']).default('medium'),
+  overwrite: z.boolean().default(false),
+}).strict();
 
 /** Coerce a request value to a valid emotiveness level, else undefined
  *  (the narration service then defaults to 'medium'). */
@@ -63,9 +73,55 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
   const { store, tts, router, workspaceRoot, vpaHome } = deps;
 
   const voiceCloneStore = new VoiceCloneStore({ vpaHome });
+  const activeNarrationRequests = new Map<string, symbol>();
+  const requestReservations = new WeakMap<object, { projectId: string; token: symbol }>();
+  const activeNarrationJobs = (projectId: string) => jobQueue
+    .list({ activeOnly: true, projectId })
+    .filter((job) => job.type === 'narration-generate-project' || job.type === 'narration-generate-all');
+  const hasActiveNarrationWork = (projectId: string) =>
+    activeNarrationRequests.has(projectId) || activeNarrationJobs(projectId).length > 0;
+  const reserveNarration = (projectId: string): symbol | null => {
+    if (hasActiveNarrationWork(projectId)) return null;
+    const token = Symbol(projectId);
+    activeNarrationRequests.set(projectId, token);
+    return token;
+  };
+  const releaseNarration = (projectId: string, token: symbol) => {
+    if (activeNarrationRequests.get(projectId) === token) activeNarrationRequests.delete(projectId);
+  };
+  const conflict = (reply: FastifyReply) => reply.status(409).send({
+    error: 'Narration generation is already running for this project',
+    code: 'narration_job_active',
+  });
 
-  // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
-  app.get('/api/tts/engines', async () => {
+  // Every non-project narration mutation reserves the project before its
+  // handler can yield. Project jobs use the same reservation in their handler.
+  // Reads remain available, so the scene list can stay mounted safely.
+  app.addHook('preHandler', async (req, reply) => {
+    const route = req.routeOptions.url;
+    const id = (req.params as { id?: string } | null)?.id;
+    const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
+    if (!id || !mutating || !route?.includes('/narration')
+      || route === '/api/projects/:id/narration/generate-project') return;
+    const token = reserveNarration(id);
+    if (!token) return conflict(reply);
+    requestReservations.set(req, { projectId: id, token });
+  });
+  const releaseRequestReservation = (req: object) => {
+    const reservation = requestReservations.get(req);
+    if (!reservation) return;
+    requestReservations.delete(req);
+    releaseNarration(reservation.projectId, reservation.token);
+  };
+  app.addHook('onSend', async (req, _reply, payload) => {
+    releaseRequestReservation(req);
+    return payload;
+  });
+  app.addHook('onError', async (req) => {
+    releaseRequestReservation(req);
+  });
+
+  const listAdvertisedEngines = async () => {
     const engines = tts.listEngines();
     let clones: Awaited<ReturnType<VoiceCloneStore['list']>> = [];
     try {
@@ -98,6 +154,11 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       }
       return engine;
     });
+  };
+
+  // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
+  app.get('/api/tts/engines', async () => {
+    return listAdvertisedEngines();
   });
 
   // GET /api/voices — list voice profiles
@@ -136,6 +197,116 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'Profile not found', code: 'not_found' });
     }
     return { deleted: true };
+  });
+
+  // POST /api/projects/:id/narration/generate-project — generate narration
+  // sequentially for every scripted scene. Existing audio is preserved unless
+  // overwrite is explicitly true.
+  app.post('/api/projects/:id/narration/generate-project', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ProjectNarrationRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'Invalid project narration settings', code: 'invalid_request' });
+    }
+
+    const engine = (await listAdvertisedEngines())
+      .find((candidate) => candidate.id === parsed.data.engine);
+    if (!engine || !engine.voices.some((candidate) => candidate.id === parsed.data.voice)) {
+      return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
+    }
+
+    const reservation = reserveNarration(id);
+    if (!reservation) return conflict(reply);
+
+    let project;
+    try {
+      project = await resolveProject(store, id);
+    } catch {
+      releaseNarration(id, reservation);
+      return reply.status(404).send({ error: `Project not found: ${id}`, code: 'not_found' });
+    }
+    let storyboard;
+    try {
+      storyboard = await loadStoryboard(project.path);
+    } catch (error) {
+      releaseNarration(id, reservation);
+      throw error;
+    }
+    if (!storyboard) {
+      releaseNarration(id, reservation);
+      return reply.status(404).send({ error: 'No storyboard found', code: 'not_found' });
+    }
+
+    const scenes = storyboard.scenes.map(({ id: sceneId, name }) => ({ id: sceneId, name }));
+    const job = jobQueue.create('narration-generate-project', {
+      projectId: id,
+      label: 'Project narration',
+    });
+    releaseNarration(id, reservation);
+    jobQueue.setStatus(job.id, 'running');
+    jobQueue.emit(job.id, 'start', {
+      totalScenes: scenes.length,
+      engine: parsed.data.engine,
+      voice: parsed.data.voice,
+      overwrite: parsed.data.overwrite,
+    });
+
+    void (async () => {
+      let writerPromise: ReturnType<ModelRouter['resolveText']> | undefined;
+      try {
+        const result = await generateProjectNarration(
+          {
+            projectPath: project.path,
+            scenes,
+            ...parsed.data,
+          },
+          {
+            loadStoryboard,
+            inspectBatch: inspectNarrationBatch,
+            resolveWriter: async () => {
+              writerPromise ??= router.resolveText('writing', project);
+              return (await writerPromise).client;
+            },
+            generateScene: (input, writer, onProgress, isCancelled) => generateAllChunks(
+              input,
+              tts,
+              writer,
+              workspaceRoot,
+              onProgress,
+              isCancelled,
+            ),
+            onProgress: (progress) => jobQueue.emit(job.id, 'progress', progress),
+            isCancelled: () => {
+              const status = jobQueue.get(job.id)?.status;
+              return status === 'cancelling' || status === 'cancelled';
+            },
+          },
+        );
+        if (result.cancelled || jobQueue.get(job.id)?.status === 'cancelling') {
+          jobQueue.finishCancelled(job.id, { ...result, cancelled: true });
+        } else {
+          jobQueue.complete(job.id, result);
+        }
+      } catch {
+        if (jobQueue.get(job.id)?.status === 'cancelling') {
+          jobQueue.finishCancelled(job.id, {
+            totalScenes: scenes.length,
+            generatedScenes: 0,
+            generatedChunks: 0,
+            preservedScenes: 0,
+            noScriptScenes: 0,
+            removedScenes: 0,
+            failedScenes: 0,
+            cancelled: true,
+            failures: [],
+          });
+          return;
+        }
+        jobQueue.fail(job.id, 'Project narration failed. Review narration settings, then try again.');
+      }
+    })();
+
+    return { jobId: job.id, status: 'running' };
   });
 
   // GET /api/projects/:id/scenes/:sceneId/narration — get narration state
@@ -255,6 +426,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         error: 'Narration generation failed. Your existing narration was not changed.',
         code: 'narration_generation_failed',
       });
+    } finally {
     }
   });
 
@@ -305,6 +477,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         error: 'Narration chunk generation failed. Your existing narration was not changed.',
         code: 'narration_chunk_generation_failed',
       });
+    } finally {
     }
   });
 
@@ -425,14 +598,22 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
           writer?.client,
           workspaceRoot,
           (progress) => jobQueue.emit(job.id, 'progress', progress),
-          () => jobQueue.get(job.id)?.status === 'cancelled',
+          () => {
+            const status = jobQueue.get(job.id)?.status;
+            return status === 'cancelling' || status === 'cancelled';
+          },
         );
-        // If we were cancelled, the loop already returned without throwing
-        const j = jobQueue.get(job.id);
-        if (j?.status === 'cancelled') return;
-        jobQueue.complete(job.id, result);
+        if (result.cancelled || jobQueue.get(job.id)?.status === 'cancelling') {
+          jobQueue.finishCancelled(job.id, { ...result, cancelled: true });
+        } else {
+          jobQueue.complete(job.id, result);
+        }
       } catch {
-        jobQueue.fail(job.id, 'Narration chunk generation failed. Review model and TTS settings, then try again.');
+        if (jobQueue.get(job.id)?.status === 'cancelling') {
+          jobQueue.finishCancelled(job.id, { total: 0, completed: 0, failed: 0, cancelled: true });
+        } else {
+          jobQueue.fail(job.id, 'Narration chunk generation failed. Review model and TTS settings, then try again.');
+        }
       }
     })();
 
@@ -446,8 +627,15 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const { jobId } = req.params as { jobId: string };
     const j = jobQueue.get(jobId);
     if (!j) return reply.status(404).send({ error: 'Job not found', code: 'not_found' });
-    if (j.status === 'completed' || j.status === 'failed') {
+    if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
       return { cancelled: false, status: j.status };
+    }
+    if (j.type === 'narration-generate-project' || j.type === 'narration-generate-all') {
+      if (j.status !== 'cancelling') {
+        jobQueue.setStatus(jobId, 'cancelling');
+        jobQueue.emit(jobId, 'cancel-requested', {});
+      }
+      return { cancelled: true, status: 'cancelling' };
     }
     jobQueue.setStatus(jobId, 'cancelled');
     jobQueue.emit(jobId, 'cancel', {});

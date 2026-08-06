@@ -27,15 +27,10 @@ import { storyboardApi, recordingsApi } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry, Scene } from '@vpa/shared';
+import { recordingsDurationLabel } from '../lib/scene-duration.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
-}
-
-function formatDuration(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.round(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -530,9 +525,9 @@ function SceneList({ scenes, projectId }: { scenes: Scene[]; projectId: string }
               >
                 {scene.name}
               </div>
-              {scene.recording?.duration_sec != null && (
+              {recordingsDurationLabel(scene) != null && (
                 <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>
-                  {formatDuration(scene.recording.duration_sec)}
+                  {recordingsDurationLabel(scene)}
                 </div>
               )}
             </div>
