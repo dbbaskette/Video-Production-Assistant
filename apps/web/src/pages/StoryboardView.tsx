@@ -12,36 +12,64 @@
  * an empty right pane.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { presentationsApi, storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
-import { Video, FileText, Volume2, Tag, Clapperboard } from 'lucide-react';
-import type { PresentationJob, Scene, Storyboard, ProjectTrackerEntry } from '@vpa/shared';
-import type { LucideIcon } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronLeft,
+  ChevronRight,
+  Clapperboard,
+  FileText,
+  Maximize2,
+  Minimize2,
+  Pencil,
+  Search,
+  Trash2,
+  Video,
+  Volume2,
+  type LucideIcon,
+} from 'lucide-react';
+import type { PresentationJob, Scene, SceneType, Storyboard } from '@vpa/shared';
 import { PresentationImportDialog } from '../components/PresentationImportDialog.js';
 import { PresentationProgress } from '../components/PresentationProgress.js';
 import {
   PresentationImports,
   type PresentationRemovalContext,
 } from '../components/PresentationImports.js';
-
-interface WorkspaceContext {
-  project: ProjectTrackerEntry;
-}
+import {
+  canUseSceneShortcut,
+  DEFAULT_SCENE_FILTERS,
+  displayedSceneOrder,
+  filterStoryboardScenes,
+  sceneHasNarrationAudio,
+  sceneHasScript,
+  sceneNeighbor,
+  sceneSelectionAfterRemoval,
+  type SceneFilters,
+  type SceneReadiness,
+} from '../lib/storyboard-navigation.js';
+import type { WorkspaceOutletContext } from './ProjectWorkspace.js';
 
 const typeBadgeColors: Record<string, string> = SCENE_TYPE_COLOR;
 
 export function StoryboardView() {
   const { projectId } = useParams<{ projectId: string }>();
-  const { project } = useOutletContext<WorkspaceContext>();
+  const {
+    project,
+    focusMode = false,
+    setFocusMode = () => undefined,
+  } = useOutletContext<WorkspaceOutletContext>();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [importOpen, setImportOpen] = useState(false);
   const [activePresentation, setActivePresentation] = useState<PresentationJob | null>(null);
+  const [sceneFilters, setSceneFilters] = useState<SceneFilters>(DEFAULT_SCENE_FILTERS);
   const presentationId = searchParams.get('presentation');
   const hasPresentationId = presentationId !== null;
   const presentationIdValid = presentationId !== null && isValidPresentationId(presentationId);
@@ -71,6 +99,27 @@ export function StoryboardView() {
 
   const scenes = storyboard?.scenes ?? [];
   const selectedSceneId = searchParams.get('scene') ?? scenes[0]?.id ?? null;
+  const selectedScene = scenes.find((scene) => scene.id === selectedSceneId) ?? null;
+  const matchingScenes = useMemo(
+    () => filterStoryboardScenes(scenes, sceneFilters),
+    [scenes, sceneFilters],
+  );
+  const displayedScenes = useMemo(
+    () => displayedSceneOrder(scenes, selectedSceneId, sceneFilters),
+    [scenes, selectedSceneId, sceneFilters],
+  );
+  const selectedOutsideFilters = !!selectedScene
+    && !matchingScenes.some((scene) => scene.id === selectedScene.id);
+  const previousSceneId = sceneNeighbor(displayedScenes, selectedSceneId, -1);
+  const nextSceneId = sceneNeighbor(displayedScenes, selectedSceneId, 1);
+
+  const selectScene = useCallback((sceneId: string) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('scene', sceneId);
+      return next;
+    });
+  }, [setSearchParams]);
 
   const normalizeAfterRemoval = useCallback((
     previousScenes: readonly { id: string }[],
@@ -114,6 +163,29 @@ export function StoryboardView() {
     const next = normalizeStoryboardSearch(searchParams, scenes[0]?.id ?? null);
     if (next) setSearchParams(next, { replace: true });
   }, [scenes, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!canUseSceneShortcut(event)) return;
+      const targetId = event.key === '[' ? previousSceneId : nextSceneId;
+      if (!targetId) return;
+      event.preventDefault();
+      selectScene(targetId);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [nextSceneId, previousSceneId, selectScene]);
+
+  useEffect(() => {
+    if (!focusMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (document.querySelector('dialog[open], [role="dialog"]')) return;
+      setFocusMode(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [focusMode, setFocusMode]);
 
   const closePresentation = useCallback(() => {
     setActivePresentation(null);
@@ -185,6 +257,24 @@ export function StoryboardView() {
     reorderMutation.mutate(ids);
   };
 
+  const renderSceneRow = (scene: Scene) => {
+    const index = scenes.findIndex((candidate) => candidate.id === scene.id);
+    return (
+      <SceneRow
+        key={scene.id}
+        scene={scene}
+        index={index}
+        total={scenes.length}
+        projectId={projectId!}
+        selected={scene.id === selectedSceneId}
+        onSelect={() => selectScene(scene.id)}
+        onMoveUp={() => moveScene(index, index - 1)}
+        onMoveDown={() => moveScene(index, index + 1)}
+        onRemoved={(nextScenes) => normalizeAfterRemoval(scenes, nextScenes)}
+      />
+    );
+  };
+
   const storyboardBody = isLoading ? (
     <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading storyboard…</div>
   ) : error ? (
@@ -193,109 +283,150 @@ export function StoryboardView() {
     </div>
   ) : (
     <div
-      className="storyboard-layout"
+      className={`storyboard-layout${focusMode ? ' storyboard-layout--focused' : ''}`}
       style={{
         height: '100%',
         minHeight: 'calc(100vh - 56px)', // navbar + breathing room
       }}
     >
+      {!focusMode && (
+        <aside className="storyboard-rail">
+          <header className="storyboard-rail__header">
+            <div>
+              <h2>Storyboard</h2>
+              <p>{scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}</p>
+            </div>
+            <button
+              type="button"
+              className="storyboard-add-presentation"
+              onClick={() => setImportOpen(true)}
+            >
+              Add presentation
+            </button>
+          </header>
 
-      {/* ── Left rail: scene list ────────────────────────────── */}
-      <aside
-        className="storyboard-rail"
-        style={{
-          borderRight: '1px solid var(--border)',
-          background: 'var(--bg-elev)',
-          overflowY: 'auto',
-          padding: 16,
-        }}
-      >
-        <header style={{ marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 16 }}>Storyboard</h2>
-          <p style={{ color: 'var(--fg-muted)', margin: '4px 0 0', fontSize: 12 }}>
-            {scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}
-          </p>
-          <button
-            type="button"
-            className="storyboard-add-presentation"
-            onClick={() => setImportOpen(true)}
-          >
-            Add presentation
-          </button>
-        </header>
+          <div className="storyboard-filter-toolbar" role="search" aria-label="Storyboard scenes">
+            <label className="storyboard-filter-search">
+              <span>Find a scene</span>
+              <span className="storyboard-filter-search__field">
+                <Search size={13} aria-hidden="true" />
+                <input
+                  type="search"
+                  aria-label="Search scenes"
+                  placeholder="Name or description"
+                  value={sceneFilters.query}
+                  onChange={(event) => setSceneFilters((current) => ({
+                    ...current,
+                    query: event.target.value,
+                  }))}
+                />
+              </span>
+            </label>
+            <label>
+              <span>Type</span>
+              <select
+                aria-label="Scene type"
+                value={sceneFilters.type}
+                onChange={(event) => setSceneFilters((current) => ({
+                  ...current,
+                  type: event.target.value as SceneType | 'all',
+                }))}
+              >
+                <option value="all">All types</option>
+                <option value="desktop">Desktop</option>
+                <option value="browser">Browser</option>
+                <option value="terminal">Terminal</option>
+                <option value="slide">Slide</option>
+              </select>
+            </label>
+            <label>
+              <span>Readiness</span>
+              <select
+                aria-label="Scene readiness"
+                value={sceneFilters.readiness}
+                onChange={(event) => setSceneFilters((current) => ({
+                  ...current,
+                  readiness: event.target.value as SceneReadiness,
+                }))}
+              >
+                <option value="all">All scenes</option>
+                <option value="needs-recording">Needs recording</option>
+                <option value="needs-script">Needs script</option>
+                <option value="needs-narration">Needs narration</option>
+              </select>
+            </label>
+            <div className="storyboard-filter-toolbar__summary">
+              <span aria-live="polite">
+                {matchingScenes.length} of {scenes.length} scenes
+              </span>
+              <button
+                type="button"
+                onClick={() => setSceneFilters(DEFAULT_SCENE_FILTERS)}
+                disabled={
+                  sceneFilters.query === ''
+                  && sceneFilters.type === 'all'
+                  && sceneFilters.readiness === 'all'
+                }
+              >
+                Reset
+              </button>
+            </div>
+          </div>
 
-        {storyboard?.project.objective && (
-          <p
-            style={{
-              fontSize: 11,
-              color: 'var(--fg-muted)',
-              margin: '0 0 16px',
-              padding: '8px 10px',
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              fontStyle: 'italic',
-            }}
-            title={storyboard.project.objective}
-          >
-            {storyboard.project.objective.slice(0, 140)}
-            {storyboard.project.objective.length > 140 && '…'}
-          </p>
-        )}
+          {storyboard?.project.objective && (
+            <p className="storyboard-objective" title={storyboard.project.objective}>
+              {storyboard.project.objective.slice(0, 140)}
+              {storyboard.project.objective.length > 140 && '…'}
+            </p>
+          )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {scenes.map((scene, idx) => (
-            <SceneRow
-              key={scene.id}
-              scene={scene}
-              index={idx}
-              total={scenes.length}
-              projectId={projectId!}
-              selected={scene.id === selectedSceneId}
-              onSelect={() => {
-                // Preserve ?tab= when switching scenes — the typical
-                // workflow is reviewing the same tab (Narration chunks,
-                // Lower Thirds, etc.) across multiple scenes. Resetting
-                // to Recording on each click made multi-scene review
-                // tedious.
-                const next = new URLSearchParams(searchParams);
-                next.set('scene', scene.id);
-                setSearchParams(next);
-              }}
-              onMoveUp={() => moveScene(idx, idx - 1)}
-              onMoveDown={() => moveScene(idx, idx + 1)}
-              onRemoved={(nextScenes) => normalizeAfterRemoval(scenes, nextScenes)}
-            />
-          ))}
-        </div>
+          {selectedOutsideFilters && selectedScene && (
+            <section className="storyboard-scene-group storyboard-scene-group--pinned">
+              <p>Current scene — outside filters</p>
+              {renderSceneRow(selectedScene)}
+            </section>
+          )}
 
-        <PresentationImports
-          projectId={projectId!}
-          scenes={scenes}
-          onRemoved={handlePresentationRemoved}
-        />
+          <div className="storyboard-scene-list">
+            {matchingScenes.map(renderSceneRow)}
+            {matchingScenes.length === 0 && (
+              <div className="storyboard-filter-empty">
+                <strong>No scenes match these filters</strong>
+                <span>The current scene stays open while you adjust the list.</span>
+                <button type="button" onClick={() => setSceneFilters(DEFAULT_SCENE_FILTERS)}>
+                  Reset filters
+                </button>
+              </div>
+            )}
+          </div>
 
-        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-          <Link
-            to={`/project/${projectId}/ideation`}
-            style={{
-              display: 'block',
-              padding: '8px 12px',
-              fontSize: 12,
-              color: 'var(--fg-muted)',
-              textDecoration: 'none',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              textAlign: 'center',
-            }}
-          >
-            ✨ Refine in Ideation
-          </Link>
-        </div>
-      </aside>
+          <PresentationImports
+            projectId={projectId!}
+            scenes={scenes}
+            onRemoved={handlePresentationRemoved}
+          />
+
+          <div className="storyboard-refine-link">
+            <Link to={`/project/${projectId}/ideation`}>✨ Refine in Ideation</Link>
+          </div>
+        </aside>
+      )}
 
       {/* ── Right rail: embedded scene editor ────────────────── */}
-      <section className="storyboard-detail" style={{ overflowY: 'auto', padding: '24px 32px' }}>
+      <section className="storyboard-detail">
+        {selectedScene && (
+          <SceneContextBar
+            scene={selectedScene}
+            position={scenes.findIndex((scene) => scene.id === selectedScene.id) + 1}
+            total={scenes.length}
+            previousSceneId={previousSceneId}
+            nextSceneId={nextSceneId}
+            onSelect={selectScene}
+            focusMode={focusMode}
+            onFocusModeChange={setFocusMode}
+          />
+        )}
+        <div className="storyboard-detail__editor">
         {selectedSceneId ? (
           // Key forces a fresh mount when switching scenes so per-scene
           // local state in ScenePage (active tab, dirty editors, etc.)
@@ -310,6 +441,7 @@ export function StoryboardView() {
         ) : (
           <EmptyStoryboard projectId={projectId!} onAddPresentation={() => setImportOpen(true)} />
         )}
+        </div>
       </section>
     </div>
   );
@@ -346,17 +478,12 @@ export function normalizeStoryboardAfterRemoval(
 ): URLSearchParams {
   const next = new URLSearchParams(search);
   const selectedId = search.get('scene');
-  if (selectedId && nextScenes.some((scene) => scene.id === selectedId)) return next;
-
-  const previousIndex = selectedId
-    ? previousScenes.findIndex((scene) => scene.id === selectedId)
-    : 0;
-  const safeIndex = previousIndex >= 0 ? previousIndex : 0;
-  const selected = nextScenes[safeIndex]
-    ?? nextScenes[safeIndex - 1]
-    ?? nextScenes[0]
-    ?? null;
-  if (selected) next.set('scene', selected.id);
+  const nextSelectedId = sceneSelectionAfterRemoval(
+    previousScenes,
+    nextScenes,
+    selectedId,
+  );
+  if (nextSelectedId) next.set('scene', nextSelectedId);
   else next.delete('scene');
   return next;
 }
@@ -373,6 +500,76 @@ export function normalizeStoryboardAfterUnavailableRemoval(
 
 function isValidPresentationId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function SceneContextBar({
+  scene,
+  position,
+  total,
+  previousSceneId,
+  nextSceneId,
+  onSelect,
+  focusMode,
+  onFocusModeChange,
+}: {
+  scene: Scene;
+  position: number;
+  total: number;
+  previousSceneId: string | null;
+  nextSceneId: string | null;
+  onSelect: (sceneId: string) => void;
+  focusMode: boolean;
+  onFocusModeChange: (focused: boolean) => void;
+}) {
+  return (
+    <header className="scene-context-bar" aria-label="Current scene">
+      <div className="scene-context-bar__identity">
+        <span className="scene-context-bar__position">Scene {position} of {total}</span>
+        <span
+          className="scene-context-bar__type"
+          style={{ background: typeBadgeColors[scene.type] ?? '#666' }}
+        >
+          {scene.type}
+        </span>
+      </div>
+      <h2 className="scene-context-bar__title" title={scene.name}>{scene.name}</h2>
+      <div className="scene-context-bar__controls">
+        <button
+          type="button"
+          aria-label="Previous scene"
+          title="Previous scene ([)"
+          disabled={!previousSceneId}
+          onClick={() => previousSceneId && onSelect(previousSceneId)}
+        >
+          <ChevronLeft size={15} aria-hidden="true" />
+          Previous
+          <kbd>[</kbd>
+        </button>
+        <button
+          type="button"
+          aria-label="Next scene"
+          title="Next scene (])"
+          disabled={!nextSceneId}
+          onClick={() => nextSceneId && onSelect(nextSceneId)}
+        >
+          Next
+          <kbd>]</kbd>
+          <ChevronRight size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="scene-context-bar__focus"
+          aria-label={focusMode ? 'Exit editor focus' : 'Focus editor'}
+          onClick={() => onFocusModeChange(!focusMode)}
+        >
+          {focusMode
+            ? <Minimize2 size={15} aria-hidden="true" />
+            : <Maximize2 size={15} aria-hidden="true" />}
+          {focusMode ? 'Exit focus' : 'Focus editor'}
+        </button>
+      </div>
+    </header>
+  );
 }
 
 // ── Left-rail scene row ─────────────────────────────────────────────
@@ -429,14 +626,12 @@ function SceneRow({
     },
   });
 
-  // Per-stage status derived from the scene record. Stays cheap — no
-  // separate fetches just for badges.
   const hasRecording = !!scene.recording;
+  const hasScript = sceneHasScript(scene);
+  const hasNarrationAudio = sceneHasNarrationAudio(scene);
   const chunks = scene.narration?.chunks ?? [];
-  const narratedChunks = chunks.filter((c) => !!c.audio).length;
+  const narratedChunks = chunks.filter((chunk) => !!chunk.audio).length;
   const totalChunks = chunks.length;
-  const hasScript = !!scene.narration?.script;
-  const hasLowerThirds = (scene.lower_thirds?.length ?? 0) > 0;
 
   if (editing) {
     const cancel = () => {
@@ -457,14 +652,7 @@ function SceneRow({
       }
     };
     return (
-      <div
-        style={{
-          background: 'var(--bg)',
-          border: '1px solid var(--accent)',
-          borderRadius: 6,
-          padding: 8,
-        }}
-      >
+      <div className="scene-row scene-row--editing">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -503,16 +691,7 @@ function SceneRow({
 
   return (
     <div
-      className="scene-row"
-      style={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        background: selected ? 'var(--accent-bg)' : 'var(--bg)',
-        border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
-        borderRadius: 6,
-        color: 'var(--fg)',
-        width: '100%',
-      }}
+      className={`scene-row${selected ? ' scene-row--selected' : ''}`}
     >
       <button
         type="button"
@@ -520,69 +699,48 @@ function SceneRow({
         aria-label={`Select scene ${scene.name}`}
         aria-pressed={selected}
         onClick={onSelect}
-        style={{
-          minWidth: 0,
-          flex: 1,
-          padding: '10px 8px 10px 12px',
-          border: 0,
-          background: 'transparent',
-          color: 'inherit',
-          cursor: 'pointer',
-          textAlign: 'left',
-        }}
       >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)', fontWeight: 600, minWidth: 16 }}>
-          {index + 1}
+        <span className="scene-row__identity">
+          <span className="scene-row__number">{String(index + 1).padStart(2, '0')}</span>
+          <span
+            className="scene-row__type"
+            style={{ background: typeBadgeColors[scene.type] ?? '#666' }}
+          >
+            {scene.type}
+          </span>
         </span>
-        <span
-          style={{
-            fontSize: 9,
-            padding: '1px 6px',
-            borderRadius: 3,
-            background: typeBadgeColors[scene.type] ?? '#666',
-            color: '#fff',
-            fontWeight: 700,
-            textTransform: 'uppercase',
-            letterSpacing: 0.5,
-          }}
-        >
-          {scene.type}
+        <span className="scene-row__title" title={scene.name}>{scene.name}</span>
+        <span className="scene-row__statuses">
+          <StatusChip
+            icon={Video}
+            label="Recording"
+            value={hasRecording ? 'Ready' : 'Missing'}
+            tone={hasRecording ? 'ready' : 'missing'}
+          />
+          <StatusChip
+            icon={FileText}
+            label="Script"
+            value={hasScript ? 'Ready' : 'Missing'}
+            tone={hasScript ? 'ready' : 'missing'}
+          />
+          <StatusChip
+            icon={Volume2}
+            label="Narration"
+            value={totalChunks > 0 ? `${narratedChunks}/${totalChunks}` : hasNarrationAudio ? 'Ready' : 'Missing'}
+            tone={
+              hasNarrationAudio && (totalChunks === 0 || narratedChunks === totalChunks)
+                ? 'ready'
+                : narratedChunks > 0
+                  ? 'partial'
+                  : 'missing'
+            }
+          />
         </span>
-        <span
-          style={{
-            fontWeight: 600,
-            fontSize: 13,
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-          title={scene.name}
-        >
-          {scene.name}
-        </span>
-      </div>
-
-      {/* Status badges row — Lucide icons + tiny labels render as a
-          uniform glyph row across operating systems (was emoji which
-          shifted in size + colour per platform). */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <Badge ok={hasRecording} icon={Video} label="Rec" />
-        <Badge ok={hasScript} icon={FileText} label="Script" />
-        <Badge
-          ok={totalChunks > 0 && narratedChunks === totalChunks}
-          partial={narratedChunks > 0 && narratedChunks < totalChunks}
-          icon={Volume2}
-          label={totalChunks > 0 ? `${narratedChunks}/${totalChunks}` : ''}
-        />
-        <Badge ok={hasLowerThirds} icon={Tag} />
-      </div>
       </button>
-      {/* Independent actions stay outside the scene-selection button. */}
       <RowControls
         index={index}
         total={total}
+        sceneName={scene.name}
         onMoveUp={onMoveUp}
         onMoveDown={onMoveDown}
         onEdit={() => setEditing(true)}
@@ -603,6 +761,7 @@ function SceneRow({
 function RowControls({
   index,
   total,
+  sceneName,
   onMoveUp,
   onMoveDown,
   onEdit,
@@ -610,96 +769,64 @@ function RowControls({
 }: {
   index: number;
   total: number;
+  sceneName: string;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onEdit: () => void;
   onRemove: () => void;
 }) {
   return (
-    <span style={{ display: 'inline-flex', flex: '0 0 auto', gap: 2, padding: '8px 8px 0 0', opacity: 0.6 }}>
+    <span className="scene-row__actions" aria-label={`Actions for ${sceneName}`}>
       <button
         type="button"
         onClick={onMoveUp}
         disabled={index === 0}
         title="Move up"
-        aria-label="Move up"
-        style={miniBtnStyle(index === 0)}
+        aria-label={`Move ${sceneName} up`}
       >
-        ↑
+        <ArrowUp size={13} aria-hidden="true" />
       </button>
       <button
         type="button"
         onClick={onMoveDown}
         disabled={index === total - 1}
         title="Move down"
-        aria-label="Move down"
-        style={miniBtnStyle(index === total - 1)}
+        aria-label={`Move ${sceneName} down`}
       >
-        ↓
+        <ArrowDown size={13} aria-hidden="true" />
       </button>
-      <button type="button" onClick={onEdit} title="Rename" aria-label="Rename" style={miniBtnStyle(false)}>
-        ✏️
+      <button type="button" onClick={onEdit} title="Rename" aria-label={`Rename ${sceneName}`}>
+        <Pencil size={13} aria-hidden="true" />
       </button>
       <button
         type="button"
         onClick={onRemove}
         title="Remove"
-        aria-label="Remove"
-        style={{ ...miniBtnStyle(false), color: 'var(--danger)' }}
+        aria-label={`Remove ${sceneName}`}
+        className="scene-row__remove"
       >
-        ✕
+        <Trash2 size={13} aria-hidden="true" />
       </button>
     </span>
   );
 }
 
-function miniBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: '2px 4px',
-    fontSize: 10,
-    background: 'transparent',
-    border: 'none',
-    color: 'inherit',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    opacity: disabled ? 0.3 : 1,
-    lineHeight: 1,
-  };
-}
-
-function Badge({
-  ok,
-  partial,
+function StatusChip({
   icon: Icon,
   label,
+  value,
+  tone,
 }: {
-  ok: boolean;
-  partial?: boolean;
   icon: LucideIcon;
-  label?: string;
+  label: string;
+  value: string;
+  tone: 'ready' | 'partial' | 'missing';
 }) {
-  const tone = ok
-    ? { color: 'var(--success)', border: 'var(--success)', bg: 'rgba(115,192,90,0.12)' }
-    : partial
-      ? { color: 'var(--warn)', border: 'var(--warn)', bg: 'rgba(244,168,58,0.12)' }
-      : { color: 'var(--fg-muted)', border: 'var(--border)', bg: 'transparent' };
   return (
-    <span
-      style={{
-        fontSize: 10,
-        padding: '2px 6px',
-        borderRadius: 8,
-        border: `1px solid ${tone.border}`,
-        background: tone.bg,
-        color: tone.color,
-        whiteSpace: 'nowrap',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        lineHeight: 1.2,
-      }}
-    >
-      <Icon size={11} strokeWidth={1.8} aria-hidden />
-      {label}
+    <span className={`scene-status scene-status--${tone}`}>
+      <Icon size={11} strokeWidth={1.8} aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{value}</strong>
     </span>
   );
 }
