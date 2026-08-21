@@ -10,6 +10,7 @@ export function Ideation() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [input, setInput] = useState('');
+  const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Load existing session
@@ -22,11 +23,18 @@ export function Ideation() {
   const messages = session?.messages ?? [];
   const proposedScenes = session?.proposedScenes ?? [];
 
-  // Send message mutation
+  // Send message mutation. On failure the sent text is restored into the
+  // input (it was cleared optimistically) and a retry banner is shown —
+  // previously a network/model error silently destroyed the message.
   const sendMutation = useMutation({
     mutationFn: (content: string) => ideationApi.sendMessage(projectId!, content),
     onSuccess: () => {
+      setFailedMessage(null);
       queryClient.invalidateQueries({ queryKey: ['ideation', projectId] });
+    },
+    onError: (_err, content) => {
+      setFailedMessage(content);
+      setInput((prev) => (prev.trim().length > 0 ? prev : content));
     },
   });
 
@@ -49,6 +57,13 @@ export function Ideation() {
     if (!trimmed || sendMutation.isPending) return;
     setInput('');
     sendMutation.mutate(trimmed);
+  };
+
+  const handleRetryFailed = () => {
+    if (failedMessage == null || sendMutation.isPending) return;
+    setFailedMessage(null);
+    setInput('');
+    sendMutation.mutate(failedMessage);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -137,6 +152,46 @@ export function Ideation() {
 
           <div ref={chatEndRef} />
         </div>
+
+        {/* Send-failure banner — the failed message is preserved and can be retried */}
+        {failedMessage !== null && !sendMutation.isPending && (
+          <div
+            role="alert"
+            style={{
+              margin: '0 24px',
+              padding: '10px 14px',
+              background: 'var(--danger-bg)',
+              border: '1px solid var(--danger)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 13,
+              color: 'var(--danger)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+            }}
+          >
+            <span style={{ flex: 1 }}>
+              Your last message couldn't be sent. It's been restored below — retry when ready.
+            </span>
+            <button onClick={handleRetryFailed} disabled={sendMutation.isPending}>
+              Retry
+            </button>
+            <button
+              onClick={() => setFailedMessage(null)}
+              aria-label="Dismiss"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--danger)',
+                cursor: 'pointer',
+                padding: 4,
+                lineHeight: 1,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Input */}
         <div

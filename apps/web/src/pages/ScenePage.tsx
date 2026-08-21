@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ApiError, agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi } from '../lib/api.js';
+import { ApiError, agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi, type UploadProgress } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
 import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig, RecordingAnalysisFailure } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
@@ -207,17 +207,21 @@ export function ScenePage(props: ScenePageProps = {}) {
     setGroundInVideo(!!scene?.recording);
   }, [sceneId, !!scene?.recording]);
 
+  const [sceneUploadProgress, setSceneUploadProgress] = useState<UploadProgress | null>(null);
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
       const current = await agentRecordingApi.currentSession(projectId!, sceneId!);
       if (isActiveAgentRecordingSession(current)) {
         throw new Error('Stop the active Cap recording workflow before uploading a file.');
       }
-      return recordingsApi.uploadForScene(projectId!, sceneId!, file);
+      return recordingsApi.uploadForScene(projectId!, sceneId!, file, undefined, {
+        onProgress: setSceneUploadProgress,
+      });
     },
     onMutate: () => {
       setUploadAnalysisFailure(null);
     },
+    onSettled: () => setSceneUploadProgress(null),
     onSuccess: (data, file) => {
       setShowReplaceUpload(false);
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
@@ -1087,6 +1091,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                     <RecordingUpload
                       multiple={false}
                       isUploading={uploadMutation.isPending}
+                      progress={sceneUploadProgress}
                       onFilesSelected={async (files) => {
                         const file = files[0];
                         if (!file || !scene) return;
@@ -1503,6 +1508,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                 <RecordingUpload
                   multiple={false}
                   isUploading={uploadMutation.isPending}
+                  progress={sceneUploadProgress}
                   onFilesSelected={(files) => {
                     if (files[0]) uploadMutation.mutate(files[0]);
                   }}
@@ -1930,7 +1936,16 @@ export function ScenePage(props: ScenePageProps = {}) {
                   saveDialogMutation.mutate(editingDialogScript);
                 }
               };
-              const onDiscard = () => {
+              const onDiscard = async () => {
+                // Discard throws away all unsaved edits in the pane — confirm
+                // first (Restore Previous only covers server-saved versions).
+                const ok = await ui.confirm({
+                  title: 'Discard unsaved edits?',
+                  body: `This reverts the ${isMono ? 'monologue' : 'dialog'} editor to the last saved script. Unsaved changes are lost.`,
+                  confirmLabel: 'Discard',
+                  destructive: true,
+                });
+                if (!ok) return;
                 if (isMono) {
                   setEditingScript(null);
                   setScriptDirty(false);

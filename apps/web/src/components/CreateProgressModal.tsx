@@ -14,7 +14,7 @@
  */
 
 import { useId, useRef } from 'react';
-import type { SourceDoc } from '../lib/api.js';
+import type { SourceDoc, UploadProgress } from '../lib/api.js';
 import { useModalFocus } from './ui/useModalFocus.js';
 
 export type CreateStage = 'creating' | 'uploading' | 'extracting' | 'done' | 'error';
@@ -24,6 +24,8 @@ interface Props {
   totalDocs: number;
   docs: SourceDoc[];
   error?: string;
+  /** Byte-level upload progress for the "Upload reference docs" step. */
+  uploadProgress?: UploadProgress | null;
   /** Navigate into the project now, leaving extraction running. */
   onContinueBackground: () => void;
   /** Dismiss (error path — the project still exists, docs can be re-added). */
@@ -81,6 +83,7 @@ export function CreateProgressModal({
   totalDocs,
   docs,
   error,
+  uploadProgress = null,
   onContinueBackground,
   onClose,
 }: Props) {
@@ -131,6 +134,11 @@ export function CreateProgressModal({
           <Step
             state={uploaded ? 'done' : created ? 'active' : 'pending'}
             label={`Upload ${totalDocs} reference doc${totalDocs === 1 ? '' : 's'}`}
+            detail={
+              !uploaded && uploadProgress?.fraction != null
+                ? `${Math.round(uploadProgress.fraction * 100)}%`
+                : undefined
+            }
           />
           <Step
             state={

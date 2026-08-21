@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useId } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { Lightbulb, Presentation, Video } from 'lucide-react';
-import { api, ApiError, brandsApi, presentationsApi, sourceDocsApi, type SourceDoc } from '../lib/api.js';
+import { api, ApiError, brandsApi, presentationsApi, sourceDocsApi, type SourceDoc, type UploadProgress } from '../lib/api.js';
 import { BrandPicker } from './BrandPicker.js';
 import { CreateProgressModal, type CreateStage } from './CreateProgressModal.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
@@ -110,6 +110,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
     totalDocs: number;
     error?: string;
   } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const navigatedRef = useRef(false);
 
@@ -247,7 +248,9 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
 
     setProgress((p) => (p ? { ...p, projectId, stage: 'uploading' } : p));
     try {
-      const { created } = await sourceDocsApi.uploadFiles(projectId, pendingDocs);
+      const { created } = await sourceDocsApi.uploadFiles(projectId, pendingDocs, {
+        onProgress: setUploadProgress,
+      });
       if (!sessionIsCurrent(session)) return;
       const stillExtracting = created.some((d) => d.status === 'extracting');
       setProgress((p) =>
@@ -279,7 +282,9 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       return;
     }
     try {
-      const job = await presentationsApi.upload(projectId, presentationFile, generateNarration);
+      const job = await presentationsApi.upload(projectId, presentationFile, generateNarration, {
+        onProgress: setUploadProgress,
+      });
       if (!sessionIsCurrent(session)) return;
       if (navigatedRef.current) return;
       navigatedRef.current = true;
@@ -294,6 +299,8 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
       setPresentationUploadError(true);
       setBusy(false);
       busyRef.current = false;
+    } finally {
+      setUploadProgress(null);
     }
   };
 
@@ -592,6 +599,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
           totalDocs={progress.totalDocs}
           docs={progress.docs}
           error={progress.error}
+          uploadProgress={uploadProgress}
           onContinueBackground={() => {
             if (progress.projectId) navigateToProject(progress.projectId);
           }}

@@ -94,6 +94,13 @@ export interface RenderOptions {
   vpaHome?: string;
   /** Workspace root — sibling of `vpaHome` for brand color resolution. */
   workspaceRoot?: string;
+  /**
+   * Cooperative cancellation poll. Checked at safe boundaries (before each
+   * scene and before the final concat); when it returns true the render
+   * throws a cancellation error so the caller can mark the job cancelled.
+   * Long ffmpeg invocations in flight are allowed to finish.
+   */
+  isCancelled?: () => boolean;
   /** Internal — DI seams for tests (manifest, frame renderer, brand resolver). */
   __frameDeps?: FramePrepDeps;
 }
@@ -163,6 +170,9 @@ export async function renderFinalVideo(
 
   const scenePaths: string[] = [];
   for (let i = 0; i < renderableScenes.length; i++) {
+    if (opts.isCancelled?.()) {
+      throw new RenderError('Render cancelled');
+    }
     // Refresh scene reference from the (possibly updated) storyboard so the
     // frame_render path persisted on a prior iteration is visible here.
     let scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
@@ -245,6 +255,9 @@ export async function renderFinalVideo(
     scenePaths.push(sceneMp4);
   }
 
+  if (opts.isCancelled?.()) {
+    throw new RenderError('Render cancelled');
+  }
   onProgress?.({
     type: 'step',
     step: 'concat-scenes',

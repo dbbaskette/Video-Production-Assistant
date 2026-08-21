@@ -1,13 +1,17 @@
 import { useState, useRef, type DragEvent } from 'react';
+import type { UploadProgress } from '../lib/api.js';
 
 interface RecordingUploadProps {
   onFilesSelected: (files: File[]) => void;
   isUploading?: boolean;
+  /** Byte-level progress for the in-flight upload; null fraction = indeterminate. */
+  progress?: UploadProgress | null;
   multiple?: boolean;
 }
 
-export function RecordingUpload({ onFilesSelected, isUploading, multiple = true }: RecordingUploadProps) {
+export function RecordingUpload({ onFilesSelected, isUploading, progress, multiple = true }: RecordingUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [ignoredCount, setIgnoredCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = (e: DragEvent) => {
@@ -20,9 +24,9 @@ export function RecordingUpload({ onFilesSelected, isUploading, multiple = true 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files).filter((f) =>
-      f.type.startsWith('video/') || f.name.endsWith('.mp4'),
-    );
+    const dropped = Array.from(e.dataTransfer.files);
+    const files = dropped.filter((f) => f.type.startsWith('video/') || f.name.endsWith('.mp4'));
+    setIgnoredCount(dropped.length - files.length);
     if (files.length > 0) onFilesSelected(files);
   };
 
@@ -59,7 +63,38 @@ export function RecordingUpload({ onFilesSelected, isUploading, multiple = true 
       />
       <div style={{ fontSize: 36, marginBottom: 8 }}>🎬</div>
       {isUploading ? (
-        <p style={{ color: 'var(--fg-muted)', margin: 0 }}>Uploading…</p>
+        <>
+          <p style={{ color: 'var(--fg-muted)', margin: 0 }}>
+            Uploading…{progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : ''}
+          </p>
+          <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress?.fraction != null ? Math.round(progress.fraction * 100) : undefined}
+            style={{
+              width: '60%',
+              maxWidth: 320,
+              height: 6,
+              margin: '12px auto 0',
+              background: 'var(--border)',
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: progress?.fraction != null ? `${Math.round(progress.fraction * 100)}%` : '40%',
+                height: '100%',
+                background: 'var(--accent)',
+                transition: 'width 200ms',
+                ...(progress?.fraction == null
+                  ? { animation: 'jobTrayIndeterminate 1.4s ease-in-out infinite' }
+                  : {}),
+              }}
+            />
+          </div>
+        </>
       ) : (
         <>
           <p style={{ margin: 0, fontWeight: 600 }}>
@@ -68,6 +103,11 @@ export function RecordingUpload({ onFilesSelected, isUploading, multiple = true 
           <p style={{ color: 'var(--fg-muted)', margin: '8px 0 0', fontSize: 13 }}>
             {multiple ? 'Upload one or more .mp4 recordings' : 'Upload a single .mp4 recording'}
           </p>
+          {ignoredCount > 0 && (
+            <p style={{ color: 'var(--warn)', margin: '8px 0 0', fontSize: 12 }} role="status">
+              Ignored {ignoredCount} unsupported file{ignoredCount === 1 ? '' : 's'} — only video files can be used as recordings.
+            </p>
+          )}
         </>
       )}
     </div>

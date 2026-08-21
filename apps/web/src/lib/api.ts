@@ -73,6 +73,73 @@ async function request<T>(
   return json as T;
 }
 
+/**
+ * Byte-level progress for an in-flight multipart upload. `fraction` is null
+ * when the browser can't compute length (rare for FormData uploads) so callers
+ * can fall back to an indeterminate indicator.
+ */
+export interface UploadProgress {
+  fraction: number | null;
+  loaded: number;
+  total: number;
+}
+
+export interface UploadOpts {
+  onProgress?: (progress: UploadProgress) => void;
+}
+
+/**
+ * Multipart upload via XHR — fetch() cannot report upload progress. Preserves
+ * the ApiError shapes callers already handle: bounded `{ error, code }`
+ * payloads on failure, `network_error` when the request never lands, and
+ * `request_timeout` when `timeoutMs` elapses.
+ */
+function uploadRequest(
+  method: string,
+  path: string,
+  form: FormData,
+  opts: UploadOpts & { timeoutMs?: number; timeoutMessage?: string } = {},
+): Promise<{ value: unknown; status: number }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, `${BASE}${path}`);
+    if (opts.timeoutMs != null) xhr.timeout = opts.timeoutMs;
+    xhr.responseType = 'text';
+    xhr.upload.onprogress = (e) => {
+      opts.onProgress?.({
+        fraction: e.lengthComputable && e.total > 0 ? e.loaded / e.total : null,
+        loaded: e.loaded,
+        total: e.total,
+      });
+    };
+    xhr.onload = () => {
+      const text = xhr.response ?? '';
+      let json: unknown;
+      try {
+        json = text ? JSON.parse(text) : undefined;
+      } catch {
+        json = undefined;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ value: json, status: xhr.status });
+        return;
+      }
+      const message =
+        json && typeof json === 'object' && 'error' in json && typeof (json as { error?: unknown }).error === 'string'
+          ? (json as { error: string }).error
+          : `Upload failed: ${xhr.status}`;
+      reject(new ApiError(message, xhr.status, json ?? null));
+    };
+    xhr.onerror = () => reject(new ApiError('Unable to reach the server', 0, null, 'network_error'));
+    xhr.ontimeout = () =>
+      reject(
+        new ApiError(opts.timeoutMessage ?? 'Request timed out', 408, null, 'request_timeout'),
+      );
+    xhr.onabort = () => reject(new ApiError('Upload cancelled', 0, null, 'request_cancelled'));
+    xhr.send(form);
+  });
+}
+
 export class ApiError extends Error {
   readonly code: string;
 
@@ -232,16 +299,18 @@ export const presentationsApi = {
     projectId: string,
     file: File,
     generateNarration: boolean,
+    opts: UploadOpts = {},
   ): Promise<PresentationJob> {
     const project = encodedIdentifier(projectId, 'Project ID');
     const form = new FormData();
     form.append('file', file);
     form.append('generate_narration', String(generateNarration));
-    const { value, status } = await presentationJson(
+    const { value, status } = await uploadRequest(
       'POST',
       `/api/projects/${project}/presentations`,
+      form,
       {
-        body: form,
+        onProgress: opts.onProgress,
         timeoutMs: PRESENTATION_UPLOAD_TIMEOUT_MS,
         timeoutMessage: 'Presentation upload timed out',
       },
@@ -396,9 +465,8 @@ export const brandsApi = {
     return request<BrandWithDoc>('GET', `/api/brands/${slug}`);
   },
   async create(form: FormData): Promise<{ job_id: string; slug: string }> {
-    const res = await fetch(`${BASE}/api/brands`, { method: 'POST', body: form });
-    if (!res.ok) throw new ApiError(`Create failed: ${res.status}`, res.status, await res.json().catch(() => null));
-    return res.json();
+    const { value } = await uploadRequest('POST', '/api/brands', form);
+    return value as { job_id: string; slug: string };
   },
   async generate(slug: string, frontMatter: DesignMdFrontMatter): Promise<{ job_id: string }> {
     return request('POST', `/api/brands/${slug}/generate`, { front_matter: frontMatter });
@@ -438,13 +506,13 @@ export const brandsApi = {
       | 'sonic-logo'
       | 'other',
     file: File,
+    opts: UploadOpts = {},
   ): Promise<{ path: string }> {
     const form = new FormData();
     form.append('field', field);
     form.append('file', file);
-    const res = await fetch(`${BASE}/api/brands/${slug}/assets`, { method: 'POST', body: form });
-    if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`, res.status, await res.json().catch(() => null));
-    return res.json();
+    const { value } = await uploadRequest('POST', `/api/brands/${slug}/assets`, form, opts);
+    return value as { path: string };
   },
   async deleteAsset(
     slug: string,
@@ -570,7 +638,7 @@ export const recordingsApi = {
   videoUrl(projectId: string, sceneId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording/video`;
   },
-  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }): Promise<RecordingUploadResult> {
+  async uploadForScene(projectId: string, sceneId: string, file: File, provenance?: { source_kind: 'cap-agent'; capture_session_id: string; captured_at?: string }, opts: UploadOpts = {}): Promise<RecordingUploadResult> {
     const form = new FormData();
     if (provenance) {
       form.append('source_kind', provenance.source_kind);
@@ -578,29 +646,25 @@ export const recordingsApi = {
       if (provenance.captured_at) form.append('captured_at', provenance.captured_at);
     }
     form.append('file', file);
-    const res = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}/recording`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
-    }
-    return res.json();
+    const { value } = await uploadRequest(
+      'POST',
+      `/api/projects/${projectId}/scenes/${sceneId}/recording`,
+      form,
+      opts,
+    );
+    return value as RecordingUploadResult;
   },
 
-  async uploadBulk(projectId: string, files: File[]): Promise<{ results: IngestResult[]; assignedCount: number; totalScenes: number }> {
+  async uploadBulk(projectId: string, files: File[], opts: UploadOpts = {}): Promise<{ results: IngestResult[]; assignedCount: number; totalScenes: number }> {
     const form = new FormData();
     files.forEach((f, i) => form.append(`file${i}`, f));
-    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/bulk`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
-    }
-    return res.json();
+    const { value } = await uploadRequest(
+      'POST',
+      `/api/projects/${projectId}/recordings/bulk`,
+      form,
+      opts,
+    );
+    return value as { results: IngestResult[]; assignedCount: number; totalScenes: number };
   },
 
   async getMetadata(projectId: string, sceneId: string): Promise<VideoMetadata> {
@@ -676,32 +740,28 @@ export const recordingsApi = {
     return request('PUT', `/api/projects/${projectId}/scenes/${sceneId}/metadata`, patch);
   },
 
-  async generateStoryboard(projectId: string, files: File[]): Promise<Storyboard> {
+  async generateStoryboard(projectId: string, files: File[], opts: UploadOpts = {}): Promise<Storyboard> {
     const form = new FormData();
     files.forEach((f, i) => form.append(`file${i}`, f));
-    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/generate-storyboard`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      throw new ApiError(json?.error ?? `Upload failed: ${res.status}`, res.status, json);
-    }
-    return res.json();
+    const { value } = await uploadRequest(
+      'POST',
+      `/api/projects/${projectId}/recordings/generate-storyboard`,
+      form,
+      opts,
+    );
+    return value as Storyboard;
   },
 
-  async proposeSplit(projectId: string, file: File): Promise<{ boundaries: SceneBoundary[]; sourceFile: string; metadata: VideoMetadata }> {
+  async proposeSplit(projectId: string, file: File, opts: UploadOpts = {}): Promise<{ boundaries: SceneBoundary[]; sourceFile: string; metadata: VideoMetadata }> {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch(`${BASE}/api/projects/${projectId}/recordings/propose-split`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      throw new ApiError(json?.error ?? `Propose split failed: ${res.status}`, res.status, json);
-    }
-    return res.json();
+    const { value } = await uploadRequest(
+      'POST',
+      `/api/projects/${projectId}/recordings/propose-split`,
+      form,
+      opts,
+    );
+    return value as { boundaries: SceneBoundary[]; sourceFile: string; metadata: VideoMetadata };
   },
 
   async executeSplit(projectId: string, boundaries: SceneBoundary[]): Promise<Storyboard> {
@@ -1335,18 +1395,16 @@ export const sourceDocsApi = {
   async get(projectId: string, docId: string): Promise<SourceDocWithMarkdown> {
     return request('GET', `/api/projects/${projectId}/source-docs/${encodeURIComponent(docId)}`);
   },
-  async uploadFiles(projectId: string, files: File[]): Promise<{ created: SourceDoc[] }> {
+  async uploadFiles(projectId: string, files: File[], opts: UploadOpts = {}): Promise<{ created: SourceDoc[] }> {
     const form = new FormData();
     files.forEach((f, i) => form.append(`file${i}`, f));
-    const res = await fetch(`${BASE}/api/projects/${projectId}/source-docs`, {
-      method: 'POST',
-      body: form,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new ApiError(text || `Upload failed (${res.status})`, res.status, null);
-    }
-    return res.json();
+    const { value } = await uploadRequest(
+      'POST',
+      `/api/projects/${projectId}/source-docs`,
+      form,
+      opts,
+    );
+    return value as { created: SourceDoc[] };
   },
   async addUrl(projectId: string, url: string, name?: string): Promise<{ created: SourceDoc[] }> {
     return request('POST', `/api/projects/${projectId}/source-docs`, { url, name });
@@ -1672,6 +1730,10 @@ export const jobsApi = {
       es.addEventListener(evt, handler);
     }
     return () => es.close();
+  },
+  /** Requests cancellation of any job (renders stop at the next safe boundary). */
+  async cancelJob(jobId: string): Promise<{ cancelled: boolean }> {
+    return request('POST', `/api/jobs/${jobId}/cancel`);
   },
 };
 

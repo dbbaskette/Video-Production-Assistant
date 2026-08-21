@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { brandsApi, ApiError } from '../lib/api';
+import { brandsApi, ApiError, type UploadProgress } from '../lib/api';
 import { useUi } from '../components/ui/UiProvider.js';
 import type { DesignMdFrontMatter, BrandWithDoc } from '@vpa/shared';
 
@@ -93,6 +93,7 @@ function LogoUploadCard({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState('');
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,11 +102,12 @@ function LogoUploadCard({
     setUploading(true);
     setError('');
     try {
-      await brandsApi.uploadAsset(slug, field, file);
+      await brandsApi.uploadAsset(slug, field, file, { onProgress: setProgress });
       onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
+      setProgress(null);
       setUploading(false);
       if (inputRef.current) inputRef.current.value = '';
     }
@@ -161,7 +163,9 @@ function LogoUploadCard({
           disabled={uploading}
           style={{ fontSize: 12 }}
         >
-          {uploading ? 'Uploading...' : imgUrl ? 'Replace' : 'Upload'}
+          {uploading
+            ? `Uploading…${progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : ''}`
+            : imgUrl ? 'Replace' : 'Upload'}
         </button>
       </div>
       {error && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{error}</p>}
@@ -286,6 +290,7 @@ function MediaUploadCard({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<'upload' | 'delete' | null>(null);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState('');
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -294,11 +299,12 @@ function MediaUploadCard({
     setBusy('upload');
     setError('');
     try {
-      await brandsApi.uploadAsset(slug, field, file);
+      await brandsApi.uploadAsset(slug, field, file, { onProgress: setProgress });
       onChange();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
+      setProgress(null);
       setBusy(null);
       if (inputRef.current) inputRef.current.value = '';
     }
@@ -398,7 +404,9 @@ function MediaUploadCard({
           disabled={busy !== null}
           style={{ fontSize: 12 }}
         >
-          {busy === 'upload' ? 'Uploading…' : mediaUrl ? 'Replace' : 'Upload'}
+          {busy === 'upload'
+            ? `Uploading…${progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : ''}`
+            : mediaUrl ? 'Replace' : 'Upload'}
         </button>
         {mediaUrl && (
           <button
@@ -560,6 +568,18 @@ export default function BrandDetail() {
     },
   });
 
+  // Regeneration overwrites the curated design.md wholesale. Ask first and
+  // point at Fork as the non-destructive alternative.
+  const handleRegenerate = async () => {
+    const ok = await ui.confirm({
+      title: 'Regenerate brand?',
+      body: 'Regenerating replaces design.md — every token, tagline, and rationale written so far is overwritten by fresh AI output. Fork first if you want to keep this version.',
+      confirmLabel: 'Regenerate',
+      destructive: true,
+    });
+    if (ok) regenerateMut.mutate();
+  };
+
   const deleteMut = useMutation({
     mutationFn: (force: boolean) => brandsApi.deleteBrand(slug!, force),
     onSuccess: () => {
@@ -673,7 +693,7 @@ export default function BrandDetail() {
         <button
           type="button"
           disabled={regenerateMut.isPending}
-          onClick={() => regenerateMut.mutate()}
+          onClick={() => void handleRegenerate()}
         >
           {regenerateMut.isPending ? 'Regenerating...' : 'Regenerate'}
         </button>

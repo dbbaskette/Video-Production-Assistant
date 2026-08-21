@@ -1,4 +1,5 @@
 import { act } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vpa/shared';
 import { jobsApi, narrationApi, ttsApi } from '../lib/api.js';
@@ -64,13 +65,13 @@ describe('ProjectNarrationPanel', () => {
 
   it('selects the first real engine and resets voice when engine changes', async () => {
     const view = renderComponent(
-      <ProjectNarrationPanel
+      <MemoryRouter><ProjectNarrationPanel
         projectId="project-1"
         scenes={scenes}
         expressiveness="medium"
         expressivenessPending={false}
         onExpressivenessChange={vi.fn()}
-      />,
+      /></MemoryRouter>,
     );
     await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
 
@@ -87,13 +88,13 @@ describe('ProjectNarrationPanel', () => {
     let listener!: (event: { type: string; data?: unknown }) => void;
     vi.spyOn(jobsApi, 'stream').mockImplementation((_id, next) => { listener = next; return vi.fn(); });
     const view = renderComponent(
-      <ProjectNarrationPanel
+      <MemoryRouter><ProjectNarrationPanel
         projectId="project-1"
         scenes={scenes}
         expressiveness="heavy"
         expressivenessPending={false}
         onExpressivenessChange={vi.fn()}
-      />,
+      /></MemoryRouter>,
     );
     await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
     act(() => [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Narrate project')!.click());
@@ -144,13 +145,13 @@ describe('ProjectNarrationPanel', () => {
     const cancel = vi.spyOn(narrationApi, 'cancelJob').mockResolvedValue({ cancelled: true });
     const generate = vi.spyOn(narrationApi, 'generateProject');
     const view = renderComponent(
-      <ProjectNarrationPanel
+      <MemoryRouter><ProjectNarrationPanel
         projectId="project-1"
         scenes={scenes}
         expressiveness="medium"
         expressivenessPending={false}
         onExpressivenessChange={vi.fn()}
-      />,
+      /></MemoryRouter>,
     );
     await waitForUi(() => expect(view.container.textContent).toContain('Cancel'));
     const cancelButton = [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!;
@@ -174,18 +175,90 @@ describe('ProjectNarrationPanel', () => {
       }
       : scene);
     const view = renderComponent(
-      <ProjectNarrationPanel
+      <MemoryRouter><ProjectNarrationPanel
         projectId="project-1"
         scenes={fullyPreviewed}
         expressiveness="medium"
         expressivenessPending={false}
         onExpressivenessChange={vi.fn()}
-      />,
+      /></MemoryRouter>,
     );
     await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
     expect(view.container.textContent).toContain('0 scenes will be narrated');
     expect([...view.container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Narrate project')?.disabled).toBe(false);
+    view.unmount();
+  });
+
+  it('renders failed scenes as deep links into each scene Narration tab', async () => {
+    vi.spyOn(narrationApi, 'generateProject').mockResolvedValue({ jobId: 'job-1', status: 'running' });
+    let listener!: (event: { type: string; data?: unknown }) => void;
+    vi.spyOn(jobsApi, 'stream').mockImplementation((_id, next) => { listener = next; return vi.fn(); });
+    const view = renderComponent(
+      <MemoryRouter><ProjectNarrationPanel
+        projectId="project-1"
+        scenes={scenes}
+        expressiveness="medium"
+        expressivenessPending={false}
+        onExpressivenessChange={vi.fn()}
+      /></MemoryRouter>,
+    );
+    await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
+    act(() => [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Narrate project')!.click());
+    await flushPromises();
+    act(() => listener({
+      type: 'done',
+      data: {
+        totalScenes: 3, generatedScenes: 0, generatedChunks: 0, preservedScenes: 0,
+        noScriptScenes: 1, removedScenes: 0, failedScenes: 2, cancelled: false,
+        failures: [
+          { sceneId: 'one', sceneName: 'One', code: 'scene_generation_failed' },
+          { sceneId: 'three', sceneName: 'Three', code: 'scene_generation_failed' },
+        ],
+      },
+    }));
+
+    const failures = view.container.querySelector('[aria-label="Scenes that could not be narrated"]')!;
+    expect(failures.textContent).toContain("could not be narrated");
+    expect(failures.textContent).toContain('Narration tab');
+    const links = [...failures.querySelectorAll('a')];
+    expect(links.map((a) => a.textContent)).toEqual(['One', 'Three']);
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      '/project/project-1/scene/one?tab=Narration',
+      '/project/project-1/scene/three?tab=Narration',
+    ]);
+    view.unmount();
+  });
+
+  it('offers an adjacent Retry after a failed run and starts again on click', async () => {
+    const generate = vi.spyOn(narrationApi, 'generateProject')
+      .mockRejectedValueOnce(new Error('tts down'))
+      .mockResolvedValueOnce({ jobId: 'job-2', status: 'running' });
+    let listener!: (event: { type: string; data?: unknown }) => void;
+    vi.spyOn(jobsApi, 'stream').mockImplementation((_id, next) => { listener = next; return vi.fn(); });
+    const view = renderComponent(
+      <MemoryRouter><ProjectNarrationPanel
+        projectId="project-1"
+        scenes={scenes}
+        expressiveness="medium"
+        expressivenessPending={false}
+        onExpressivenessChange={vi.fn()}
+      /></MemoryRouter>,
+    );
+    await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
+
+    // Force a start failure.
+    act(() => [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Narrate project')!.click());
+    await flushPromises();
+
+    const retry = [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Retry')!;
+    act(() => retry.click());
+    await flushPromises();
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    // Once running again, the Retry button is replaced by Cancel.
+    expect([...view.container.querySelectorAll('button')].some((button) => button.textContent === 'Cancel')).toBe(true);
+    expect([...view.container.querySelectorAll('button')].some((button) => button.textContent === 'Retry')).toBe(false);
     view.unmount();
   });
 });

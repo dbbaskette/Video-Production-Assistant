@@ -54,7 +54,12 @@ describe('PresentationImportDialog', () => {
     await flushPromises();
 
     expect(upload).toHaveBeenCalledTimes(1);
-    expect(upload).toHaveBeenCalledWith(JOB.project_id, expect.objectContaining({ name: 'deck.pdf' }), true);
+    expect(upload).toHaveBeenCalledWith(
+      JOB.project_id,
+      expect.objectContaining({ name: 'deck.pdf' }),
+      true,
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    );
     expect(onAccepted).toHaveBeenCalledOnce();
     expect(onAccepted).toHaveBeenCalledWith(JOB);
     expect(onClose).toHaveBeenCalledOnce();

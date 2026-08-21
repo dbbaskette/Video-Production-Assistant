@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { PresentationJob } from '@vpa/shared';
-import { presentationsApi } from '../lib/api.js';
+import { presentationsApi, type UploadProgress } from '../lib/api.js';
 import { PresentationFilePicker } from './PresentationFilePicker.js';
 import { useModalFocus } from './ui/useModalFocus.js';
 
@@ -29,6 +29,7 @@ export function PresentationImportDialog({
   const [previewValid, setPreviewValid] = useState(false);
   const [generateNarration, setGenerateNarration] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -69,7 +70,9 @@ export function PresentationImportDialog({
     setUploading(true);
     setError(false);
     try {
-      const job = await presentationsApi.upload(projectId, file, generateNarration);
+      const job = await presentationsApi.upload(projectId, file, generateNarration, {
+        onProgress: setProgress,
+      });
       if (!mountedRef.current || !openRef.current || sessionRef.current !== session) return;
       if (acceptedRef.current) return;
       acceptedRef.current = true;
@@ -80,6 +83,8 @@ export function PresentationImportDialog({
       uploadingRef.current = false;
       setError(true);
       setUploading(false);
+    } finally {
+      setProgress(null);
     }
   };
 
@@ -137,7 +142,9 @@ export function PresentationImportDialog({
             disabled={!file || !previewValid || uploading}
             onClick={() => void upload()}
           >
-            {uploading ? 'Adding…' : 'Add presentation'}
+            {uploading
+              ? `Adding…${progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : ''}`
+              : 'Add presentation'}
           </button>
         </div>
       </div>
