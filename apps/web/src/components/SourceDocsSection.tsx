@@ -13,7 +13,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, FileText, FileCode } from 'lucide-react';
-import { sourceDocsApi, type SourceDoc } from '../lib/api.js';
+import { sourceDocsApi, type SourceDoc, type UploadProgress } from '../lib/api.js';
 import { useUi } from './ui/UiProvider.js';
 
 interface Props {
@@ -28,6 +28,7 @@ export function SourceDocsSection({ projectId }: Props) {
   const [showText, setShowText] = useState(false);
   const [textBody, setTextBody] = useState('');
   const [textName, setTextName] = useState('');
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
   const docsQuery = useQuery({
     queryKey: ['source-docs', projectId],
@@ -43,7 +44,9 @@ export function SourceDocsSection({ projectId }: Props) {
   const totalChars = docs.reduce((acc, d) => acc + d.extractedChars, 0);
 
   const uploadMutation = useMutation({
-    mutationFn: (files: File[]) => sourceDocsApi.uploadFiles(projectId, files),
+    mutationFn: (files: File[]) =>
+      sourceDocsApi.uploadFiles(projectId, files, { onProgress: setUploadProgress }),
+    onSettled: () => setUploadProgress(null),
     onSuccess: ({ created }) => {
       qc.invalidateQueries({ queryKey: ['source-docs', projectId] });
       const extracting = created.filter((d) => d.status === 'extracting').length;
@@ -148,7 +151,9 @@ export function SourceDocsSection({ projectId }: Props) {
           className="primary"
           style={{ padding: '8px 16px', fontSize: 13 }}
         >
-          {uploadMutation.isPending ? 'Uploading…' : '+ Upload files'}
+          {uploadMutation.isPending
+            ? `Uploading…${uploadProgress?.fraction != null ? ` ${Math.round(uploadProgress.fraction * 100)}%` : ''}`
+            : '+ Upload files'}
         </button>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <input

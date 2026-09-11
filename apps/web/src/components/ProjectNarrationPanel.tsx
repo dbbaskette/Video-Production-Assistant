@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Expressiveness, Scene } from '@vpa/shared';
 import { jobsApi, narrationApi, ttsApi } from '../lib/api.js';
@@ -252,6 +253,11 @@ export function ProjectNarrationPanel({
         </label>
         <div className="project-narration-panel__actions">
           <span role={statusIsAlert ? 'alert' : 'status'} aria-live={statusIsAlert ? 'assertive' : 'polite'}>{status}</span>
+          {/* Adjacent retry so the user doesn't have to re-scroll to the
+              primary button after a failure. */}
+          {statusIsAlert && !jobId && !start.isPending && (
+            <button type="button" className="btn-secondary" onClick={() => start.mutate()}>Retry</button>
+          )}
           {jobId ? (
             <button type="button" className="btn-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancel</button>
           ) : (
@@ -267,9 +273,23 @@ export function ProjectNarrationPanel({
         </div>
       </div>
       {terminalResult && terminalResult.failures.length > 0 && (
-        <ul className="project-narration-panel__failures" aria-label="Scenes that could not be narrated">
-          {terminalResult.failures.map((failure) => <li key={failure.sceneId}>{failure.sceneName}</li>)}
-        </ul>
+        <div className="project-narration-panel__failures" aria-label="Scenes that could not be narrated">
+          <p className="project-narration-panel__failures-title" role="status">
+            {terminalResult.failedScenes} scene{terminalResult.failedScenes === 1 ? '' : 's'} could not be narrated —
+            open each scene's Narration tab to see chunk-level errors and retry.
+          </p>
+          <ul>
+            {terminalResult.failures.map((failure) => (
+              <li key={failure.sceneId}>
+                {/* Deep link straight into the failed scene's Narration tab —
+                    names-only lists left the user hunting for the scene. */}
+                <Link to={`/project/${projectId}/scene/${failure.sceneId}?tab=Narration`}>
+                  {failure.sceneName}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi, settingsApi } from '../lib/api.js';
+import { storyboardApi, exportApi, api, brandsApi, renderApi, musicApi, framesApi, settingsApi, jobsApi } from '../lib/api.js';
+import { applyRenderJobEvent, initialRenderJobState, type RenderJobUiState } from '../lib/render-job-stream.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { CollapsibleSection } from '../components/ui/CollapsibleSection.js';
 import { SourceDocsSection } from '../components/SourceDocsSection.js';
@@ -161,15 +162,6 @@ export function ProjectOverview() {
   );
 }
 
-interface RenderProgressEvent {
-  type: 'step';
-  step: 'concat-audio' | 'mux-scene' | 'concat-scenes' | 'done';
-  sceneIndex?: number;
-  sceneId?: string;
-  totalScenes?: number;
-  message: string;
-}
-
 function RenderSection({
   projectId,
   projectName,
@@ -187,9 +179,14 @@ function RenderSection({
 }) {
   const queryClient = useQueryClient();
   const workflowQuery = useWorkflowStatus(projectId);
-  const [progress, setProgress] = useState<RenderProgressEvent | null>(null);
-  const [doneAt, setDoneAt] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Render-job stream state. Driven through the tested applyRenderJobEvent
+  // machine so a job started here and one recovered after navigation behave
+  // identically.
+  const [renderState, setRenderState] = useState<RenderJobUiState>(initialRenderJobState());
+  // The active render job's id — set by startRender.onSuccess OR by adopting
+  // an already-running render job on mount (previously, navigating away
+  // mid-render lost all progress and re-enabled Start).
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [audioMode, setAudioMode] = useState<'replace' | 'mix'>('replace');
   const [burnSubtitles, setBurnSubtitles] = useState(false);
   // Narration & lower-thirds are OPTIONAL in the final render. The user can
@@ -303,6 +300,24 @@ function RenderSection({
     },
   });
 
+  // Subscribe to a render job's SSE stream (replayed server-side, so
+  // recovering a job mid-flight replays its full progress history). Terminal
+  // events close the stream, clear the active job, and refresh caches.
+  const followRenderJob = useCallback((jobId: string) => {
+    closeStreamRef.current?.();
+    closeStreamRef.current = jobsApi.stream(jobId, (event) => {
+      setRenderState((prev) => applyRenderJobEvent(prev, event));
+      if (event.type === 'done' || event.type === 'error' || event.type === 'cancel') {
+        closeStreamRef.current?.();
+        closeStreamRef.current = null;
+        setActiveJobId(null);
+        queryClient.invalidateQueries({ queryKey: ['render-status', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      }
+    });
+  }, [projectId, queryClient]);
+
   const startRender = useMutation({
     mutationFn: () =>
       renderApi.start(projectId, {
@@ -317,42 +332,53 @@ function RenderSection({
         useBrandMusic: effectiveUseBrandMusic,
       }),
     onSuccess: ({ jobId }) => {
-      setError(null);
-      setProgress(null);
-      setDoneAt(null);
+      setRenderState(initialRenderJobState());
+      setActiveJobId(jobId);
       queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
-      // Subscribe to SSE for progress
-      closeStreamRef.current?.();
-      const close = renderApi.subscribe(jobId, (raw) => {
-        // Each event from the queue is shaped as { type, timestamp, data }.
-        const evt = raw as { type: string; data?: unknown };
-        if (evt.type === 'progress' && evt.data) {
-          setProgress(evt.data as RenderProgressEvent);
-        } else if (evt.type === 'done') {
-          setProgress(null);
-          setDoneAt(Date.now());
-          queryClient.invalidateQueries({ queryKey: ['render-status', projectId] });
-          queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
-          closeStreamRef.current?.();
-          closeStreamRef.current = null;
-        } else if (evt.type === 'error') {
-          const data = evt.data as { error?: string } | undefined;
-          setError(data?.error ?? 'Render failed');
-          setProgress(null);
-          closeStreamRef.current?.();
-          closeStreamRef.current = null;
-        }
-      });
-      closeStreamRef.current = close;
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      followRenderJob(jobId);
     },
     onError: (err) => {
       queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
       if (err instanceof ApiError && err.status === 409) {
         const payload = err.payload as { blockers?: Array<{ message: string }> };
-        setError(payload.blockers?.map((item) => `• ${item.message}`).join('\n') ?? err.message);
+        setRenderState((prev) => ({
+          ...prev,
+          error: payload.blockers?.map((item) => `• ${item.message}`).join('\n') ?? err.message,
+        }));
         return;
       }
-      setError(err instanceof Error ? err.message : 'Failed to start render');
+      setRenderState((prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : 'Failed to start render',
+      }));
+    },
+  });
+
+  // Recover an in-flight render after navigating away and back. Without this
+  // the page showed an idle UI while ffmpeg kept running — inviting a second
+  // concurrent render.
+  const activeJobsQuery = useQuery({
+    queryKey: ['jobs', 'active-render', projectId],
+    queryFn: () => jobsApi.list({ active: true, projectId }),
+    enabled: hasStoryboard,
+  });
+  useEffect(() => {
+    if (!hasStoryboard || activeJobId || startRender.isPending) return;
+    const running = activeJobsQuery.data?.jobs.find((job) => job.type === 'render');
+    if (running) {
+      setActiveJobId(running.id);
+      followRenderJob(running.id);
+    }
+  }, [hasStoryboard, activeJobId, startRender.isPending, activeJobsQuery.data, followRenderJob]);
+
+  const cancelRender = useMutation({
+    mutationFn: () => jobsApi.cancelJob(activeJobId!),
+    onError: () => {
+      setRenderState((prev) => ({
+        ...prev,
+        error: 'Cancellation could not be confirmed — the render may still finish.',
+      }));
     },
   });
 
@@ -366,7 +392,8 @@ function RenderSection({
 
   const exists = status.data?.exists;
   const sizeMb = exists && status.data?.sizeBytes ? (status.data.sizeBytes / 1024 / 1024).toFixed(1) : null;
-  const isRunning = startRender.isPending || progress !== null;
+  const progress = renderState.progress;
+  const isRunning = startRender.isPending || activeJobId !== null;
   const renderBlocked = !!workflowQuery.data && !workflowQuery.data.render.ready;
   const progressPct = progress && progress.totalScenes && progress.sceneIndex !== undefined
     ? Math.round(((progress.sceneIndex + (progress.step === 'mux-scene' ? 0.5 : 0)) / progress.totalScenes) * 100)
@@ -555,6 +582,18 @@ function RenderSection({
           />
           {isRunning ? 'Rendering full project…' : renderBlocked ? 'Resolve blockers to render' : exists ? 'Render again' : 'Render full project'}
         </button>
+        {/* Cancel — asks the server to stop at the next safe boundary
+            (between scenes / before final concat). Hidden once cancellation
+            has been requested; the status line explains the drain instead. */}
+        {isRunning && activeJobId && !renderState.cancelRequested && (
+          <button
+            onClick={() => cancelRender.mutate()}
+            disabled={cancelRender.isPending}
+            style={{ padding: '8px 16px', fontSize: 13 }}
+          >
+            {cancelRender.isPending ? 'Cancelling…' : 'Cancel render'}
+          </button>
+        )}
         {exists && (
           <>
             {/* `download` HTML attribute alone is ignored cross-origin (web on
@@ -594,22 +633,24 @@ function RenderSection({
             />
           </div>
           <p style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 6 }}>
-            {progress.message}
+            {renderState.cancelRequested
+              ? 'Cancellation requested — stopping after the current step…'
+              : progress.message}
             {progressPct !== null && ` (${progressPct}%)`}
           </p>
         </div>
       )}
 
-      {error && (
+      {renderState.error && (
         <p style={{ fontSize: 13, color: 'var(--danger)', marginTop: 12, whiteSpace: 'pre-wrap' }}>
-          {error}
+          {renderState.error}
         </p>
       )}
 
       {/* Inline player */}
-      {(exists || doneAt) && !isRunning && (
+      {(exists || renderState.doneAt) && !isRunning && (
         <video
-          key={status.data?.modifiedAt ?? doneAt}
+          key={status.data?.modifiedAt ?? renderState.doneAt}
           src={renderApi.videoUrl(projectId)}
           controls
           playsInline

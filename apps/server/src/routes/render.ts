@@ -189,6 +189,11 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, opts });
 
+    // Cooperative cancellation: the generic /api/jobs/:jobId/cancel route
+    // flips the job to 'cancelling'; the render pipeline polls this at safe
+    // boundaries (between scenes, before concat) and bails.
+    opts.isCancelled = () => jobQueue.get(job.id)?.status === 'cancelling';
+
     void (async () => {
       try {
         const result = await renderVideo(projectPath, opts, (event) => {
@@ -226,6 +231,10 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           sceneCount: result.scenePaths.length,
         });
       } catch (err) {
+        if (opts.isCancelled?.()) {
+          jobQueue.finishCancelled(job.id, { projectId: id, cancelled: true });
+          return;
+        }
         const failure = publicRenderFailure(err, 'project');
         app.log.error(privateRenderDiagnostic(err), 'Project render failed');
         jobQueue.fail(

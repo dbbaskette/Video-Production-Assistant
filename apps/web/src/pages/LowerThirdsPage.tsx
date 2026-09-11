@@ -69,7 +69,7 @@ export function LowerThirdsPage() {
               }}
             >
               Don't need them? Uncheck "Include lower thirds" on the{' '}
-              <Link to={`/project/${projectId}#render`} style={{ color: 'var(--accent)' }}>
+              <Link to={`/project/${projectId}/render`} style={{ color: 'var(--accent)' }}>
                 render
               </Link>{' '}
               page.

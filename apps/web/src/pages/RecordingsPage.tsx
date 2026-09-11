@@ -23,9 +23,10 @@ import { useEffect, useState } from 'react';
 import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Circle, ChevronDown, ChevronRight } from 'lucide-react';
-import { storyboardApi, recordingsApi } from '../lib/api.js';
+import { storyboardApi, recordingsApi, type UploadProgress } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { STATUS_COLOR } from '../lib/palette.js';
+import { useUi } from '../components/ui/UiProvider.js';
 import type { ProjectTrackerEntry, Scene } from '@vpa/shared';
 import { recordingsDurationLabel } from '../lib/scene-duration.js';
 
@@ -44,6 +45,7 @@ export function RecordingsPage() {
   const { project } = useOutletContext<WorkspaceContext>();
   const { projectId } = useParams<{ projectId: string }>();
   const queryClient = useQueryClient();
+  const ui = useUi();
   void project; // referenced for outlet typing
 
   const { data: storyboard } = useQuery({
@@ -62,6 +64,7 @@ export function RecordingsPage() {
       : 'in-progress';
 
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
   const [bulkBannerVisible, setBulkBannerVisible] = useState(false);
   const [generateBannerVisible, setGenerateBannerVisible] = useState(false);
   // In-progress phase hides bulk-upload by default; this expands it on demand.
@@ -71,7 +74,8 @@ export function RecordingsPage() {
 
   // Bulk: assign uploaded recordings to existing scenes by file order.
   const bulkMutation = useMutation({
-    mutationFn: (files: File[]) => recordingsApi.uploadBulk(projectId!, files),
+    mutationFn: (files: File[]) =>
+      recordingsApi.uploadBulk(projectId!, files, { onProgress: setUploadProgress }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       setPendingFiles([]);
@@ -79,16 +83,19 @@ export function RecordingsPage() {
       setCompleteUploadAgain(false);
       setBulkBannerVisible(true);
     },
+    onSettled: () => setUploadProgress(null),
   });
 
   // Generate: no storyboard yet — a scene-per-file is created.
   const generateMutation = useMutation({
-    mutationFn: (files: File[]) => recordingsApi.generateStoryboard(projectId!, files),
+    mutationFn: (files: File[]) =>
+      recordingsApi.generateStoryboard(projectId!, files, { onProgress: setUploadProgress }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
       setPendingFiles([]);
       setGenerateBannerVisible(true);
     },
+    onSettled: () => setUploadProgress(null),
   });
 
   // Auto-dismiss success banners.
@@ -104,6 +111,7 @@ export function RecordingsPage() {
   }, [generateBannerVisible]);
 
   const isUploading = bulkMutation.isPending || generateMutation.isPending;
+  const uploadPct = uploadProgress?.fraction != null ? Math.round(uploadProgress.fraction * 100) : null;
   const error = bulkMutation.error || generateMutation.error;
   const errorMsg = error instanceof Error ? error.message : null;
 
@@ -112,6 +120,19 @@ export function RecordingsPage() {
   };
   const handleUploadBulk = () => {
     if (pendingFiles.length > 0) bulkMutation.mutate(pendingFiles);
+  };
+  // Complete-phase bulk upload overwrites EVERY scene's recording — strictly
+  // more destructive than the per-scene replace (which runs
+  // confirmDestructiveSave). Ask before committing.
+  const handleReplaceAll = async () => {
+    if (pendingFiles.length === 0 || bulkMutation.isPending) return;
+    const ok = await ui.confirm({
+      title: 'Replace every recording?',
+      body: `This overwrites the recordings of all ${scenes.length} scenes with the files above and invalidates any cached overlays or framed videos. This can't be undone.`,
+      confirmLabel: 'Replace recordings',
+      destructive: true,
+    });
+    if (ok) bulkMutation.mutate(pendingFiles);
   };
   const removePendingFile = (index: number) => {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
@@ -134,6 +155,7 @@ export function RecordingsPage() {
           <RecordingUpload
             onFilesSelected={(files) => setPendingFiles(files)}
             isUploading={isUploading}
+            progress={uploadProgress}
             multiple
           />
           <PendingFiles
@@ -150,7 +172,7 @@ export function RecordingsPage() {
                 style={{ padding: '10px 24px', fontSize: 14, fontWeight: 600 }}
               >
                 {isUploading
-                  ? 'Uploading…'
+                  ? `Uploading…${uploadPct != null ? ` ${uploadPct}%` : ''}`
                   : `Upload ${pendingFiles.length} recording${pendingFiles.length === 1 ? '' : 's'} & build storyboard`}
               </button>
               <button
@@ -228,6 +250,7 @@ export function RecordingsPage() {
                 <RecordingUpload
                   onFilesSelected={(files) => setPendingFiles(files)}
                   isUploading={isUploading}
+                  progress={uploadProgress}
                   multiple
                 />
                 <PendingFiles
@@ -244,7 +267,7 @@ export function RecordingsPage() {
                       style={{ padding: '8px 18px', fontSize: 13, fontWeight: 600 }}
                     >
                       {isUploading
-                        ? 'Uploading…'
+                        ? `Uploading…${uploadPct != null ? ` ${uploadPct}%` : ''}`
                         : `Upload to ${Math.min(pendingFiles.length, scenes.length)} scene${Math.min(pendingFiles.length, scenes.length) === 1 ? '' : 's'}`}
                     </button>
                     <button
@@ -333,6 +356,7 @@ export function RecordingsPage() {
           <RecordingUpload
             onFilesSelected={(files) => setPendingFiles(files)}
             isUploading={isUploading}
+            progress={uploadProgress}
             multiple
           />
           <PendingFiles
@@ -343,12 +367,12 @@ export function RecordingsPage() {
           {pendingFiles.length > 0 && (
             <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
               <button
-                onClick={handleUploadBulk}
+                onClick={() => void handleReplaceAll()}
                 disabled={isUploading}
                 className="primary"
                 style={{ padding: '8px 18px', fontSize: 13, fontWeight: 600 }}
               >
-                {isUploading ? 'Uploading…' : 'Replace recordings'}
+                {isUploading ? `Uploading…${uploadPct != null ? ` ${uploadPct}%` : ''}` : 'Replace recordings'}
               </button>
               <button
                 onClick={() => setPendingFiles([])}

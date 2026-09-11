@@ -126,7 +126,7 @@ export function NarrationPage() {
               }}
             >
               Don't need narration? You can{' '}
-              <Link to={`/project/${projectId}#render`} style={{ color: 'var(--accent)' }}>
+              <Link to={`/project/${projectId}/render`} style={{ color: 'var(--accent)' }}>
                 render
               </Link>{' '}
               without it — the final video will be silent.

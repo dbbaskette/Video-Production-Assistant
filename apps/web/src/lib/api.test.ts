@@ -33,11 +33,43 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
+/**
+ * Uploads go through XMLHttpRequest (fetch can't report upload progress), so
+ * the presentation-upload tests stub a minimal XHR instead of fetch.
+ */
+class FakeXhr {
+  static instances: FakeXhr[] = [];
+  open = vi.fn();
+  send = vi.fn();
+  setRequestHeader = vi.fn();
+  timeout = 0;
+  responseType = '';
+  response = '';
+  status = 0;
+  upload = { onprogress: null as ((e: ProgressEvent) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+
+  constructor() {
+    FakeXhr.instances.push(this);
+  }
+
+  respond(status: number, body: unknown): void {
+    this.status = status;
+    this.response = body === undefined ? '' : JSON.stringify(body);
+    this.onload?.();
+  }
+}
+
 describe('presentationsApi', () => {
   const fetchMock = vi.fn<[RequestInfo | URL, RequestInit?], Promise<Response>>();
 
   beforeEach(() => {
+    FakeXhr.instances = [];
     vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
   });
 
   afterEach(() => {
@@ -46,20 +78,52 @@ describe('presentationsApi', () => {
     vi.restoreAllMocks();
   });
 
-  it('uploads exact multipart fields without setting the FormData content type', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ presentation_id: PRESENTATION_ID, job: job() }, 202));
+  it('uploads exact multipart fields over XHR without overriding headers', async () => {
     const file = new File(['%PDF'], 'quarterly.pdf', { type: 'application/pdf' });
 
-    await expect(presentationsApi.upload(PROJECT_ID, file, true)).resolves.toEqual(job());
+    const pending = presentationsApi.upload(PROJECT_ID, file, true);
+    const xhr = FakeXhr.instances[0]!;
+    expect(xhr.open).toHaveBeenCalledWith('POST', `http://localhost:3000/api/projects/${PROJECT_ID}/presentations`);
+    xhr.respond(202, { presentation_id: PRESENTATION_ID, job: job() });
 
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe(`http://localhost:3000/api/projects/${PROJECT_ID}/presentations`);
-    expect(init?.method).toBe('POST');
-    expect(init?.headers).toBeUndefined();
-    expect(init?.body).toBeInstanceOf(FormData);
-    const form = init?.body as FormData;
+    await expect(pending).resolves.toEqual(job());
+    expect(xhr.send.mock.calls[0]![0]).toBeInstanceOf(FormData);
+    const form = xhr.send.mock.calls[0]![0] as FormData;
     expect(form.get('file')).toBe(file);
     expect(form.get('generate_narration')).toBe('true');
+    // XHR derives the multipart Content-Type itself; the client must not set one.
+    expect(xhr.setRequestHeader).not.toHaveBeenCalled();
+  });
+
+  it('surfaces upload progress fractions from the XHR upload stream', async () => {
+    const onProgress = vi.fn();
+    const pending = presentationsApi.upload(
+      PROJECT_ID,
+      new File(['%PDF'], 'deck.pdf'),
+      false,
+      { onProgress },
+    );
+    const xhr = FakeXhr.instances[0]!;
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 250, total: 1000 } as ProgressEvent);
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 1000, total: 1000 } as ProgressEvent);
+    xhr.respond(202, { presentation_id: PRESENTATION_ID, job: job() });
+
+    await pending;
+    expect(onProgress).toHaveBeenCalledWith({ fraction: 0.25, loaded: 250, total: 1000 });
+    expect(onProgress).toHaveBeenLastCalledWith({ fraction: 1, loaded: 1000, total: 1000 });
+  });
+
+  it('rejects with request_timeout when the upload exceeds the five-minute XHR timeout', async () => {
+    const pending = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
+    const xhr = FakeXhr.instances[0]!;
+    expect(xhr.timeout).toBe(300_000);
+    xhr.ontimeout?.();
+
+    await expect(pending).rejects.toMatchObject({
+      name: 'ApiError',
+      message: 'Presentation upload timed out',
+      code: 'request_timeout',
+    });
   });
 
   it('encodes every identifier once and emits the fixed request shapes', async () => {
@@ -87,66 +151,41 @@ describe('presentationsApi', () => {
     ]);
   });
 
-  it('uses one five-minute timeout and clears it after an aborted upload', async () => {
-    vi.useFakeTimers();
-    fetchMock.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(new DOMException('private detail', 'AbortError')));
-    }));
-
-    const result = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
-    const rejection = expect(result).rejects.toMatchObject({
+  it('maps server errors, network failures, and non-JSON bodies to ApiError', async () => {
+    const serverError = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
+    FakeXhr.instances[0]!.respond(409, { error: 'Deck already exists', code: 'conflict' });
+    await expect(serverError).rejects.toMatchObject({
       name: 'ApiError',
-      message: 'Presentation upload timed out',
-      code: 'request_timeout',
+      status: 409,
+      message: 'Deck already exists',
     });
-    await vi.advanceTimersByTimeAsync(300_000);
 
-    await rejection;
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it('clears the upload timeout after success', async () => {
-    vi.useFakeTimers();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ presentation_id: PRESENTATION_ID, job: job() }, 202));
-
-    await presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
-
-    expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it('keeps the five-minute abort lifecycle active while reading the upload response', async () => {
-    vi.useFakeTimers();
-    let signal!: AbortSignal;
-    let resolveBody!: (body: string) => void;
-    fetchMock.mockImplementationOnce(async (_url, init) => {
-      signal = init!.signal as AbortSignal;
-      return {
-        ok: true,
-        status: 202,
-        text: () => new Promise<string>((resolve) => { resolveBody = resolve; }),
-      } as Response;
+    const genericError = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
+    FakeXhr.instances[1]!.respond(500, 'Internal Server Error');
+    await expect(genericError).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      message: 'Upload failed: 500',
     });
-    const result = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
-    const rejection = expect(result).rejects.toMatchObject({ code: 'request_timeout' });
-    await vi.waitFor(() => expect(resolveBody).toBeTypeOf('function'));
 
-    await vi.advanceTimersByTimeAsync(300_000);
-    const abortedDuringBodyRead = signal.aborted;
-    resolveBody(JSON.stringify({ presentation_id: PRESENTATION_ID, job: job() }));
-    await rejection;
-
-    expect(abortedDuringBodyRead).toBe(true);
-    expect(vi.getTimerCount()).toBe(0);
+    const networkError = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), false);
+    FakeXhr.instances[2]!.onerror?.();
+    await expect(networkError).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 0,
+      code: 'network_error',
+    });
   });
 
   it('rejects malformed successful wrappers and direct jobs', async () => {
+    const uploadPending = presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), true);
+    FakeXhr.instances[0]!.respond(202, { presentation_id: PRESENTATION_ID, job: job(), extra: true });
+    await expect(uploadPending).rejects.toMatchObject({ name: 'ApiError', code: 'invalid_response' });
+
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ presentation_id: PRESENTATION_ID, job: job(), extra: true }, 202))
       .mockResolvedValueOnce(jsonResponse({ presentations: [job()], extra: true }))
       .mockResolvedValueOnce(jsonResponse({ ...job(), filename: '' }));
 
-    await expect(presentationsApi.upload(PROJECT_ID, new File(['x'], 'deck.pdf'), true))
-      .rejects.toMatchObject({ name: 'ApiError', code: 'invalid_response' });
     await expect(presentationsApi.list(PROJECT_ID))
       .rejects.toMatchObject({ name: 'ApiError', code: 'invalid_response' });
     await expect(presentationsApi.get(PROJECT_ID, PRESENTATION_ID))

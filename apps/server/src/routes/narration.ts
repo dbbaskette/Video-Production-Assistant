@@ -620,9 +620,9 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     return { jobId: job.id, status: 'running' };
   });
 
-  // POST /api/jobs/:jobId/cancel — request cancellation. Long-running jobs that
-  // poll their own status (the chunk batch) check this and bail at the next safe
-  // boundary. One-shot jobs (e.g. final render) ignore cancellation today.
+  // POST /api/jobs/:jobId/cancel — request cancellation. Long-running jobs
+  // that poll their own status (the chunk batch, project narration, and the
+  // final render) check this and bail at the next safe boundary.
   app.post('/api/jobs/:jobId/cancel', async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
     const j = jobQueue.get(jobId);
@@ -630,7 +630,11 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
       return { cancelled: false, status: j.status };
     }
-    if (j.type === 'narration-generate-project' || j.type === 'narration-generate-all') {
+    if (
+      j.type === 'narration-generate-project'
+      || j.type === 'narration-generate-all'
+      || j.type === 'render'
+    ) {
       if (j.status !== 'cancelling') {
         jobQueue.setStatus(jobId, 'cancelling');
         jobQueue.emit(jobId, 'cancel-requested', {});
