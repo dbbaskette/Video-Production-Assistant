@@ -1,3 +1,5 @@
+import { RenderCapabilities, useRenderCapabilities } from '../components/RenderCapabilities.js';
+import { ProjectMediaSummary } from '../components/ProjectMediaSummary.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -11,7 +13,7 @@ import { FrameStylePicker } from '../components/FrameStylePicker.js';
 // the file's call sites reading the same as before.
 import { relativeTime as timeAgo } from '../lib/format.js';
 import {
-  Video, FileText, Volume2, Tag, Film,
+  Film,
 } from 'lucide-react';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { SnapshotHistory } from '../components/SnapshotHistory.js';
@@ -34,7 +36,6 @@ export function ProjectOverview() {
     queryFn: () => storyboardApi.get(projectId!),
     enabled: !!projectId,
   });
-  const hasStoryboard = !!storyboard && (storyboard.scenes?.length ?? 0) > 0;
   const queryClient = useQueryClient();
   const modelsQuery = useQuery({
     queryKey: ['settings', 'models'],
@@ -48,10 +49,11 @@ export function ProjectOverview() {
   return (
     <div className="project-overview">
       <h1 style={{ margin: 0, fontSize: 24 }}>{project.name}</h1>
-      <p style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: 13 }}>
-        {project.path}
-      </p>
-
+      <ProjectMediaSummary projectId={project.id} />
+      <ProjectActionCard projectId={project.id} onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))} />
+      {storyboard?.project.objective && <section className="project-brief"><h2>Video brief</h2><p>{storyboard.project.objective}</p><Link to={`/project/${project.id}/ideation`}>Refine the brief</Link></section>}
+      <CollapsibleSection title="Project settings" defaultOpen={false} subtitle="Model overrides, folder and source export" anchorHash="project-ai-models-title,export">
+      <p className="hint">Project folder: {project.path}</p>
       <section className="project-ai-models" aria-labelledby="project-ai-models-title">
         <div className="project-ai-models__header">
           <div>
@@ -82,17 +84,14 @@ export function ProjectOverview() {
         )}
       </section>
 
-      <ProjectActionCard
-        projectId={project.id}
-        onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))}
-      />
-      <div style={{ marginTop: 12 }}><ExportButton projectId={project.id} /></div>
+      <ExportButton projectId={project.id} />
+      </CollapsibleSection>
 
       {/* ── Reference materials — source docs that ground every AI write ── */}
       <CollapsibleSection
         title="Reference materials"
-        defaultOpen
-        subtitle="Used as AI context for every generated line"
+        defaultOpen={false}
+        subtitle="Documents and notes for generation"
       >
         <SourceDocsSection projectId={project.id} />
       </CollapsibleSection>
@@ -103,51 +102,12 @@ export function ProjectOverview() {
           on setup and progress. */}
       <CollapsibleSection
         title="Brand"
-        defaultOpen={hasStoryboard}
+        defaultOpen={false}
         subtitle="Project-level branding & styling"
         anchorHash="brand"
       >
         <ProjectBrandSection projectId={project.id} />
       </CollapsibleSection>
-
-      {/* ── Workflow guide — per-scene reference, collapsed by default ── */}
-      {hasStoryboard && (
-        <CollapsibleSection
-          title="Per-scene workflow"
-          defaultOpen={false}
-          subtitle="Click any scene in the sidebar"
-        >
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-            {[
-              { Icon: Video, title: 'Recording', desc: 'Upload screen recording' },
-              { Icon: FileText, title: 'Script', desc: 'Write or AI-generate narration script' },
-              { Icon: Volume2, title: 'Narration', desc: 'Select TTS engine, voice & speed' },
-              { Icon: Tag, title: 'Lower Thirds', desc: 'Add title/subtitle overlays' },
-            ].map(({ Icon, title, desc }) => (
-              <div
-                key={title}
-                style={{
-                  background: 'var(--bg-elev)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '14px 16px',
-                  textAlign: 'center',
-                }}
-              >
-                <Icon
-                  size={22}
-                  strokeWidth={1.5}
-                  color="var(--fg-muted)"
-                  style={{ marginBottom: 8 }}
-                  aria-hidden
-                />
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{title}</div>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>{desc}</div>
-              </div>
-            ))}
-          </div>
-        </CollapsibleSection>
-      )}
 
       {/* ── Snapshot history — rolling backups, restore on click ── */}
       <CollapsibleSection
@@ -277,6 +237,7 @@ function RenderSection({
   }, [brandQuery.data, brandHasMusic]);
   const effectiveIncludeNarration = includeNarration ?? hasAnyNarration;
   const effectiveIncludeLowerThirds = includeLowerThirds ?? hasAnyLowerThirds;
+  const capabilities = useRenderCapabilities(effectiveIncludeLowerThirds);
   const effectiveUseBrandBumpers = useBrandBumpers ?? brandHasBumpers;
   const effectiveUseBrandMusic = useBrandMusic ?? brandHasMusic;
   // Will music actually be mixed into this render? (project track enabled, or
@@ -505,7 +466,7 @@ function RenderSection({
           useMusic={effectiveUseBrandMusic}
           onChangeBumpers={setUseBrandBumpers}
           onChangeMusic={setUseBrandMusic}
-          disabled={isRunning || renderBlocked}
+          disabled={isRunning || renderBlocked || capabilities.blocked}
           projectMusicSelected={musicEnabled && !!musicTrackId}
           musicScope={musicScope}
           onMusicScopeChange={setMusicScope}
@@ -568,7 +529,8 @@ function RenderSection({
       )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button
+        <RenderCapabilities state={capabilities} />
+      <button
           onClick={() => startRender.mutate()}
           disabled={isRunning}
           className="btn--accent"

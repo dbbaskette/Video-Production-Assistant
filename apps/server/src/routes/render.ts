@@ -472,7 +472,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       try {
         await runFfmpeg([
           '-y',
-          '-ss', '1.0',
+          '-ss', String(scene.presentation_source || scene.type === 'slide' ? 0 : Math.min(1, Math.max(0, (scene.recording.duration_sec ?? 2) / 2))),
           '-i', recPath,
           '-vframes', '1',
           '-vf', 'scale=480:-2',

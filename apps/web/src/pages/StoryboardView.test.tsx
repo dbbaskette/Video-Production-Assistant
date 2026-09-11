@@ -524,16 +524,11 @@ describe('Storyboard presentation integration', () => {
     await waitForUi(() => expect(view.container.textContent).toContain('Scene 2 of 4'));
 
     const selected = view.container.querySelector('.scene-row--selected')!;
-    expect(selected.querySelector('.scene-row__identity')?.textContent).toContain('02browser');
+    expect(selected.querySelector('.scene-row__thumbnail')?.textContent).toContain('02');
     expect(selected.querySelector('.scene-row__title')?.textContent).toBe('Browser checkout');
-    expect(selected.querySelectorAll('.scene-status')).toHaveLength(3);
-    const select = selected.querySelector<HTMLButtonElement>('.scene-row__select')!;
-    const statusDescriptionId = select.getAttribute('aria-describedby');
-    expect(statusDescriptionId).toBe('scene-status-scene-browser');
-    const statusDescription = selected.querySelector(`#${statusDescriptionId}`);
-    expect(statusDescription?.textContent).toContain('RecordingReady');
-    expect(statusDescription?.textContent).toContain('ScriptReady');
-    expect(statusDescription?.textContent).toContain('NarrationMissing');
+    expect(selected.querySelectorAll('.scene-status')).toHaveLength(0);
+    expect(selected.querySelector('.scene-row__summary')?.textContent).toBe('Script ready');
+    expect(selected.querySelector('details')?.open).toBe(false);
     expect(selected.querySelector('.scene-row__actions')).not.toBeNull();
     expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('Browser checkout');
     expect(view.container.querySelector('.scene-context-bar')?.textContent).toContain('browser');

@@ -96,7 +96,7 @@ async function probeFfmpegDrawtext(): Promise<ProbeResult> {
     }
     return fail('ffmpeg-drawtext', 'ffmpeg drawtext filter',
       'Filter not in this build — lower thirds rendering will fail',
-      'Reinstall ffmpeg with freetype: brew install homebrew-ffmpeg/ffmpeg/ffmpeg');
+      'Use an FFmpeg build with drawtext on the server PATH, then Re-check. Verify with ffmpeg -filters.');
   } catch (err) {
     return fail('ffmpeg-drawtext', 'ffmpeg drawtext filter',
       `Could not list filters: ${err instanceof Error ? err.message : String(err)}`);

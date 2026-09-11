@@ -195,3 +195,19 @@ describe('generateProjectNarration', () => {
     expect(result.cancelled).toBe(true);
   });
 });
+
+it.each([false, true])('preserves saved scene voice unless overwrite=%s explicitly replaces it', async (overwrite) => {
+  const saved = scene('saved', 'First.\n\nSecond.');
+  saved.narration!.tts = { engine: 'gemini', voice: 'Puck', speed: 1.2, expressiveness: 'light' };
+  saved.narration!.chunks = [{ index: 0, text: 'First.', audio: 'keep.mp3' }];
+  const generateScene = vi.fn().mockResolvedValue({ completed: 1, failed: 0 });
+  await generateProjectNarration(input([saved], overwrite), {
+    loadStoryboard: vi.fn().mockResolvedValue(storyboard([saved])), inspectBatch: inspectNarrationBatch,
+    resolveWriter: vi.fn(), generateScene, onProgress: vi.fn(), isCancelled: () => false,
+  });
+  expect(generateScene).toHaveBeenCalledWith(expect.objectContaining({
+    voice: overwrite ? 'Kore' : 'Puck', speed: overwrite ? 1 : 1.2,
+    expressiveness: overwrite ? 'medium' : 'light', selector: overwrite ? 'all' : 'missing',
+  }), undefined, expect.any(Function), expect.any(Function));
+  expect(saved.narration!.chunks[0]!.audio).toBe('keep.mp3');
+});

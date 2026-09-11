@@ -1,4 +1,4 @@
-import type { Scene } from '@vpa/shared';
+import { splitScriptIntoChunks, type Scene } from '@vpa/shared';
 
 export interface ProjectNarrationPreview {
   scriptedScenes: number;
@@ -23,8 +23,10 @@ export interface ProjectNarrationTerminalResult {
   }>;
 }
 
-function hasCurrentAudio(scene: Scene): boolean {
-  return Boolean(scene.narration?.audio || scene.narration?.chunks?.some((chunk) => chunk.audio));
+export function sceneNeedsNarration(scene: Scene, overwrite: boolean): boolean {
+  const paragraphs = splitScriptIntoChunks(scene.narration?.script ?? '', scene.narration?.mode === 'dialog');
+  if (!overwrite && scene.narration?.audio) return false;
+  return paragraphs.some((p, index) => { const stored = scene.narration?.chunks?.find(c => c.index === index); return overwrite || !stored?.audio || stored.text !== p.text || Boolean(stored.failed); });
 }
 
 export function projectNarrationPreview(
@@ -32,7 +34,7 @@ export function projectNarrationPreview(
   overwrite: boolean,
 ): ProjectNarrationPreview {
   const scripted = scenes.filter((scene) => Boolean(scene.narration?.script?.trim()));
-  const preservedScenes = overwrite ? 0 : scripted.filter(hasCurrentAudio).length;
+  const preservedScenes = overwrite ? 0 : scripted.filter(scene => !sceneNeedsNarration(scene, false)).length;
   return {
     scriptedScenes: scripted.length,
     willNarrateScenes: scripted.length - preservedScenes,

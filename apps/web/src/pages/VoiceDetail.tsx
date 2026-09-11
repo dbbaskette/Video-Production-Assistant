@@ -115,13 +115,13 @@ export function VoiceDetail() {
         </div>
       ) : (
         <div style={{ marginTop: 16, padding: 12, background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, color: 'var(--fg-muted)' }}>
-          No audio file. (Imported xAI voice without local recording.)
+          Remote voice available through xAI. This voice has no local recording; local cloning requires an uploaded sample.
         </div>
       )}
 
       <PreviewSection voice={voice} />
 
-      <Section title="Local voice cloning (Qwen3-TTS)" hint={voice.hasAudio ? 'Available — uses your local recording at synthesis time.' : 'Needs an audio file.'}>
+      {voice.hasAudio ? <Section title="Local voice cloning (Qwen3-TTS)" hint={voice.hasAudio ? 'Available — uses your local recording at synthesis time.' : 'Needs an audio file.'}>
         <p style={{ fontSize: 13, color: 'var(--fg)', margin: 0, lineHeight: 1.6 }}>
           In any scene, pick the <strong>Qwen3-TTS (local)</strong> engine, then choose{' '}
           <strong>{voice.name} (cloned)</strong> from the voice dropdown.
@@ -129,7 +129,7 @@ export function VoiceDetail() {
         <p style={{ fontSize: 11, color: 'var(--fg-muted)', margin: '6px 0 0' }}>
           Voice id: <code>{`clone:${voice.id}`}</code>
         </p>
-      </Section>
+      </Section> : <p>Choose the xAI engine and this voice in a scene or voice preset. Use the xAI preview above to hear it. Upload a recording in the voice library to create a local clone.</p>}
 
       <MetadataForm voice={voice} onSave={(p) => updateMutation.mutate(p)} pending={updateMutation.isPending} />
     </main>

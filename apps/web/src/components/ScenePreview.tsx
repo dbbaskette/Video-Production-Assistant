@@ -20,7 +20,7 @@ interface Props {
    * Per-chunk durations + indices for sequencing the narration audio. Must
    * match the order/index of the chunks the server has rendered audio for.
    */
-  chunks: Array<{ index: number; durationSec: number | null; hasAudio: boolean }>;
+  chunks: Array<{ index: number; durationSec: number | null; hasAudio: boolean; gapSec?: number }>;
 }
 
 export function ScenePreview({ projectId, scene, chunks }: Props) {
@@ -28,6 +28,8 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const [currentTime, setCurrentTime] = useState(0);
+  const [slidePlaying, setSlidePlaying] = useState(false);
+  const slideTimeRef = useRef(0);
   const [hasError, setHasError] = useState<string | null>(null);
 
   // Resolved LT palette — matches what the ffmpeg renderer will produce.
@@ -53,7 +55,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
     for (const c of chunks) {
       out.push(acc);
       const d = c.hasAudio && c.durationSec ? c.durationSec : 0;
-      acc += d;
+      acc += d + (c.gapSec ?? 0);
     }
     return out;
   }, [chunks]);
@@ -64,7 +66,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
     let last = -1;
     for (let i = 0; i < chunks.length; i++) {
       if (offsets[i]! <= t && chunks[i]!.hasAudio) {
-        const end = i + 1 < offsets.length ? offsets[i + 1]! : offsets[i]! + (chunks[i]!.durationSec ?? 0);
+        const end = offsets[i]! + (chunks[i]!.durationSec ?? 0);
         if (t < end) last = i;
       }
     }
@@ -74,8 +76,12 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
   // Track which chunk is currently loaded into the <audio> element so we don't
   // restart it on every timeupdate.
   const loadedChunkRef = useRef<number>(-1);
+  const desiredAudio = useRef({ time: 0, playing: false });
+  const pendingLoaded = useRef<(() => void) | null>(null);
+  useEffect(() => () => { desiredAudio.current.playing = false; const audio = audioRef.current; if (audio && pendingLoaded.current) audio.removeEventListener('loadedmetadata', pendingLoaded.current); }, []);
 
   function syncAudioToVideo(t: number, isPlaying: boolean) {
+    desiredAudio.current = { time: t, playing: isPlaying };
     const audio = audioRef.current;
     if (!audio) return;
     const idx = chunkAtTime(t);
@@ -88,14 +94,18 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
     const offset = offsets[idx]!;
     const localTime = t - offset;
     if (loadedChunkRef.current !== idx) {
+      if (pendingLoaded.current) audio.removeEventListener('loadedmetadata', pendingLoaded.current);
+      audio.pause();
       audio.src = narrationApi.chunkAudioUrl(projectId, scene.id, chunks[idx]!.index);
       loadedChunkRef.current = idx;
       // After src changes we need a small wait for metadata before seeking
       const onLoaded = () => {
-        audio.currentTime = Math.max(0, Math.min(localTime, audio.duration || 0));
-        if (isPlaying) void audio.play().catch(() => { /* ignore play() race */ });
+        if (loadedChunkRef.current !== idx) return;
+        audio.currentTime = Math.max(0, Math.min(desiredAudio.current.time - offset, audio.duration || 0));
+        if (desiredAudio.current.playing) void audio.play().catch(() => { /* ignore play() race */ });
         audio.removeEventListener('loadedmetadata', onLoaded);
       };
+      pendingLoaded.current = onLoaded;
       audio.addEventListener('loadedmetadata', onLoaded);
     } else {
       // Same chunk — only resync if drift > 0.25 s (ignore normal playback drift)
@@ -107,10 +117,32 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
     }
   }
 
+  const narrationDuration = chunks.reduce((total, chunk) => total + (chunk.hasAudio ? chunk.durationSec ?? 0 : 0) + (chunk.gapSec ?? 0), 0);
+  const isSlide = !!scene.presentation_source || scene.type === 'slide';
+  const slideDuration = Math.max(narrationDuration, scene.recording?.duration_sec ?? 1);
+  useEffect(() => {
+    if (!isSlide) return;
+    let frame = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const next = Math.min(slideDuration, slideTimeRef.current + (now - last) / 1000);
+      last = now;
+      slideTimeRef.current = next;
+      setCurrentTime(next);
+      syncAudioToVideo(next, next < slideDuration);
+      if (next >= slideDuration) setSlidePlaying(false);
+      else frame = requestAnimationFrame(tick);
+    };
+    if (slidePlaying) frame = requestAnimationFrame(tick);
+    else syncAudioToVideo(slideTimeRef.current, false);
+    return () => { cancelAnimationFrame(frame); audioRef.current?.pause(); };
+    // Chunk timing is refreshed when audio is regenerated.
+  }, [isSlide, slidePlaying, slideDuration, chunks]);
+
   // Video event handlers ──────────────────────────────────────────────
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || isSlide) return;
     const onTime = () => {
       setCurrentTime(v.currentTime);
       syncAudioToVideo(v.currentTime, !v.paused);
@@ -131,8 +163,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
       v.removeEventListener('seeked', onSeeked);
       v.removeEventListener('error', onError);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunks, projectId, scene.id]);
+  }, [chunks, projectId, scene.id, isSlide]);
 
   // Visible lower thirds based on currentTime
   const visibleLTs = (scene.lower_thirds ?? []).filter((lt) =>
@@ -146,7 +177,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)', border: '1px dashed var(--border)', borderRadius: 8 }}>
         <p style={{ fontSize: 14, margin: 0 }}>No recording uploaded for this scene yet.</p>
-        <p style={{ fontSize: 12, marginTop: 6 }}>Upload one in the Recording tab to enable preview.</p>
+        <p style={{ fontSize: 12, marginTop: 6 }}>Upload one in the Source tab to enable preview.</p>
       </div>
     );
   }
@@ -163,15 +194,16 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
           maxWidth: 960,
         }}
       >
-        <video
+        {<video
+          onError={() => setHasError('Could not load this source. Open Source to check or replace the recording.')}
           ref={videoRef}
           src={recordingsApi.videoUrl(projectId, scene.id)}
-          controls
-          muted
+          controls={!isSlide}
+          muted={chunks.some((chunk) => chunk.hasAudio)}
           playsInline
-          preload="metadata"
+          preload={isSlide ? "auto" : "metadata"}
           style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
-        />
+        />}
 
         {/* Lower thirds overlay layer */}
         <div
@@ -192,6 +224,11 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
         </div>
       </div>
 
+      {isSlide && <div className="slide-preview-transport">
+        <button type="button" onClick={() => { if (slideTimeRef.current >= slideDuration) { slideTimeRef.current = 0; setCurrentTime(0); } setSlidePlaying((value) => !value); }}>{slidePlaying ? 'Pause' : 'Play'} scene</button>
+        <input aria-label="Scene playback position" type="range" min="0" max={slideDuration} step="0.05" value={currentTime} onChange={(event) => { const time = Number(event.target.value); slideTimeRef.current = time; setCurrentTime(time); syncAudioToVideo(time, slidePlaying); }} />
+        <output>{currentTime.toFixed(1)} / {slideDuration.toFixed(1)} s</output>
+      </div>}
       <audio ref={audioRef} preload="metadata" />
 
       {hasError && (
@@ -199,8 +236,7 @@ export function ScenePreview({ projectId, scene, chunks }: Props) {
       )}
 
       <p style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 8 }}>
-        Preview — recording's audio is muted; narration plays from the chunk audio you've generated.
-        {audioChunks.length === 0 && ' (No narration chunks generated yet — only video plays.)'}
+        {isSlide ? 'Slide preview uses narration timing, including paragraph pauses.' : audioChunks.length ? 'Source preview with generated narration. Original audio is muted.' : 'Source preview with original audio.'} Final framing, transitions and sound mix are shown in the rendered output.
       </p>
     </div>
   );

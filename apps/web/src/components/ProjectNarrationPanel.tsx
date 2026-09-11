@@ -1,11 +1,13 @@
+import { VoicePresetPicker } from './VoicePresetPicker.js';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Expressiveness, Scene } from '@vpa/shared';
-import { jobsApi, narrationApi, ttsApi } from '../lib/api.js';
+import { jobsApi, narrationApi, ttsApi, voiceApi } from '../lib/api.js';
 import {
   parseProjectNarrationResult,
   projectNarrationPreview,
+  sceneNeedsNarration,
   type ProjectNarrationTerminalResult,
 } from '../lib/project-narration.js';
 
@@ -48,6 +50,7 @@ export function ProjectNarrationPanel({
     queryKey: ['tts-engines'],
     queryFn: ttsApi.listEngines,
   });
+  const { data: profiles = [] } = useQuery({ queryKey: ['voice-profiles'], queryFn: voiceApi.list });
   const { data: activeJobs } = useQuery({
     queryKey: ['active-jobs', projectId],
     queryFn: () => jobsApi.list({ active: true, projectId }),
@@ -179,6 +182,7 @@ export function ProjectNarrationPanel({
   });
 
   const running = Boolean(jobId) || start.isPending;
+  const canStart = !running && !expressivenessPending && !!engineId && !!voiceId && preview.willNarrateScenes > 0;
 
   return (
     <section className="project-narration-panel" aria-labelledby="project-narration-title">
@@ -194,6 +198,15 @@ export function ProjectNarrationPanel({
         </div>
       </div>
 
+      {!running && preview.willNarrateScenes === 0 && <p role="status">{preview.scriptedScenes === 0 ? 'Add a script to a scene before generating narration.' : 'All scripted scenes already have audio. Choose overwrite only if you want to replace it.'}</p>}
+      <VoicePresetPicker profiles={profiles} engines={engines} engine={engineId} voice={voiceId} speed={speed} disabled={running} onChange={preset => { setEngineId(preset.engine); setVoiceId(preset.voice); setSpeed(preset.speed); }} />
+      <p>The selected settings are the fallback for scenes without a saved voice. Scene voice overrides and existing paragraphs are preserved unless overwrite is selected. Dialog speaker voices stay assigned.</p>
+      <details><summary>Scenes affected by this batch ({preview.willNarrateScenes})</summary><ul>{scenes.map(scene => {
+        const action = !scene.narration?.script?.trim() ? 'Skipped: no script' : !sceneNeedsNarration(scene, overwrite) ? 'Preserved' : overwrite ? 'Replace audio and voice settings' : 'Generate missing or changed paragraphs';
+        const saved = scene.narration?.tts;
+        return <li key={scene.id}><Link to={`/project/${projectId}/scene/${scene.id}?tab=Narration`}>{scene.name}</Link> — {action}{saved?.voice ? ` · Saved voice: ${saved.voice} (${saved.engine})${overwrite ? ' → selected batch voice' : ' (used for missing paragraphs)'}` : ' · Uses selected batch voice'}</li>;
+      })}</ul></details>
+      <details><summary>Advanced voice settings</summary>
       <div className="project-narration-panel__controls">
         <label>
           <span>Engine</span>
@@ -246,6 +259,7 @@ export function ProjectNarrationPanel({
         </fieldset>
       </div>
 
+      </details>
       <div className="project-narration-panel__footer">
         <label className="project-narration-panel__overwrite">
           <input type="checkbox" checked={overwrite} disabled={running} onChange={(event) => setOverwrite(event.target.checked)} />
@@ -256,7 +270,7 @@ export function ProjectNarrationPanel({
           {/* Adjacent retry so the user doesn't have to re-scroll to the
               primary button after a failure. */}
           {statusIsAlert && !jobId && !start.isPending && (
-            <button type="button" className="btn-secondary" onClick={() => start.mutate()}>Retry</button>
+            <button type="button" className="btn-secondary" disabled={!canStart} onClick={() => start.mutate()}>Retry</button>
           )}
           {jobId ? (
             <button type="button" className="btn-secondary" disabled={cancel.isPending} onClick={() => cancel.mutate()}>Cancel</button>
@@ -264,7 +278,7 @@ export function ProjectNarrationPanel({
             <button
               type="button"
               className="btn-primary"
-              disabled={running || expressivenessPending || !engineId || !voiceId || preview.scriptedScenes === 0}
+              disabled={!canStart}
               onClick={() => start.mutate()}
             >
               Narrate project

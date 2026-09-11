@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FolderOpen, Search, X } from 'lucide-react';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { api } from '../lib/api.js';
+import { ProjectMediaSummary } from './ProjectMediaSummary.js';
 import { relativeTime } from '../lib/format.js';
 import {
   filterAndSortProjects,
@@ -117,7 +118,7 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
 
         <button type="button" className="project-list-open-folder" onClick={onOpenFolder}>
           <FolderOpen size={14} aria-hidden="true" />
-          Open folder…
+          Open existing project…
         </button>
       </div>
 
@@ -195,7 +196,7 @@ function ProjectCard({
         <span className="project-list-card__name">{project.name}</span>
         {project.missing && <span className="project-list-card__missing">Missing</span>}
       </span>
-      <span className="project-list-card__path" title={project.path}>{project.path}</span>
+      {!project.missing && <ProjectMediaSummary projectId={project.id} compact />}
       <span className="project-list-card__time">
         {project.missing ? 'No longer on disk' : `Opened ${relativeTime(project.lastOpened)}`}
       </span>

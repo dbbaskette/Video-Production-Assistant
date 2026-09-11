@@ -414,6 +414,25 @@ describe('CapRuntime', () => {
       .rejects.toThrow('terminal failure');
   });
 
+  it('reads nested Cap Desktop dimensions and window names without changing output settings', async () => {
+    const home = await tempHome();
+    await executable(join(home, 'bin', 'cap'));
+    const process = processDouble(async ({ args }) => {
+      if (args[0] === 'version') return result('{"version":"0.1.0"}');
+      if (args[0] === 'guide') return result(JSON.stringify(guide));
+      if (args[0] === 'targets') return result(JSON.stringify({
+        screens: [{ id: 'display-1', name: 'Display', physicalSize: { width: 3440, height: 1440 }, logicalSize: { width: 1720, height: 720 } }],
+        windows: [{ id: 'window-1', name: 'Demo', ownerName: 'Browser', bounds: { x: 0, y: 0, width: 1280, height: 720 } }],
+      }));
+      throw new Error(`unexpected args: ${args.join(' ')}`);
+    });
+    const runtime = new ManagedCapRuntime({ vpaHome: home, locator: new CapLocator({ vpaHome: home, run: process.run, env: { PATH: '' } }), process });
+    await expect(runtime.targets()).resolves.toEqual([
+      { kind: 'screen', id: 'display-1', name: 'Display', width: 3440, height: 1440 },
+      { kind: 'window', id: 'window-1', name: 'Demo', application: 'Browser', width: 1280, height: 720 },
+    ]);
+  });
+
   it('rejects incomplete target collections and malformed target entries', async () => {
     const invalidTargets: Array<[string, Record<string, unknown>]> = [
       ['screens array', { screens: {}, windows: [] }],

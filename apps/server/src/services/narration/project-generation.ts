@@ -135,9 +135,9 @@ export async function generateProjectNarration(
     }
 
     const selection: BatchVoiceSelection = {
-      engine: input.engine,
-      voice: input.voice,
-      speed: input.speed,
+      engine: (!input.overwrite && scene.narration?.tts?.engine) || input.engine,
+      voice: (!input.overwrite && scene.narration?.tts?.voice) || input.voice,
+      speed: (!input.overwrite ? scene.narration?.tts?.speed : undefined) ?? input.speed,
       selector: input.overwrite ? 'all' : 'missing',
     };
     const inspection = dependencies.inspectBatch(scene, selection);
@@ -157,10 +157,10 @@ export async function generateProjectNarration(
         {
           projectPath: input.projectPath,
           sceneId: snapshot.id,
-          engine: input.engine,
-          voice: input.voice,
-          speed: input.speed,
-          expressiveness: input.expressiveness,
+          engine: selection.engine,
+          voice: selection.voice,
+          speed: selection.speed,
+          expressiveness: (!input.overwrite ? scene.narration?.tts?.expressiveness : undefined) ?? input.expressiveness,
           selector: selection.selector,
         },
         writer,

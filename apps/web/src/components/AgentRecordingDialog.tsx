@@ -229,7 +229,8 @@ export function AgentRecordingDialog({ projectId, sceneId, open, onClose, onManu
   const manualUploadDisabled = activeSession || intentInFlight;
   const confirmationReady = hasSessionBoundConfirmationEvidence(session);
   const error = firstError(rehearse.error, rehearseAgain.error, confirm.error, cancel.error, sessionQuery.error, checkCap.error, installCap.error);
-  const canRehearse = Boolean(draft && capReady && !activeSession && !unsupported && draft.capture.targetApplication.trim());
+  const unsupportedCapture = !!draft && (draft.capture.targetKind !== 'window' || draft.capture.camera || draft.capture.microphone || !draft.capture.cursor);
+  const canRehearse = Boolean(draft && capReady && !activeSession && !unsupported && !unsupportedCapture && draft.capture.targetApplication.trim());
 
   const copyInstructions = async () => {
     if (!draft) return;
@@ -296,14 +297,17 @@ export function AgentRecordingDialog({ projectId, sceneId, open, onClose, onManu
               <div className="agent-recording-grid">
                 <label>Target application<input value={draft.capture.targetApplication} placeholder="Safari, Chrome, Figma…" onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, targetApplication: event.target.value } })} /></label>
                 <label>Starting URL<input type="url" value={draft.capture.startingUrl} placeholder="https://…" onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, startingUrl: event.target.value } })} /></label>
-                <label>Capture target<select value={draft.capture.targetKind} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, targetKind: event.target.value as 'window' | 'screen' } })}><option value="window">Application window</option><option value="screen">Entire screen</option></select></label>
-                <label>Frame rate<select value={draft.capture.fps} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, fps: Number(event.target.value) } })}><option value="30">30 fps</option><option value="60">60 fps</option></select></label>
+                <label>Capture target<select value={draft.capture.targetKind} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, targetKind: event.target.value as 'window' | 'screen' } })}><option value="window">Application window</option><option value="screen" disabled>Entire screen (not supported for guided recording)</option></select></label>
+                </div><details><summary>Output settings</summary><div className="agent-recording-grid"><label>Frame rate<select value={draft.capture.fps} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, fps: Number(event.target.value) } })}><option value="30">30 fps</option><option value="60">60 fps</option></select></label>
                 <label>Output width<input type="number" min="1" value={draft.capture.width} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, width: Number(event.target.value) } })} /></label>
                 <label>Output height<input type="number" min="1" value={draft.capture.height} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, height: Number(event.target.value) } })} /></label>
               </div>
+              </details>
               <div className="agent-recording-toggles" role="group" aria-label="Capture sources">
-                {(['cursor', 'microphone', 'camera', 'systemAudio'] as const).map((key) => <label className="agent-recording-check" key={key}><input type="checkbox" checked={draft.capture[key]} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, [key]: event.target.checked } })} />{label(key)}</label>)}
+                {(['cursor', 'microphone', 'camera', 'systemAudio'] as const).map((key) => <label className="agent-recording-check" key={key}><input type="checkbox" disabled={key !== 'systemAudio'} checked={draft.capture[key]} onChange={(event) => setDraft({ ...draft, capture: { ...draft.capture, [key]: event.target.checked } })} />{label(key)}</label>)}
               </div>
+              <p className="hint">Guided recording uses one application window with its cursor. Camera and microphone selection are not supported.</p>
+              {unsupportedCapture && <p role="alert">This saved plan uses unsupported capture settings. <button type="button" onClick={() => setDraft({ ...draft, capture: { ...draft.capture, targetKind: 'window', cursor: true, microphone: false, camera: false } })}>Use supported capture settings</button></p>}
               <div className="agent-recording-plan"><h3>Actions</h3>{draft.steps.map((step, index) => <label key={step.index}><span>{index + 1}</span><input aria-label={`Action ${index + 1}`} value={step.action} onChange={(event) => setDraft({ ...draft, steps: draft.steps.map((item, itemIndex) => itemIndex === index ? { ...item, action: event.target.value } : item) })} /></label>)}</div>
             </fieldset>
           </section>

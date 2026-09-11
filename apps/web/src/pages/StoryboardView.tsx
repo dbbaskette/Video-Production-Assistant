@@ -15,7 +15,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { presentationsApi, storyboardApi } from '../lib/api.js';
+import { BASE, presentationsApi, storyboardApi } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ScenePage } from './ScenePage.js';
 import { SCENE_TYPE_COLOR } from '../lib/palette.js';
@@ -25,15 +25,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Clapperboard,
-  FileText,
   Maximize2,
   Minimize2,
   Pencil,
   Search,
   Trash2,
   Video,
-  Volume2,
-  type LucideIcon,
 } from 'lucide-react';
 import type { PresentationJob, Scene, SceneType, Storyboard } from '@vpa/shared';
 import { PresentationImportDialog } from '../components/PresentationImportDialog.js';
@@ -310,7 +307,7 @@ export function StoryboardView() {
             </button>
           </header>
 
-          <div className="storyboard-filter-toolbar" role="search" aria-label="Storyboard scenes">
+          {scenes.length > 0 && <div className="storyboard-filter-toolbar" role="search" aria-label="Storyboard scenes">
             <label className="storyboard-filter-search">
               <span>Find a scene</span>
               <span className="storyboard-filter-search__field">
@@ -378,6 +375,7 @@ export function StoryboardView() {
             </div>
           </div>
 
+          }
           {storyboard?.project.objective && (
             <p className="storyboard-objective" title={storyboard.project.objective}>
               {storyboard.project.objective.slice(0, 140)}
@@ -394,7 +392,7 @@ export function StoryboardView() {
 
           <div className="storyboard-scene-list">
             {matchingScenes.map(renderSceneRow)}
-            {matchingScenes.length === 0 && (
+            {scenes.length > 0 && matchingScenes.length === 0 && (
               <div className="storyboard-filter-empty">
                 <strong>No scenes match these filters</strong>
                 <span>The current scene stays open while you adjust the list.</span>
@@ -707,43 +705,16 @@ function SceneRow({
         aria-pressed={selected}
         onClick={onSelect}
       >
-        <span className="scene-row__identity">
-          <span className="scene-row__number">{String(index + 1).padStart(2, '0')}</span>
-          <span
-            className="scene-row__type"
-            style={{ background: typeBadgeColors[scene.type] ?? '#666' }}
-          >
-            {scene.type}
-          </span>
+        <span className="scene-row__thumbnail" aria-hidden="true">
+          {hasRecording ? <img loading="lazy" src={`${BASE}/api/projects/${projectId}/scenes/${scene.id}/thumbnail`} alt="" onError={(event) => { event.currentTarget.style.visibility = 'hidden'; }} /> : <Video size={24} />}
+          <span>{String(index + 1).padStart(2, '0')}</span>
         </span>
         <span className="scene-row__title" title={scene.name}>{scene.name}</span>
-        <span className="scene-row__statuses" id={statusDescriptionId}>
-          <StatusChip
-            icon={Video}
-            label="Recording"
-            value={hasRecording ? 'Ready' : 'Missing'}
-            tone={hasRecording ? 'ready' : 'missing'}
-          />
-          <StatusChip
-            icon={FileText}
-            label="Script"
-            value={hasScript ? 'Ready' : 'Missing'}
-            tone={hasScript ? 'ready' : 'missing'}
-          />
-          <StatusChip
-            icon={Volume2}
-            label="Narration"
-            value={totalChunks > 0 ? `${narratedChunks}/${totalChunks}` : hasNarrationAudio ? 'Ready' : 'Missing'}
-            tone={
-              hasNarrationAudio && (totalChunks === 0 || narratedChunks === totalChunks)
-                ? 'ready'
-                : narratedChunks > 0
-                  ? 'partial'
-                  : 'missing'
-            }
-          />
+        <span className="scene-row__summary" id={statusDescriptionId}>
+          {!hasRecording ? 'Needs recording' : hasNarrationAudio ? `${totalChunks > 0 ? `${narratedChunks}/${totalChunks} voiced paragraphs` : 'Narration ready'}` : hasScript ? 'Script ready' : 'Source ready'}
         </span>
       </button>
+      <details className="scene-row__menu"><summary aria-label={`Actions for ${scene.name}`}>•••</summary>
       <RowControls
         index={index}
         total={total}
@@ -761,6 +732,7 @@ function SceneRow({
           if (ok) removeMutation.mutate();
         }}
       />
+      </details>
     </div>
   );
 }
@@ -814,26 +786,6 @@ function RowControls({
       >
         <Trash2 size={13} aria-hidden="true" />
       </button>
-    </span>
-  );
-}
-
-function StatusChip({
-  icon: Icon,
-  label,
-  value,
-  tone,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  tone: 'ready' | 'partial' | 'missing';
-}) {
-  return (
-    <span className={`scene-status scene-status--${tone}`}>
-      <Icon size={11} strokeWidth={1.8} aria-hidden="true" />
-      <span>{label}</span>
-      <strong>{value}</strong>
     </span>
   );
 }

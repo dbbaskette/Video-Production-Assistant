@@ -26,6 +26,14 @@ async function fixture() {
 }
 
 describe('computeWorkflowStatus', () => {
+  it('does not count unused optional stages as completed work or warn about review on an empty project', async () => {
+    const { root, project, storyboard } = await fixture();
+    storyboard.scenes = [];
+    const result = await computeWorkflowStatus({ projectPath: root, project, storyboard });
+    expect(result.progress).toEqual({ completed: 0, total: 4, percent: 0 });
+    expect(result.issues.some((item) => item.code === 'review_unrun')).toBe(false);
+  });
+
   it('points to a missing scene recording and blocks render', async () => {
     const { root, project, storyboard } = await fixture();
     const result = await computeWorkflowStatus({ projectPath: root, project, storyboard });

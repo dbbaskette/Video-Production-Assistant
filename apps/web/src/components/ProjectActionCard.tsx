@@ -23,9 +23,9 @@ export function ProjectActionCard({ projectId, onViewIssues }: { projectId: stri
       <ol className="project-action-card__steps">
         {data.steps.map((step, index) => (
           <li key={step.key} title={`${step.label}: ${step.summary}`} className={`project-action-card__step project-action-card__step--${step.state}`}>
-            <span>{step.state === 'complete' || step.state === 'optional' ? <Check size={12} /> : step.state === 'stale' ? <AlertTriangle size={12} /> : <Circle size={10} />}</span>
+            <span>{step.state === 'complete' ? <Check size={12} /> : step.state === 'stale' ? <AlertTriangle size={12} /> : <Circle size={10} />}</span>
             <small>{index + 1}</small>
-            <strong>{step.label}</strong>
+            <strong>{step.label}{step.state === 'optional' && <span className="workflow-optional">Optional</span>}</strong>
           </li>
         ))}
       </ol>

@@ -55,15 +55,15 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
   if (activeRender) blockers.push(issue({ severity: 'blocker', phase: 'render', code: 'render_running', message: 'A full-project render is already running.', recommendation: 'Wait for the current render to finish.', action: 'open_render' }));
 
   const scriptCount = scenes.filter((scene) => !!(scene.narration?.script || scene.narration?.monologueScript || scene.narration?.dialogScript)).length;
-  const narrationCount = scenes.filter((scene) => !!scene.narration?.audio).length;
+  const narrationCount = scenes.filter((scene) => !!scene.narration?.audio || scene.narration?.chunks?.some((chunk) => !!chunk.audio)).length;
   const lowerThirdCount = scenes.filter((scene) => (scene.lower_thirds?.length ?? 0) > 0).length;
   if (scriptCount > 0 && scriptCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'script', code: 'scripts_partial', message: `Scripts exist for ${scriptCount} of ${scenes.length} scenes.`, recommendation: 'Finish the remaining scripts or continue without them.', action: 'open_script' }));
   if (narrationCount > 0 && narrationCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'narration', code: 'narration_partial', message: `Narration exists for ${narrationCount} of ${scenes.length} scenes.`, recommendation: 'Generate the remaining narration or render with original audio.', action: 'open_narration' }));
   if (lowerThirdCount > 0 && lowerThirdCount < scenes.length) warnings.push(issue({ severity: 'warning', phase: 'lower-thirds', code: 'lower_thirds_partial', message: `Lower thirds are used in ${lowerThirdCount} of ${scenes.length} scenes.`, recommendation: 'Review whether the remaining scenes need labels.', action: 'open_lower_thirds' }));
   const reviewIsStale = !!review?.status && (!review.inputFingerprint || review.inputFingerprint !== buildReviewFingerprint(storyboard));
-  if (!review?.status) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_unrun', message: 'Quality Review has not been run.', recommendation: 'Run Quality Review before publishing.', action: 'open_review' }));
+  if (scenes.length > 0 && recorded === scenes.length && !review?.status) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_unrun', message: 'Quality Review has not been run.', recommendation: 'Run Quality Review before publishing.', action: 'open_review' }));
   else if (reviewIsStale) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_stale', message: 'Quality Review is outdated because project inputs changed.', recommendation: 'Run Quality Review again.', action: 'open_review' }));
-  else if ((review.summary?.issue ?? 0) > 0 || (review.summary?.warn ?? 0) > 0) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_findings', message: 'Quality Review has findings to inspect.', recommendation: 'Review the findings before publishing.', action: 'open_review' }));
+  else if ((review?.summary?.issue ?? 0) > 0 || (review?.summary?.warn ?? 0) > 0) warnings.push(issue({ severity: 'warning', phase: 'review', code: 'review_findings', message: 'Quality Review has findings to inspect.', recommendation: 'Review the findings before publishing.', action: 'open_review' }));
 
   const outputInfo = await getFinalOutputInfo(projectPath);
   const manifest = outputInfo ? await readRenderManifest(projectPath) : null;
@@ -103,7 +103,8 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
         : { key: 'open_review' as const, label: review?.status === 'ok' && !reviewIsStale ? 'Review complete' : 'Run quality review', summary: review?.status === 'ok' && !reviewIsStale ? 'The project is ready.' : 'Check the finished project before publishing.' };
 
   const issues = [...blockers, ...warnings];
-  const completed = steps.filter((step) => step.state === 'complete' || step.state === 'optional').length;
+  const applicableSteps = steps.filter((step) => step.state !== 'optional');
+  const completed = applicableSteps.filter((step) => step.state === 'complete').length;
   return WorkflowStatusSchema.parse({
     projectId: project.id,
     computedAt: new Date().toISOString(),
@@ -111,7 +112,7 @@ export async function computeWorkflowStatus(input: ComputeWorkflowInput): Promis
     nextAction,
     issues,
     counts: { blockers: blockers.length, warnings: warnings.length },
-    progress: { completed, total: steps.length, percent: Math.round((completed / steps.length) * 100) },
+    progress: { completed, total: applicableSteps.length, percent: Math.round((completed / applicableSteps.length) * 100) },
     render: { ready: blockers.length === 0, readyScenes: recorded, totalScenes: scenes.length, blockers, warnings, output },
   });
 }

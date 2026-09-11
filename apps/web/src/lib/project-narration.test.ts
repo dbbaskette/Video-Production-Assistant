@@ -68,3 +68,13 @@ describe('project narration helpers', () => {
     expect(parseProjectNarrationResult({ totalScenes: 'five' })).toBeNull();
   });
 });
+
+it('counts missing, changed and failed paragraphs including inline pauses', () => {
+  const partial = scene('partial', 'First. [pause 2s] Second.');
+  partial.narration!.chunks = [{ index: 0, text: 'First.', audio: 'first.mp3' }];
+  expect(projectNarrationPreview([partial], false).willNarrateScenes).toBe(1);
+  partial.narration!.chunks.push({ index: 1, text: 'Second.', audio: 'second.mp3' });
+  expect(projectNarrationPreview([partial], false).willNarrateScenes).toBe(0);
+  partial.narration!.script = 'First. [pause 2s] Revised.';
+  expect(projectNarrationPreview([partial], false).willNarrateScenes).toBe(1);
+});

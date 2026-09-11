@@ -45,7 +45,7 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <h2>Open existing project</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 16px' }}>
-          Paste an absolute path to a folder containing <code>project.yaml</code>.
+          Open a project previously created by VPA. Choose its top-level project folder, which contains the project and its media. To start from loose videos or a PDF, create a new project instead.
         </p>
 
         <div className="dialog__field">
