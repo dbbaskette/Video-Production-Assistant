@@ -55,7 +55,7 @@ const projectEntry = {
 
 describe('ProjectWorkspace navigation layout', () => {
   beforeEach(() => {
-    localStorage.clear();
+    vi.stubGlobal('localStorage', new (awaitStorage())());
     vi.spyOn(api, 'listProjects').mockResolvedValue({ projects: [projectEntry] });
     vi.spyOn(api, 'getProject').mockResolvedValue({
       ...projectEntry,
@@ -68,7 +68,7 @@ describe('ProjectWorkspace navigation layout', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    localStorage.clear();
+    vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
 
@@ -78,19 +78,8 @@ describe('ProjectWorkspace navigation layout', () => {
 
     act(() => buttonByLabel(view.container, 'Collapse project navigation')!.click());
     expect(buttonByLabel(view.container, 'Expand project navigation')).not.toBeNull();
-    for (const label of [
-      'Overview',
-      'Storyboard',
-      'Recordings',
-      'Script',
-      'Narration',
-      'Lower Thirds',
-      'Render',
-      'Review',
-      'Brands',
-      'All projects',
-    ]) {
-      expect(view.container.querySelector(`[aria-label="${label}"]`), label).not.toBeNull();
+    for (const label of ['Project', 'Scenes', 'Review & export', 'Source recordings', 'Full script', 'Batch narration', 'Text overview', 'Automated quality checks', 'Brand library', 'All projects']) {
+      expect([...view.container.querySelectorAll('a')].some(a => a.textContent === label), label).toBe(true);
     }
     expect(JSON.parse(localStorage.getItem(WORKSPACE_PREFERENCE_KEY)!)).toEqual({
       projectNavCollapsed: true,
@@ -165,4 +154,14 @@ async function waitForUi(assertion: () => void): Promise<void> {
     }
   }
   throw failure;
+}
+
+function awaitStorage() {
+  return class {
+    private values = new Map<string, string>();
+    getItem(key: string) { return this.values.get(key) ?? null; }
+    setItem(key: string, value: string) { this.values.set(key, value); }
+    clear() { this.values.clear(); }
+    removeItem(key: string) { this.values.delete(key); }
+  };
 }

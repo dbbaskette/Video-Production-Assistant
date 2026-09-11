@@ -2,7 +2,7 @@ import { act } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vpa/shared';
-import { jobsApi, narrationApi, ttsApi } from '../lib/api.js';
+import { jobsApi, narrationApi, ttsApi, voiceApi } from '../lib/api.js';
 import { flushPromises, renderComponent } from './component-test-utils.js';
 import { ProjectNarrationPanel } from './ProjectNarrationPanel.js';
 
@@ -54,6 +54,7 @@ async function waitForUi(assertion: () => void): Promise<void> {
 
 describe('ProjectNarrationPanel', () => {
   beforeEach(() => {
+    vi.spyOn(voiceApi, 'list').mockResolvedValue([{ id: 'preset', name: 'Narrator', engine: 'gemini', voice: 'Puck', speed: 1.2 }]);
     vi.spyOn(ttsApi, 'listEngines').mockResolvedValue(engines);
     vi.spyOn(jobsApi, 'list').mockResolvedValue({ jobs: [] });
   });
@@ -80,6 +81,17 @@ describe('ProjectNarrationPanel', () => {
     expect(select(view.container, 'Narration voice').value).toBe('alice');
     expect(view.container.textContent).toContain('1 scene will be narrated');
     expect(view.container.textContent).toContain('1 existing narration preserved');
+    view.unmount();
+  });
+
+  it('applies a saved preset and explains generated and preserved scenes', async () => {
+    const view = renderComponent(<MemoryRouter><ProjectNarrationPanel projectId="project" scenes={scenes} expressiveness="medium" expressivenessPending={false} onExpressivenessChange={() => {}} /></MemoryRouter>);
+    await waitForUi(() => expect(select(view.container, 'Voice preset').options.length).toBe(2));
+    setValue(select(view.container, 'Voice preset'), 'preset');
+    expect(select(view.container, 'Narration voice').value).toBe('Puck');
+    expect(view.container.textContent).toContain('1.2× speed');
+    expect(view.container.textContent).toContain('Preserved');
+    expect(view.container.textContent).toContain('Generate missing or changed paragraphs');
     view.unmount();
   });
 
@@ -164,7 +176,7 @@ describe('ProjectNarrationPanel', () => {
     view.unmount();
   });
 
-  it('keeps the repair action available when every scripted scene has some audio', async () => {
+  it('disables a no-op when every scripted paragraph already has audio', async () => {
     const fullyPreviewed = scenes.map((scene) => scene.narration?.script
       ? {
         ...scene,
@@ -186,7 +198,7 @@ describe('ProjectNarrationPanel', () => {
     await waitForUi(() => expect(select(view.container, 'Narration engine').value).toBe('gemini'));
     expect(view.container.textContent).toContain('0 scenes will be narrated');
     expect([...view.container.querySelectorAll('button')]
-      .find((button) => button.textContent === 'Narrate project')?.disabled).toBe(false);
+      .find((button) => button.textContent === 'Narrate project')?.disabled).toBe(true);
     view.unmount();
   });
 

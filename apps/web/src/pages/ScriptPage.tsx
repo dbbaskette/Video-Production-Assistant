@@ -152,7 +152,7 @@ function SceneRow({ index, scene, projectId }: { index: number; scene: Scene; pr
   // like `[warm]` that the TTS engine uses, so the preview reads as plain
   // narration prose.
   const preview = script
-    ? script.replace(/\[[a-zA-Z]+\]\s*/g, '').trim().slice(0, 80)
+    ? script.replace(/\[[a-zA-Z]+\]\s*/g, '').trim()
     : '';
 
   return (
@@ -240,14 +240,14 @@ function SceneRow({ index, scene, projectId }: { index: number; scene: Scene; pr
                 style={{
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  maxWidth: 420,
+                  whiteSpace: 'pre-wrap',
+                  maxWidth: 720,
                   color: 'var(--fg-dim)',
                   fontStyle: 'italic',
                 }}
                 title={preview}
               >
-                “{preview}{preview.length >= 80 ? '…' : ''}”
+                {preview}
               </span>
             </>
           ) : (

@@ -1,9 +1,11 @@
+import { RenderCapabilities, useRenderCapabilities } from '../components/RenderCapabilities.js';
+import { VoicePresetPicker } from '../components/VoicePresetPicker.js';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useParams, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ApiError, agentRecordingApi, api, storyboardApi, recordingsApi, scriptApi, ttsApi, voiceApi, narrationApi, lowerThirdsApi, overlayApi, framesApi, type UploadProgress } from '../lib/api.js';
 import { FrameStylePicker } from '../components/FrameStylePicker.js';
-import type { LowerThirdItem, VoiceProfileInfo, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig, RecordingAnalysisFailure } from '../lib/api.js';
+import type { LowerThirdItem, NarrationChunkInfo, TtsEngineInfo, SpeakerConfig, RecordingAnalysisFailure } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { ShotPlanSection } from '../components/ShotPlanSection.js';
 import { RecordingInfo } from '../components/RecordingInfo.js';
@@ -75,6 +77,7 @@ export interface ScenePageProps {
 }
 
 export function ScenePage(props: ScenePageProps = {}) {
+  const overlayCapabilities = useRenderCapabilities(true);
   const params = useParams<{ projectId: string; sceneId: string }>();
   // useOutletContext throws when called outside an Outlet — guard for the
   // embedded case where there's no parent Outlet.
@@ -97,32 +100,16 @@ export function ScenePage(props: ScenePageProps = {}) {
   const tabFromUrl = ((): Tab => {
     const fromUrl = searchParams.get('tab');
     if (fromUrl && (TABS as readonly string[]).includes(fromUrl)) return fromUrl as Tab;
-    return 'Recording';
+    return 'Preview';
   })();
-  const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl);
-
-  // Keep the URL in sync when the user clicks a different tab pill.
-  // Effect on activeTab change rather than wrapping setActiveTab so we
-  // don't break the existing render-derived initial value or any other
-  // setActiveTab callers that might land later.
-  useEffect(() => {
-    if (searchParams.get('tab') === activeTab) return;
-    const next = new URLSearchParams(searchParams);
-    if (activeTab === 'Recording') {
-      // Recording is the default; drop the param to keep URLs short.
-      next.delete('tab');
-    } else {
-      next.set('tab', activeTab);
-    }
-    setSearchParams(next, { replace: true });
-  }, [activeTab, searchParams, setSearchParams]);
-
-  // Pull tab from URL when it changes externally (StoryboardView changes
-  // ?scene= without touching ?tab=, deep links, browser back/forward).
-  useEffect(() => {
-    if (tabFromUrl !== activeTab) setActiveTab(tabFromUrl);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabFromUrl]);
+  const activeTab = tabFromUrl;
+  const setActiveTab = (tab: Tab) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('tab', tab);
+      return next;
+    });
+  };
   const [editingScript, setEditingScript] = useState<string | null>(null);
   const [scriptDirty, setScriptDirty] = useState(false);
   const [editingDialogScript, setEditingDialogScript] = useState<string | null>(null);
@@ -945,29 +932,20 @@ export function ScenePage(props: ScenePageProps = {}) {
             {scene.description}
           </p>
         </>
-      ) : scene.description ? (
-        <p
-          style={{
-            color: 'var(--fg-muted)',
-            margin: '0 0 20px',
-            fontSize: 13,
-            lineHeight: 1.5,
-            padding: '12px 14px',
-            background: 'var(--bg-elev)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-          }}
-          title="Scene description from ideation (click the pencil in the sidebar to edit)"
-        >
-          {scene.description}
-        </p>
       ) : null}
 
+      <div className="scene-workbench">
+        <section className="scene-workbench__preview" aria-label="Scene preview">
+          <ScenePreview projectId={projectId!} scene={scene} chunks={(narrationState?.chunks ?? []).map((c) => ({ index: c.index, durationSec: c.durationSec ?? null, hasAudio: c.hasAudio, gapSec: c.gapSec ?? 0 }))} />
+          {scene.description && <details className="scene-description"><summary>Scene description</summary><p>{scene.description}</p></details>}
+        </section>
+        <section className="scene-workbench__inspector" aria-label="Scene controls">
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>
         {TABS.map((tab) => (
           <button
             key={tab}
+            aria-pressed={activeTab === tab}
             onClick={() => setActiveTab(tab)}
             style={{
               padding: '10px 20px',
@@ -980,7 +958,7 @@ export function ScenePage(props: ScenePageProps = {}) {
               fontSize: 14,
             }}
           >
-            {tab}
+            {{ Recording: 'Source', Script: 'Script', Narration: 'Voice', 'Lower Thirds': 'Text', Preview: 'Overview' }[tab]}
           </button>
         ))}
       </div>
@@ -989,10 +967,11 @@ export function ScenePage(props: ScenePageProps = {}) {
       {activeTab === 'Recording' && (
         <div>
           {projectId && sceneId && <AgentRecordingStatus projectId={projectId} sceneId={sceneId} />}
-          <div className="agent-recording-entry">
+          {!scene.presentation_source && scene.type !== 'slide' && <div className="agent-recording-entry">
             <div><strong>Capture with Cap + Codex</strong><span>Review the scene, run a safe rehearsal, then confirm the exact take you want recorded.</span></div>
             <button type="button" className="btn--accent" disabled={scene.type === 'terminal' || uploadMutation.isPending} title={scene.type === 'terminal' ? 'Terminal scenes cannot use guided recording.' : uploadMutation.isPending ? 'Wait for the manual upload to finish.' : undefined} onClick={() => setAgentRecordingOpen(true)}><MonitorPlay size={15} />Set up recording</button>
           </div>
+          }
           {projectId && sceneId && <AgentRecordingDialog projectId={projectId} sceneId={sceneId} open={agentRecordingOpen} onClose={() => setAgentRecordingOpen(false)} onManualUpload={() => { if (!agentRecordingActive) { setAgentRecordingOpen(false); setShowReplaceUpload(true); } }} />}
           {/* Grounded re-analysis reuses or refreshes the shared timing brief;
               the route does not let a provider failure fall back to text. */}
@@ -1547,297 +1526,6 @@ export function ScenePage(props: ScenePageProps = {}) {
             }}
           />
 
-          {/* ── Input-mode radio ──
-              Two ways to get a script: describe the scene and let the AI
-              write it (the original flow), or paste your own and have the AI
-              evaluate + polish it. The choice swaps the primary input + button
-              below; the intent field stays visible in both (north star when
-              describing, optional context when polishing). */}
-          <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              marginBottom: 14,
-              flexWrap: 'wrap',
-            }}
-          >
-            {([
-              { key: 'describe', label: 'Describe the scene → AI writes it' },
-              { key: 'byo', label: "I'll write the script → AI polishes it" },
-            ] as const).map((opt) => {
-              const active = scriptInputMode === opt.key;
-              return (
-                <label
-                  key={opt.key}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 12px',
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    background: active ? 'var(--bg-elev)' : 'transparent',
-                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                    borderRadius: 8,
-                    color: active ? 'var(--fg)' : 'var(--fg-muted)',
-                  }}
-                >
-                  <input
-                    type="radio"
-                    name="script-input-mode"
-                    checked={active}
-                    onChange={() => setScriptInputMode(opt.key)}
-                  />
-                  <span>{opt.label}</span>
-                </label>
-              );
-            })}
-          </div>
-
-          {/* Scene intent — the user's "north star" for this scene. The
-              prompt treats it as authoritative; the video and source-docs
-              are framed as the visual anchor / factual reference for it.
-              Saved on blur so the value is captured even if the user
-              clicks Generate immediately. */}
-          <div
-            style={{
-              marginBottom: 14,
-              padding: 12,
-              background: 'var(--bg-elev)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-            }}
-          >
-            {/* Header row: label + FieldStatus pip aligned right. The pip
-                makes the autosave-on-blur semantics visible — was previously
-                a tiny "Saving…" word buried in helper text. */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: 6,
-              }}
-            >
-              <label
-                htmlFor="scene-intent"
-                style={{
-                  fontSize: 11,
-                  color: 'var(--fg-muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: 1,
-                }}
-              >
-                What is this scene demonstrating?
-              </label>
-              <FieldStatus
-                state={
-                  saveIntentMutation.isPending
-                    ? 'saving'
-                    : saveIntentMutation.isError
-                      ? 'error'
-                      : (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
-                        ? 'dirty'
-                        : saveIntentMutation.isSuccess
-                          ? 'saved'
-                          : 'idle'
-                }
-                detail={
-                  saveIntentMutation.error instanceof Error
-                    ? saveIntentMutation.error.message
-                    : undefined
-                }
-              />
-            </div>
-            <textarea
-              id="scene-intent"
-              value={intentDraft ?? ''}
-              onChange={(e) => setIntentDraft(e.target.value)}
-              onBlur={() => {
-                const next = (intentDraft ?? '').trim();
-                if (next !== (scene?.intent ?? '').trim()) {
-                  saveIntentMutation.mutate(next);
-                }
-              }}
-              placeholder={
-                "e.g. Show how RBAC limits Analyst users from seeing PII when querying the customers table, and how Viewer users get a further-restricted view."
-              }
-              rows={3}
-              disabled={saveIntentMutation.isPending}
-              style={{
-                width: '100%',
-                resize: 'vertical',
-                padding: '8px 10px',
-                fontSize: 13,
-                lineHeight: 1.5,
-                background: 'var(--bg)',
-                color: 'var(--fg)',
-                // Dirty state gets a warm border so the unsaved status is
-                // visible without having to read the pip.
-                border:
-                  (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
-                    ? '1px solid var(--warn)'
-                    : '1px solid var(--border)',
-                borderRadius: 6,
-                fontFamily: 'inherit',
-              }}
-            />
-            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
-              {scriptInputMode === 'byo'
-                ? 'Optional context for the polisher — it uses this to judge whether your script stays on-message. Your pasted script below is what actually gets polished.'
-                : 'The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.'}
-            </div>
-          </div>
-
-          {/* Hidden in BYO mode because grounding applies to generation, not
-              polishing. With a recording, this remains visible even when the
-              project's video route needs attention. */}
-          {scriptInputMode === 'describe' && grounding.visible && (
-            <GroundingOption
-              checked={groundInVideo}
-              onChange={setGroundInVideo}
-              presentation={grounding}
-              pending={generateScriptMutation.isPending}
-              detail="Uses the recording for visual and pacing evidence."
-              attribution={modelAttribution(videoRoute, writingRoute, 'script')}
-              freshness={briefFreshnessMessage(generateScriptMutation.data?.briefFreshness, videoRoute)}
-              preservedContent="script"
-            />
-          )}
-
-          {/* ── Describe mode: Generate/Regenerate top bar ──
-              Unified affordance — same shape and color whether this is a
-              first-time generate or a regenerate. Previously the button
-              flipped from filled accent ("✨ Generate Script") to muted
-              outline ("🔄 Regenerate") between states; users learn
-              affordances visually and that swap erased the visual
-              identity of the primary action. */}
-          {scriptInputMode === 'describe' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-            <button
-              onClick={async () => {
-                // Pre-flight: if either pane has unsaved edits, regenerating
-                // would silently overwrite them. Surface the cost.
-                const isFirstTime =
-                  !editingScript &&
-                  !scriptState?.script &&
-                  !narrationState?.monologueScript;
-                const dirtyPanes: string[] = [];
-                if (scriptDirty) dirtyPanes.push('Monologue');
-                if (dialogEditDirty) dirtyPanes.push('Dialog');
-
-                if (!isFirstTime && dirtyPanes.length > 0) {
-                  const ok = await ui.confirm({
-                    title: `Regenerate will overwrite ${dirtyPanes.join(' + ')}`,
-                    body: `Your unsaved edits in the ${dirtyPanes.join(' and ')} pane${dirtyPanes.length === 1 ? '' : 's'} will be lost. Continue?`,
-                    confirmLabel: 'Discard & regenerate',
-                    destructive: true,
-                  });
-                  if (!ok) return;
-                }
-                generateScriptMutation.mutate();
-              }}
-              disabled={
-                generateScriptMutation.isPending ||
-                (groundInVideo && grounding.visible && !grounding.ready)
-              }
-              className="primary"
-              style={{
-                padding: '8px 16px',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: generateScriptMutation.isPending
-                  ? 'wait'
-                  : groundInVideo && grounding.visible && !grounding.ready
-                    ? 'not-allowed'
-                    : 'pointer',
-                opacity: generateScriptMutation.isPending ||
-                  (groundInVideo && grounding.visible && !grounding.ready) ? 0.7 : 1,
-              }}
-            >
-              {generateScriptMutation.isPending ? (
-                'Generating…'
-              ) : !editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <Sparkles size={14} strokeWidth={1.8} aria-hidden />
-                  Generate script
-                </span>
-              ) : (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <RefreshCcw size={14} strokeWidth={1.8} aria-hidden />
-                  Regenerate
-                </span>
-              )}
-            </button>
-          </div>
-          )}
-
-          {/* ── BYO mode: paste box + Evaluate & polish ──
-              The user pastes their own draft; the button opens the
-              PolishScriptModal, which evaluates + polishes it side-by-side.
-              Disabled until there's non-whitespace text to work on. */}
-          {scriptInputMode === 'byo' && (
-            <div style={{ marginBottom: 16 }}>
-              <label
-                htmlFor="byo-script"
-                style={{
-                  display: 'block',
-                  fontSize: 11,
-                  color: 'var(--fg-muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: 1,
-                  marginBottom: 6,
-                }}
-              >
-                Paste your script
-              </label>
-              <textarea
-                id="byo-script"
-                value={draftScript}
-                onChange={(e) => setDraftScript(e.target.value)}
-                placeholder="Paste the narration you've written for this scene. The AI will evaluate it, polish pacing and clarity, and fit it to the recording length — then show you the result to accept or reject."
-                rows={8}
-                style={{
-                  width: '100%',
-                  resize: 'vertical',
-                  padding: '10px 12px',
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                  background: 'var(--bg)',
-                  color: 'var(--fg)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  fontFamily: 'inherit',
-                }}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                <button
-                  onClick={() => setPolishOpen(true)}
-                  disabled={!draftScript.trim()}
-                  className="primary"
-                  style={{
-                    padding: '8px 16px',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: draftScript.trim() ? 'pointer' : 'not-allowed',
-                    opacity: draftScript.trim() ? 1 : 0.5,
-                  }}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <Sparkles size={14} strokeWidth={1.8} aria-hidden />
-                    Evaluate &amp; polish
-                  </span>
-                </button>
-                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-                  {draftScript.trim()
-                    ? 'Opens a side-by-side review — nothing is saved until you accept.'
-                    : 'Paste a script to enable.'}
-                </span>
-              </div>
-            </div>
-          )}
-
           {/* Error displays */}
           {generateScriptMutation.isError && (
             <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }} role="alert">
@@ -2264,6 +1952,300 @@ export function ScenePage(props: ScenePageProps = {}) {
               </p>
             </div>
           )}
+          <details className="script-generation-options" open={!(editingScript || narrationState?.monologueScript || scriptState?.script) || undefined}>
+            <summary>Generate or polish a script</summary>
+          {/* ── Input-mode radio ──
+              Two ways to get a script: describe the scene and let the AI
+              write it (the original flow), or paste your own and have the AI
+              evaluate + polish it. The choice swaps the primary input + button
+              below; the intent field stays visible in both (north star when
+              describing, optional context when polishing). */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              marginBottom: 14,
+              flexWrap: 'wrap',
+            }}
+          >
+            {([
+              { key: 'describe', label: 'Describe the scene → AI writes it' },
+              { key: 'byo', label: "I'll write the script → AI polishes it" },
+            ] as const).map((opt) => {
+              const active = scriptInputMode === opt.key;
+              return (
+                <label
+                  key={opt.key}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 12px',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    background: active ? 'var(--bg-elev)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 8,
+                    color: active ? 'var(--fg)' : 'var(--fg-muted)',
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="script-input-mode"
+                    checked={active}
+                    onChange={() => setScriptInputMode(opt.key)}
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {/* Scene intent — the user's "north star" for this scene. The
+              prompt treats it as authoritative; the video and source-docs
+              are framed as the visual anchor / factual reference for it.
+              Saved on blur so the value is captured even if the user
+              clicks Generate immediately. */}
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 12,
+              background: 'var(--bg-elev)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+            }}
+          >
+            {/* Header row: label + FieldStatus pip aligned right. The pip
+                makes the autosave-on-blur semantics visible — was previously
+                a tiny "Saving…" word buried in helper text. */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 6,
+              }}
+            >
+              <label
+                htmlFor="scene-intent"
+                style={{
+                  fontSize: 11,
+                  color: 'var(--fg-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                }}
+              >
+                What is this scene demonstrating?
+              </label>
+              <FieldStatus
+                state={
+                  saveIntentMutation.isPending
+                    ? 'saving'
+                    : saveIntentMutation.isError
+                      ? 'error'
+                      : (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
+                        ? 'dirty'
+                        : saveIntentMutation.isSuccess
+                          ? 'saved'
+                          : 'idle'
+                }
+                detail={
+                  saveIntentMutation.error instanceof Error
+                    ? saveIntentMutation.error.message
+                    : undefined
+                }
+              />
+            </div>
+            <textarea
+              id="scene-intent"
+              value={intentDraft ?? ''}
+              onChange={(e) => setIntentDraft(e.target.value)}
+              onBlur={() => {
+                const next = (intentDraft ?? '').trim();
+                if (next !== (scene?.intent ?? '').trim()) {
+                  saveIntentMutation.mutate(next);
+                }
+              }}
+              placeholder={
+                "e.g. Show how RBAC limits Analyst users from seeing PII when querying the customers table, and how Viewer users get a further-restricted view."
+              }
+              rows={3}
+              disabled={saveIntentMutation.isPending}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                padding: '8px 10px',
+                fontSize: 13,
+                lineHeight: 1.5,
+                background: 'var(--bg)',
+                color: 'var(--fg)',
+                // Dirty state gets a warm border so the unsaved status is
+                // visible without having to read the pip.
+                border:
+                  (intentDraft ?? '').trim() !== (scene?.intent ?? '').trim()
+                    ? '1px solid var(--warn)'
+                    : '1px solid var(--border)',
+                borderRadius: 6,
+                fontFamily: 'inherit',
+              }}
+            />
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-muted)', lineHeight: 1.4 }}>
+              {scriptInputMode === 'byo'
+                ? 'Optional context for the polisher — it uses this to judge whether your script stays on-message. Your pasted script below is what actually gets polished.'
+                : 'The script generator treats this as the north star. Project objective + source-docs are the factual reference; the video (when grounded) is the visual / pacing anchor for what you describe here. Leave blank to fall back to the auto-generated description.'}
+            </div>
+          </div>
+
+          {/* Hidden in BYO mode because grounding applies to generation, not
+              polishing. With a recording, this remains visible even when the
+              project's video route needs attention. */}
+          {scriptInputMode === 'describe' && grounding.visible && (
+            <GroundingOption
+              checked={groundInVideo}
+              onChange={setGroundInVideo}
+              presentation={grounding}
+              pending={generateScriptMutation.isPending}
+              detail="Uses the recording for visual and pacing evidence."
+              attribution={modelAttribution(videoRoute, writingRoute, 'script')}
+              freshness={briefFreshnessMessage(generateScriptMutation.data?.briefFreshness, videoRoute)}
+              preservedContent="script"
+            />
+          )}
+
+          {/* ── Describe mode: Generate/Regenerate top bar ──
+              Unified affordance — same shape and color whether this is a
+              first-time generate or a regenerate. Previously the button
+              flipped from filled accent ("✨ Generate Script") to muted
+              outline ("🔄 Regenerate") between states; users learn
+              affordances visually and that swap erased the visual
+              identity of the primary action. */}
+          {scriptInputMode === 'describe' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <button
+              onClick={async () => {
+                // Pre-flight: if either pane has unsaved edits, regenerating
+                // would silently overwrite them. Surface the cost.
+                const isFirstTime =
+                  !editingScript &&
+                  !scriptState?.script &&
+                  !narrationState?.monologueScript;
+                const dirtyPanes: string[] = [];
+                if (scriptDirty) dirtyPanes.push('Monologue');
+                if (dialogEditDirty) dirtyPanes.push('Dialog');
+
+                if (!isFirstTime && dirtyPanes.length > 0) {
+                  const ok = await ui.confirm({
+                    title: `Regenerate will overwrite ${dirtyPanes.join(' + ')}`,
+                    body: `Your unsaved edits in the ${dirtyPanes.join(' and ')} pane${dirtyPanes.length === 1 ? '' : 's'} will be lost. Continue?`,
+                    confirmLabel: 'Discard & regenerate',
+                    destructive: true,
+                  });
+                  if (!ok) return;
+                }
+                generateScriptMutation.mutate();
+              }}
+              disabled={
+                generateScriptMutation.isPending ||
+                (groundInVideo && grounding.visible && !grounding.ready)
+              }
+              className="primary"
+              style={{
+                padding: '8px 16px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: generateScriptMutation.isPending
+                  ? 'wait'
+                  : groundInVideo && grounding.visible && !grounding.ready
+                    ? 'not-allowed'
+                    : 'pointer',
+                opacity: generateScriptMutation.isPending ||
+                  (groundInVideo && grounding.visible && !grounding.ready) ? 0.7 : 1,
+              }}
+            >
+              {generateScriptMutation.isPending ? (
+                'Generating…'
+              ) : !editingScript && !scriptState?.script && !narrationState?.monologueScript ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Sparkles size={14} strokeWidth={1.8} aria-hidden />
+                  Generate script
+                </span>
+              ) : (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <RefreshCcw size={14} strokeWidth={1.8} aria-hidden />
+                  Regenerate
+                </span>
+              )}
+            </button>
+          </div>
+          )}
+
+          {/* ── BYO mode: paste box + Evaluate & polish ──
+              The user pastes their own draft; the button opens the
+              PolishScriptModal, which evaluates + polishes it side-by-side.
+              Disabled until there's non-whitespace text to work on. */}
+          {scriptInputMode === 'byo' && (
+            <div style={{ marginBottom: 16 }}>
+              <label
+                htmlFor="byo-script"
+                style={{
+                  display: 'block',
+                  fontSize: 11,
+                  color: 'var(--fg-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                  marginBottom: 6,
+                }}
+              >
+                Paste your script
+              </label>
+              <textarea
+                id="byo-script"
+                value={draftScript}
+                onChange={(e) => setDraftScript(e.target.value)}
+                placeholder="Paste the narration you've written for this scene. The AI will evaluate it, polish pacing and clarity, and fit it to the recording length — then show you the result to accept or reject."
+                rows={8}
+                style={{
+                  width: '100%',
+                  resize: 'vertical',
+                  padding: '10px 12px',
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  background: 'var(--bg)',
+                  color: 'var(--fg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  fontFamily: 'inherit',
+                }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                <button
+                  onClick={() => setPolishOpen(true)}
+                  disabled={!draftScript.trim()}
+                  className="primary"
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: draftScript.trim() ? 'pointer' : 'not-allowed',
+                    opacity: draftScript.trim() ? 1 : 0.5,
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Sparkles size={14} strokeWidth={1.8} aria-hidden />
+                    Evaluate &amp; polish
+                  </span>
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  {draftScript.trim()
+                    ? 'Opens a side-by-side review — nothing is saved until you accept.'
+                    : 'Paste a script to enable.'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          </details>
         </div>
       )}
 
@@ -2391,40 +2373,9 @@ export function ScenePage(props: ScenePageProps = {}) {
                     marginBottom: 16,
                   }}
                 >
-                  {/* Saved profiles row */}
-                  {voiceProfiles && voiceProfiles.length > 0 && (
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-                      {voiceProfiles.map((p: VoiceProfileInfo) => {
-                        const isActive =
-                          selectedEngine === p.engine &&
-                          selectedVoice === p.voice &&
-                          Math.abs(selectedSpeed - p.speed) < 0.05;
-                        return (
-                          <button
-                            key={p.id}
-                            onClick={() => {
-                              setSelectedEngine(p.engine);
-                              setSelectedVoice(p.voice);
-                              setSelectedSpeed(p.speed);
-                            }}
-                            style={{
-                              padding: '5px 12px',
-                              borderRadius: 6,
-                              border: isActive ? '2px solid var(--accent)' : '1px solid var(--border)',
-                              background: isActive ? 'var(--accent)15' : 'transparent',
-                              color: isActive ? 'var(--accent)' : 'var(--fg-muted)',
-                              cursor: 'pointer',
-                              fontSize: 12,
-                              fontWeight: isActive ? 600 : 400,
-                            }}
-                          >
-                            {p.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
+                  <VoicePresetPicker profiles={voiceProfiles ?? []} engines={engines ?? []} engine={selectedEngine} voice={selectedVoice} speed={selectedSpeed} disabled={!!generateAllProgress || generatingChunks.size > 0} onChange={preset => { setSelectedEngine(preset.engine); setSelectedVoice(preset.voice); setSelectedSpeed(preset.speed); }} />
+                  <p className="hint">{narrationState?.tts ? `Saved scene voice: ${narrationState.tts.voice} (${narrationState.tts.engine}).` : 'This scene has no saved voice override.'} Changes take effect when you generate audio. Existing paragraphs remain playable until replaced.</p>
+                  <details><summary>Advanced voice settings</summary>
                   {/* Engine / Voice / Speed row */}
                   <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
                     <div style={{ flex: '1 1 140px', minWidth: 120 }}>
@@ -2505,6 +2456,10 @@ export function ScenePage(props: ScenePageProps = {}) {
                         ))}
                       </div>
                     </div>
+
+                  </div>
+
+                  </details>
                     <button
                       onClick={() => generateAllChunks('all')}
                       disabled={!!generateAllProgress || generatingChunks.size > 0}
@@ -2525,8 +2480,6 @@ export function ScenePage(props: ScenePageProps = {}) {
                         ? `Generating ${generateAllProgress.done}/${generateAllProgress.total}...`
                         : 'Generate All'}
                     </button>
-                  </div>
-
                   {/* Emotiveness changed since the audio was generated — the
                       current chunks were spoken at the previously-saved level,
                       so regenerate to hear the new one. */}
@@ -2549,6 +2502,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       selected engine. Replaces the old misleading legend that
                       listed vestigial [warm]/[confident] tags (stripped, no
                       effect). Now engine-driven from currentEngine.expressiveTags. */}
+                  <details><summary>Expression and script tags</summary>
                   {currentEngine && (() => {
                     const hasTags = currentEngine.expressiveTags.length > 0;
                     const chip = { background: 'var(--bg)', padding: '1px 5px', borderRadius: 3, marginRight: 4, fontSize: 10 } as const;
@@ -2580,6 +2534,7 @@ export function ScenePage(props: ScenePageProps = {}) {
                       </div>
                     );
                   })()}
+                  </details>
                 </div>
               )}
 
@@ -3123,7 +3078,7 @@ export function ScenePage(props: ScenePageProps = {}) {
             {scene?.recording && !ltDirty && editingLTs && editingLTs.length > 0 && (
               <button
                 onClick={() => overlayRenderMutation.mutate()}
-                disabled={overlayRenderMutation.isPending}
+                disabled={overlayRenderMutation.isPending || overlayCapabilities.blocked}
                 style={{
                   padding: '8px 16px',
                   background: overlayRenderMutation.isPending ? 'var(--surface)' : STATUS_COLOR.success,
@@ -3141,6 +3096,7 @@ export function ScenePage(props: ScenePageProps = {}) {
             )}
           </div>
 
+          <RenderCapabilities state={overlayCapabilities} />
           {/* Overlay render result */}
           {overlayRenderMutation.isSuccess && (
             <p style={{ color: STATUS_COLOR.success, fontSize: 12, marginBottom: 12 }}>
@@ -3490,20 +3446,19 @@ export function ScenePage(props: ScenePageProps = {}) {
         </div>
       )}
 
-      {activeTab === 'Preview' && projectId && scene && (
-        <>
-          <ScenePreview
-            projectId={projectId}
-            scene={scene}
-            chunks={(narrationState?.chunks ?? []).map((c) => ({
-              index: c.index,
-              durationSec: c.durationSec ?? null,
-              hasAudio: c.hasAudio,
-            }))}
-          />
-          <SceneRenderSection projectId={projectId} sceneId={scene.id} />
-        </>
+      {activeTab === 'Preview' && projectId && (
+        <div className="scene-inspector-overview">
+          <h3>Direct this scene</h3>
+          <p>Preview the scene, then choose what to adjust.</p>
+          <button type="button" onClick={() => setActiveTab('Script')}>Edit script</button>
+          <button type="button" onClick={() => setActiveTab('Narration')}>Choose voice</button>
+          <button type="button" onClick={() => setActiveTab('Lower Thirds')}>Edit on-screen text</button>
+          <button type="button" onClick={() => setActiveTab('Recording')}>{scene.presentation_source ? 'Slide source and framing' : 'Recording and framing'}</button>
+          <details><summary>Export this scene</summary><SceneRenderSection projectId={projectId} sceneId={scene.id} /></details>
+        </div>
       )}
+        </section>
+      </div>
 
       {tightenOpen && projectId && sceneId && (
         <TightenScriptModal

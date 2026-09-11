@@ -15,7 +15,7 @@ export function VoicesList() {
     <main className="page">
       <header style={{ marginBottom: 32, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
         <div>
-          <h1 style={{ margin: 0 }}>Voice Clones</h1>
+          <h1 style={{ margin: 0 }}>Voices</h1>
           <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: '4px 0 0' }}>
             Reference recordings that clone your voice for TTS narration. Use them via Qwen3-TTS (local) or xAI (uploaded as a custom voice).
           </p>
@@ -91,7 +91,7 @@ function VoiceCard({ voice }: { voice: VoiceClone }) {
       )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <Badge tone={voice.hasAudio ? 'good' : 'muted'}>
-          {voice.hasAudio ? 'Local' : 'No audio'}
+          {voice.hasAudio ? 'Local recording' : xai ? 'Remote voice' : 'No recording'}
         </Badge>
         {xai ? (
           <Badge tone="accent" title={`xAI voice_id: ${xai.voice_id}${xai.imported ? ' (imported)' : ''}`}>

@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { setupApi, type SetupProbe } from '../lib/api.js';
 
@@ -40,75 +39,23 @@ export function SetupHealth() {
       </div>
 
       {healthQuery.isLoading && <p className="hint">Probing…</p>}
-      {healthQuery.error && (
-        <p style={{ color: 'var(--danger)' }}>Failed to load setup health.</p>
+      {(healthQuery.error || refreshMutation.error) && (
+        <p style={{ color: 'var(--danger)' }}>Could not check setup. Use Re-check to retry.</p>
       )}
 
-      {data && <ProbeList probes={data.probes} allOk={data.allOk} />}
+      {data && <ProbeList probes={data.probes} />}
     </main>
   );
 }
 
-/**
- * When every probe is OK, the wall of green bands feels noisy — the user
- * just wants confirmation that nothing is wrong. Collapse the list behind
- * an affirmative "Everything's ready" tile that can be expanded if the
- * user wants the details. When ANY probe is warn/fail, render the full
- * list expanded so problems stay loud.
- */
-function ProbeList({ probes, allOk }: { probes: SetupProbe[]; allOk: boolean }) {
-  const [expanded, setExpanded] = useState(!allOk);
-  if (allOk) {
-    return (
-      <div
-        style={{
-          background: 'rgba(94, 138, 58, 0.06)',
-          border: '1px solid rgba(94, 138, 58, 0.4)',
-          borderRadius: 8,
-          padding: 16,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span
-            aria-hidden
-            style={{ width: 14, height: 14, borderRadius: '50%', background: '#9bc572', flexShrink: 0 }}
-          />
-          <div style={{ flex: 1 }}>
-            <strong style={{ fontSize: 15 }}>Everything's ready</strong>
-            <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '4px 0 0' }}>
-              All {probes.length} dependency checks passed — ffmpeg, drawtext, ffprobe, LLM connectivity,
-              TTS providers, and your workspace paths are good to go.
-            </p>
-          </div>
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              color: 'var(--fg-muted)',
-              fontSize: 12,
-              padding: '4px 10px',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            {expanded ? 'Hide details' : 'Show details'}
-          </button>
-        </div>
-        {expanded && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-            {probes.map((p) => <ProbeRow key={p.id} probe={p} />)}
-          </div>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {probes.map((p) => <ProbeRow key={p.id} probe={p} />)}
-    </div>
-  );
+function ProbeList({ probes }: { probes: SetupProbe[] }) {
+  const problems = probes.filter(p => p.status !== 'ok').sort((a, b) => Number(b.status === 'fail') - Number(a.status === 'fail'));
+  const healthy = probes.filter(p => p.status === 'ok');
+  return <div style={{ display: 'grid', gap: 8 }}>
+    {problems.length ? <h2>Needs attention</h2> : <p role="status">Everything's ready — all dependency checks passed.</p>}
+    {problems.map(p => <ProbeRow key={p.id} probe={p} />)}
+    <details><summary>Healthy checks ({healthy.length})</summary>{healthy.map(p => <ProbeRow key={p.id} probe={p} />)}</details>
+  </div>;
 }
 
 function Summary({ health }: { health: { probes: SetupProbe[]; allOk: boolean; allClean: boolean } }) {

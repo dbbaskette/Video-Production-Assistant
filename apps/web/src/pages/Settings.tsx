@@ -473,7 +473,7 @@ function VoiceProfileCard({
       </div>
       <button
         onClick={onDelete}
-        title="Remove this voice profile"
+        title="Remove this voice preset"
         style={{
           padding: '6px 10px',
           borderRadius: 6,
@@ -919,7 +919,7 @@ export function Settings() {
         )}
       </section>
 
-      {/* TTS section — voice profiles, plus a clear pointer to the
+      {/* TTS section — voice presets, plus a clear pointer to the
           separate /voices library. Previously this surface had two
           sections ("TTS Voice Profiles" + "Voice Cloning") with cross
           links and overlapping vocabulary. Now it's one section that
@@ -930,23 +930,23 @@ export function Settings() {
           <span className="section-label">Text-to-Speech</span>
         </div>
         <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 8px', lineHeight: 1.5 }}>
-          A <strong style={{ color: 'var(--fg)' }}>voice profile</strong> is a saved preset
+          A <strong style={{ color: 'var(--fg)' }}>voice preset</strong> is a saved preset
           (engine + voice + speed) you pick when generating narration for a scene.
         </p>
         <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '0 0 18px', lineHeight: 1.5 }}>
-          Looking for <strong style={{ color: 'var(--fg)' }}>voice cloning</strong>? That's a
-          separate library of your own cloned voices —{' '}
+          Looking for <strong style={{ color: 'var(--fg)' }}>voice recordings and previews</strong>? Open the
+          library of local recordings and remote voices —{' '}
           <a href="/voices" style={{ color: 'var(--accent)', textDecoration: 'none' }}>open Voices →</a>
         </p>
 
-        {voicesLoading && <p className="hint">Loading voice profiles…</p>}
-        {voicesError && <p style={{ color: 'var(--danger)' }}>Failed to load voice profiles.</p>}
+        {voicesLoading && <p className="hint">Loading voice presets…</p>}
+        {voicesError && <p style={{ color: 'var(--danger)' }}>Failed to load voice presets.</p>}
 
         {voices && (
           <>
             {voices.length === 0 && (
               <div className="empty-state">
-                No voice profiles yet. Add one below to use for narration.
+                No voice presets yet. Add one below to use for narration.
               </div>
             )}
             {voices.map((v) => (
@@ -956,7 +956,7 @@ export function Settings() {
                 engineName={engineNameMap.get(v.engine) ?? v.engine}
                 onDelete={async () => {
                   const ok = await ui.confirm({
-                    title: 'Delete voice profile?',
+                    title: 'Delete voice preset?',
                     body: `"${v.name}" (${v.engine} / ${v.voice}) will be removed. Scenes already configured with this profile will keep their settings, but you'll need to recreate it to use it again.`,
                     confirmLabel: 'Delete',
                     destructive: true,

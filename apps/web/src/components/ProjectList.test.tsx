@@ -87,7 +87,7 @@ describe('ProjectList', () => {
     await waitForUi(() => expect(view.container.textContent).toContain('Missing'));
 
     expect(view.container.querySelector('[aria-label="Open Missing"]')).toBeNull();
-    act(() => buttonByText(view.container, 'Open folder…').click());
+    act(() => buttonByText(view.container, 'Open existing project…').click());
     expect(onOpenFolder).toHaveBeenCalledOnce();
     view.unmount();
   });

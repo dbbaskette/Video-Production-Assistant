@@ -105,7 +105,7 @@ function targetLabel(value: unknown, label: string): string {
 
 function targetDimension(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error(`Cap ${label} was invalid`);
+    throw new Error(`Cap ${label} was invalid. Target discovery failed; this is not the output resolution. Reopen the target window and retry the Cap check, or upload manually.`);
   }
   return value;
 }
@@ -272,8 +272,8 @@ export class ManagedCapRuntime implements CapRuntime {
         kind: 'screen',
         id: targetId(screen.id, 'screen target ID'),
         name: targetLabel(screen.name, 'screen target name'),
-        width: targetDimension(screen.width, 'screen target width'),
-        height: targetDimension(screen.height, 'screen target height'),
+        width: targetDimension(screen.width ?? record(screen.physicalSize ?? {}, 'Cap screen size').width, 'screen target width'),
+        height: targetDimension(screen.height ?? record(screen.physicalSize ?? {}, 'Cap screen size').height, 'screen target height'),
       });
     }
     for (const item of requiredArray(value.windows, 'windows')) {
@@ -281,10 +281,10 @@ export class ManagedCapRuntime implements CapRuntime {
       targets.push({
         kind: 'window',
         id: targetId(window.id, 'window target ID'),
-        name: targetLabel(window.title, 'window target title'),
+        name: targetLabel(window.title ?? window.name, 'window target title'),
         application: targetLabel(window.ownerName, 'window target application'),
-        width: targetDimension(window.width, 'window target width'),
-        height: targetDimension(window.height, 'window target height'),
+        width: targetDimension(window.width ?? record(window.bounds ?? {}, 'Cap window bounds').width, 'window target width'),
+        height: targetDimension(window.height ?? record(window.bounds ?? {}, 'Cap window bounds').height, 'window target height'),
       });
     }
     return targets;

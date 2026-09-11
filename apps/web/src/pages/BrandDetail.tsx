@@ -633,7 +633,7 @@ export default function BrandDetail() {
         <p style={{ color: 'var(--danger)' }}>
           {error instanceof Error ? error.message : 'Brand not found'}
         </p>
-        <button onClick={() => navigate('/')}>Back to dashboard</button>
+        <button onClick={() => navigate('/brands')}>All Brands</button>
       </main>
     );
   }
@@ -652,7 +652,7 @@ export default function BrandDetail() {
   return (
     <main className="brand-detail">
       {/* Breadcrumb */}
-      <Link to="/" className="brand-detail__breadcrumb">
+      <Link to="/brands" className="brand-detail__breadcrumb">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="15 18 9 12 15 6" />
         </svg>

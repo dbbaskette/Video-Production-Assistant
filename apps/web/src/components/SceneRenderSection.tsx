@@ -1,3 +1,4 @@
+import { RenderCapabilities, useRenderCapabilities } from './RenderCapabilities.js';
 /**
  * Per-scene render section — sits at the bottom of the Preview tab. Lets
  * the user produce three grab-and-go files for one scene:
@@ -49,6 +50,7 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
 
   // Resolve this scene's frame settings.
   const scene = storyboardQuery.data?.scenes.find((s) => s.id === sceneId);
+  const capabilities = useRenderCapabilities(Boolean(scene?.lower_thirds?.length));
   const hasOverride =
     scene?.frame_style != null || scene?.frame_background != null;
 
@@ -110,7 +112,7 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
           <select
             value={audioMode}
             onChange={(e) => setAudioMode(e.target.value as 'replace' | 'mix')}
-            disabled={renderMutation.isPending}
+            disabled={renderMutation.isPending || capabilities.blocked}
             style={{
               padding: '4px 8px',
               background: 'var(--bg)',
@@ -244,13 +246,14 @@ export function SceneRenderSection({ projectId, sceneId }: Props) {
         </p>
       )}
 
+      <RenderCapabilities state={capabilities} />
       {/* Visual distinction from the project-level "Render Finished Video"
           button: this one is a secondary outlined button labelled "Render
           this scene" so the user can tell at a glance they're acting on a
           single scene, not the whole project. */}
       <button
         onClick={() => renderMutation.mutate()}
-        disabled={renderMutation.isPending}
+        disabled={renderMutation.isPending || capabilities.blocked}
         style={{
           padding: '7px 16px',
           fontSize: 13,

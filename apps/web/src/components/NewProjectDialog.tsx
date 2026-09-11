@@ -433,7 +433,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
           )}
         </div>
 
-        <div className="dialog__field">
+        <details className="project-directory-options"><summary>Project folder (optional)</summary><div className="dialog__field">
           <label className="dialog__label">Parent directory (optional)</label>
           <input
             value={parentDir}
@@ -441,7 +441,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
             placeholder={placeholderRoot}
             style={{ width: '100%' }}
           />
-        </div>
+        </div></details>
 
         <div className="dialog__field">
           <label className="dialog__label">Objective (optional)</label>
@@ -584,7 +584,7 @@ export function NewProjectDialog({ open, onClose, onCreated, mode = 'ideate' }: 
             className="primary"
             disabled={!canCreate || busy}
             onClick={() => runCreate()}
-            title={!canCreate ? 'Enter a project name and choose a valid PDF' : undefined}
+            title={!nameValid ? 'Enter a project name' : mode === 'presentation' && !canCreate ? 'Choose a valid PDF and wait for its preview' : undefined}
           >
             {busy
               ? createdPresentationProjectId ? 'Uploading…' : 'Creating…'

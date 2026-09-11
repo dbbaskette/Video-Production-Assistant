@@ -52,7 +52,7 @@ export function NavBar() {
           className={`navbar__link${location.pathname.startsWith('/voices') ? ' navbar__link--active' : ''}`}
           title="Voice clones — reference recordings used by TTS providers"
         >
-          Voice Clones
+          Voices
         </Link>
         <Link
           to="/setup"

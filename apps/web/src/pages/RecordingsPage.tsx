@@ -571,7 +571,7 @@ function SceneList({ scenes, projectId }: { scenes: Scene[]; projectId: string }
               </Link>
             ) : (
               <Link
-                to={`/project/${projectId}/scene/${scene.id}`}
+                to={`/project/${projectId}/scene/${scene.id}?tab=Recording`}
                 className="primary"
                 style={{
                   fontSize: 12,
