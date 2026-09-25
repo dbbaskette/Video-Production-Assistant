@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 export const BULK_UPLOAD_STAGING_PREFIX = 'vpa-recording-upload-';
-export const BULK_UPLOAD_MAX_FILES = 10;
-export const BULK_UPLOAD_MAX_FILE_BYTES = 500 * 1024 * 1024;
+export const BULK_UPLOAD_MAX_FILES = 100;
+export const BULK_UPLOAD_MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 
 export class StagedUploadError extends Error {
   constructor(

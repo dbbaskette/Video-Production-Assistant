@@ -20,6 +20,42 @@ describe('agent recording server lifecycle', () => {
     await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
   });
 
+  it('rejects non-loopback binding and untrusted Host/Origin values', async () => {
+    const vpaHome = await mkdtemp(join(tmpdir(), 'vpa-server-security-home-'));
+    const projectsDefault = await mkdtemp(join(tmpdir(), 'vpa-server-security-projects-'));
+    cleanup.push(vpaHome, projectsDefault);
+    const base: ServerConfig = {
+      port: 3000,
+      host: '127.0.0.1',
+      vpaHome,
+      projectsDefault,
+      webOrigin: 'http://localhost:5173',
+      llm: { provider: 'fake' },
+      presentation: { maxBytes: 1024, maxPages: 10 },
+    };
+    await expect(buildServer({ config: { ...base, host: '0.0.0.0' }, logger: false })).rejects.toThrow('loopback');
+
+    const coordinator = {
+      rehearse: vi.fn(), confirmAndRecord: vi.fn(), cancel: vi.fn(), recoverAttachment: vi.fn(),
+      reconcile: vi.fn(async () => undefined),
+    } as unknown as AgentRecordingCoordinator;
+    const built = await buildServer({ config: base, agentRecordingCoordinator: coordinator, logger: false });
+    try {
+      const badHost = await built.app.inject({ method: 'GET', url: '/health', headers: { host: 'evil.example' } });
+      expect(badHost.statusCode).toBe(403);
+      expect(badHost.json().code).toBe('untrusted_host');
+      const badOrigin = await built.app.inject({
+        method: 'POST',
+        url: '/api/projects/prune',
+        headers: { origin: 'https://evil.example' },
+      });
+      expect(badOrigin.statusCode).toBe(403);
+      expect(badOrigin.json().code).toBe('untrusted_origin');
+    } finally {
+      await built.app.close();
+    }
+  });
+
   it('uses one coordinator for reconciliation and routes and keeps reconcile failure nonfatal', async () => {
     const vpaHome = await mkdtemp(join(tmpdir(), 'vpa-server-home-'));
     const projectsDefault = await mkdtemp(join(tmpdir(), 'vpa-server-projects-'));

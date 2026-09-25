@@ -9,6 +9,7 @@ import { prepareExpressiveText } from '../tts/expressiveness.js';
 import { stripTimedPauseTokens } from './pause-parser.js';
 import { loadStoryboard, mutateStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { generateSrt, generateVtt } from './subtitles.js';
+import { createHash } from 'node:crypto';
 
 export interface NarrationInput {
   projectPath: string;
@@ -99,13 +100,14 @@ export async function generateNarration(
   const narrationDir = join(projectPath, 'narration');
   await mkdir(narrationDir, { recursive: true });
 
-  const audioRelPath = `narration/${sceneId}.mp3`;
+  const audioDigest = createHash('sha256').update(ttsResult.audio).digest('hex');
+  const audioRelPath = `narration/${sceneId}-${audioDigest}.mp3`;
   const audioAbsPath = join(projectPath, audioRelPath);
   await writeFile(audioAbsPath, ttsResult.audio);
 
   // Generate subtitles from timings
-  let srtRelPath = `narration/${sceneId}.srt`;
-  let vttRelPath = `narration/${sceneId}.vtt`;
+  let srtRelPath = `narration/${sceneId}-${audioDigest}.srt`;
+  let vttRelPath = `narration/${sceneId}-${audioDigest}.vtt`;
 
   if (ttsResult.timings && ttsResult.timings.length > 0) {
     const srtContent = generateSrt(ttsResult.timings);
@@ -181,7 +183,8 @@ export async function generateChunkNarration(
   await mkdir(narrationDir, { recursive: true });
 
   const chunkTag = String(chunkIndex).padStart(2, '0');
-  const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}.mp3`;
+  const audioDigest = createHash('sha256').update(ttsResult.audio).digest('hex');
+  const audioRelPath = `narration/${sceneId}-chunk-${chunkTag}-${audioDigest}.mp3`;
 
   // Merge the result into a fresh storyboard snapshot after the potentially
   // long model/TTS call. This preserves script, speaker, ordering, and other

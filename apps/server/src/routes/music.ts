@@ -12,6 +12,8 @@ import {
   trackAudioExists,
 } from '../services/music/store.js';
 import { jobQueue } from '../lib/job-queue.js';
+import { freezeProjectJobInput } from '../services/jobs/frozen-input.js';
+import { createSubmittedJob, jobSubmissionFailure, readIdempotencyKey } from '../lib/job-submission.js';
 
 interface Deps {
   store: ProjectStore;
@@ -87,10 +89,21 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
       return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
     }
 
-    const job = jobQueue.create('music-generate', {
-      projectId: id,
-      label: `Music: ${model === 'pro' ? 'Lyria 3 Pro' : 'Lyria 3 Clip'}`,
-    });
+    const frozenInput = await freezeProjectJobInput(projectPath, { prompt, model });
+    let submission;
+    try {
+      submission = await createSubmittedJob('music-generate', {
+        projectId: id,
+        label: `Music: ${model === 'pro' ? 'Lyria 3 Pro' : 'Lyria 3 Clip'}`,
+        ...frozenInput,
+      }, readIdempotencyKey(req.headers));
+    } catch (error) {
+      const failure = jobSubmissionFailure(error);
+      if (failure) return reply.status(failure.status).send(failure.body);
+      throw error;
+    }
+    const { job } = submission;
+    if (submission.reused) return { jobId: job.id, status: job.status, reused: true };
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, model, prompt });
     jobQueue.emit(job.id, 'progress', {
@@ -109,7 +122,12 @@ export async function registerMusicRoutes(app: FastifyInstance, deps: Deps): Pro
           format: result.ext,
           lyrics: result.lyrics,
         });
-        jobQueue.complete(job.id, { track });
+        jobQueue.complete(job.id, { track }, [{
+          kind: 'audio',
+          path: `music/${track.id}.${track.format}`,
+          revision: job.meta?.inputRevision,
+          fingerprint: job.meta?.inputFingerprint,
+        }]);
       } catch (err) {
         if (err instanceof LyriaError) {
           jobQueue.fail(job.id, `${err.code}: ${err.message}`);

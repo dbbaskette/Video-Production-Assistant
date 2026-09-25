@@ -5,6 +5,9 @@ import { loadConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { projectsRoutes } from './routes/projects.js';
 import { registerJobRoutes } from './routes/jobs.js';
+import { jobQueue } from './lib/job-queue.js';
+import { registerAssetRoutes } from './routes/assets.js';
+import { registerCommandRoutes } from './routes/commands.js';
 import { registerBrandRoutes } from './routes/brands.js';
 import { registerStoryboardRoutes } from './routes/storyboard.js';
 import { registerIdeationRoutes } from './routes/ideation.js';
@@ -108,6 +111,9 @@ export interface BuildServerOptions {
 
 export async function buildServer(options: BuildServerOptions = {}) {
   const config = options.config ?? loadConfig();
+  if (!['127.0.0.1', '::1', 'localhost'].includes(config.host)) {
+    throw new Error('VPA_SERVER_HOST must be a loopback host.');
+  }
   const app = Fastify({ logger: options.logger ?? { level: 'info' } });
   const wsRoot = resolve(import.meta.dirname, '../../..');
 
@@ -116,16 +122,38 @@ export async function buildServer(options: BuildServerOptions = {}) {
     credentials: false,
   });
 
+  app.addHook('onRequest', async (request, reply) => {
+    const rawHost = (request.headers.host ?? '').toLowerCase();
+    const host = rawHost.startsWith('[')
+      ? rawHost.slice(1, rawHost.indexOf(']'))
+      : rawHost.split(':')[0] ?? '';
+    if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
+      return reply.status(403).send({ error: 'Untrusted request host.', code: 'untrusted_host' });
+    }
+    const isMutation = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
+    const origin = request.headers.origin;
+    if (isMutation && origin && origin !== config.webOrigin) {
+      return reply.status(403).send({ error: 'Untrusted request origin.', code: 'untrusted_origin' });
+    }
+  });
+
   await app.register(multipart, {
     limits: {
-      fileSize: 500 * 1024 * 1024, // 500 MB per file (video recordings)
-      files: 10,
+      fileSize: 2 * 1024 * 1024 * 1024,
+      files: 100,
     },
   });
 
   const store = new ProjectStore({
     vpaHome: config.vpaHome,
     projectsDefault: config.projectsDefault,
+  });
+  await jobQueue.configure({
+    filePath: join(config.vpaHome, 'jobs.json'),
+    warn: (message) => app.log.warn(message),
+  });
+  app.addHook('onClose', async () => {
+    await jobQueue.flush();
   });
   const presentationJobs = new PresentationJobStore({
     warn: (fields, message) => app.log.warn(fields, message),
@@ -245,6 +273,8 @@ export async function buildServer(options: BuildServerOptions = {}) {
     coordinator: modelRoutingCoordinator,
   }));
   await registerJobRoutes(app);
+  await app.register(async (instance) => registerCommandRoutes(instance, { store }));
+  await app.register(async (instance) => registerAssetRoutes(instance, { store }));
   await registerBrandRoutes(app, {
     paths: bPaths,
     registryFile: bPaths.registryFile,

@@ -534,7 +534,7 @@ describe('agent recording coordinator', () => {
       source_kind: 'cap-agent',
       capture_session_id: ready.id,
       captured_at: expect.any(String),
-      source: 'recordings/scene-01.mp4',
+      source: expect.stringMatching(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/),
     });
   });
 
@@ -777,7 +777,7 @@ describe('agent recording coordinator', () => {
     const result = await ctx.coordinator.recoverAttachment(ctx.project.id, 'scene-01', ready.id, {
       capturedAt: stored.capturedAt!, uploadedPath: stored.exportPath!,
     });
-    expect(result.relativePath).toBe('recordings/scene-01.mp4');
+    expect(result.relativePath).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
     expect((await readStoredAgentRecordingSession(ctx.project.path, ready.id)).state).toBe('completed');
   });
 

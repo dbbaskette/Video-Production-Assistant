@@ -175,7 +175,7 @@ export async function registerBrandRoutes(
     // Create job
     let job: ReturnType<typeof jobQueue.create>;
     try {
-      job = jobQueue.create('brand.extract');
+      job = await jobQueue.createDurable('brand.extract');
     } catch (error) {
       pendingSlugs.delete(slug);
       throw error;
@@ -242,7 +242,7 @@ export async function registerBrandRoutes(
         });
       }
 
-      const job = jobQueue.create('brand.generate');
+      const job = await jobQueue.createDurable('brand.generate');
 
       runBrandGenerateJob({
         jobId: job.id,
@@ -484,7 +484,7 @@ export async function registerBrandRoutes(
         });
       }
 
-      const job = jobQueue.create('brand.regenerate');
+      const job = await jobQueue.createDurable('brand.regenerate');
 
       (async () => {
         try {

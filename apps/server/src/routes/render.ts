@@ -8,6 +8,7 @@ import { renderFinalVideo, probeAudioParams, probeVideoSize, runFfmpeg, type Ren
 import { privateRenderDiagnostic, publicRenderFailure } from '../services/render/errors.js';
 import { buildTransitionClip } from '../services/render/transition-clip.js';
 import { jobQueue } from '../lib/job-queue.js';
+import { freezeProjectJobInput } from '../services/jobs/frozen-input.js';
 import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 import { readBrand } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
@@ -17,6 +18,8 @@ import { computeWorkflowStatus } from '../services/workflow-status/index.js';
 import { buildRenderFingerprint } from '../services/workflow-status/fingerprint.js';
 import { writeRenderManifest } from '../services/workflow-status/render-manifest.js';
 import { getQualityReview } from './quality-review.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
+import { createSubmittedJob, jobSubmissionFailure, readIdempotencyKey } from '../lib/job-submission.js';
 
 interface Deps {
   store: ProjectStore;
@@ -185,7 +188,21 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }
     }
 
-    const job = jobQueue.create('render', { projectId: id, label: 'Render final video' });
+    const frozenInput = await freezeProjectJobInput(projectPath, { ...body, musicScope });
+    let submission;
+    try {
+      submission = await createSubmittedJob('render', {
+        projectId: id,
+        label: 'Render final video',
+        ...frozenInput,
+      }, readIdempotencyKey(req.headers));
+    } catch (error) {
+      const failure = jobSubmissionFailure(error);
+      if (failure) return reply.status(failure.status).send(failure.body);
+      throw error;
+    }
+    const { job } = submission;
+    if (submission.reused) return { jobId: job.id, status: job.status, reused: true };
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, opts });
 
@@ -229,7 +246,12 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           outputPath: result.outputPath,
           durationSec: result.durationSec,
           sceneCount: result.scenePaths.length,
-        });
+        }, [{
+          kind: 'video',
+          path: 'renders/final.mp4',
+          revision: job.meta?.inputRevision,
+          fingerprint: job.meta?.inputFingerprint,
+        }]);
       } catch (err) {
         if (opts.isCancelled?.()) {
           jobQueue.finishCancelled(job.id, { projectId: id, cancelled: true });
@@ -369,8 +391,8 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     const cacheFile = join(cacheDir, `${sceneId}-to-${to.id}-${safeT}-${durationSec.toFixed(2)}s.mp4`);
 
     if (!existsSync(cacheFile)) {
-      const fromPath = join(projectPath, from.recording.source);
-      const toPath = join(projectPath, to.recording.source);
+      const fromPath = await resolveSafeProjectPath(projectPath, from.recording.source);
+      const toPath = await resolveSafeProjectPath(projectPath, to.recording.source);
       const [size, audio] = await Promise.all([
         probeVideoSize(fromPath),
         probeAudioParams(fromPath),
@@ -450,7 +472,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(404).send({ error: 'No recording for this scene', code: 'no_recording' });
     }
 
-    const recPath = join(projectPath, scene.recording.source);
+    const recPath = await resolveSafeProjectPath(projectPath, scene.recording.source);
     const cacheDir = join(projectPath, 'renders', '.thumbnails');
     await mkdir(cacheDir, { recursive: true });
     const cacheFile = join(cacheDir, `${sceneId}.jpg`);

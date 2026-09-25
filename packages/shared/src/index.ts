@@ -14,3 +14,5 @@ export * from './presentation.js';
 export * from './scene-duration.js';
 export * from './narration-chunks.js';
 export * from './pause-parser.js';
+export * from './asset.js';
+export * from './command.js';

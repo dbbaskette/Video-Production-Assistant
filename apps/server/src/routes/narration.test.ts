@@ -408,16 +408,16 @@ describe('narration routes', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.audioPath).toBe('narration/scene-01.mp3');
-    expect(body.srtPath).toBe('narration/scene-01.srt');
-    expect(body.vttPath).toBe('narration/scene-01.vtt');
+    expect(body.audioPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.mp3$/);
+    expect(body.srtPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.srt$/);
+    expect(body.vttPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.vtt$/);
     expect(body.durationSec).toBeGreaterThan(0);
     expect(body.timingCount).toBeGreaterThan(0);
 
     // Verify storyboard was updated
     const updated = await loadStoryboard(projectPath);
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
-    expect(scene?.narration?.audio).toBe('narration/scene-01.mp3');
+    expect(scene?.narration?.audio).toBe(body.audioPath);
     expect(scene?.narration?.tts?.engine).toBe('fake');
     expect(ctx.resolveText).not.toHaveBeenCalled();
   });

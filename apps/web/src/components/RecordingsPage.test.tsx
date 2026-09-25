@@ -2,7 +2,7 @@ import { act } from 'react';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Scene, Storyboard } from '@vpa/shared';
-import { recordingsApi, storyboardApi } from '../lib/api.js';
+import { assetsApi, recordingsApi, storyboardApi } from '../lib/api.js';
 import { chooseFile, flushPromises, renderComponent } from './component-test-utils.js';
 import { RecordingsPage } from '../pages/RecordingsPage.js';
 
@@ -26,6 +26,20 @@ function scene(id: string, name: string, recorded: boolean): Scene {
 const COMPLETE_STORYBOARD: Storyboard = {
   scenes: [scene('one', 'Intro', true), scene('two', 'Outro', true)],
 } as unknown as Storyboard;
+
+const IMPORTED_ASSET = {
+  id: `asset_${'a'.repeat(64)}`,
+  checksum: 'a'.repeat(64),
+  original_name: 'new.mp4',
+  source: `.vpa/assets/originals/${'a'.repeat(64)}.mp4`,
+  origin: 'source' as const,
+  media_kind: 'video' as const,
+  mime_type: 'video/mp4',
+  size_bytes: 3,
+  imported_at: '2026-09-25T12:00:00.000Z',
+  timing_origin_ms: 0,
+  preparation: { status: 'ready' as const, attempts: 1, updated_at: '2026-09-25T12:00:00.000Z' },
+};
 
 function renderPage() {
   return renderComponent(
@@ -58,17 +72,16 @@ async function waitForUi(assertion: () => void): Promise<void> {
   throw failure;
 }
 
-async function openUploadFormAndChooseFile(view: ReturnType<typeof renderComponent>) {
-  // Complete phase hides the upload form behind "upload all again".
+async function openSourceTrayAndChooseFile(view: ReturnType<typeof renderComponent>) {
   await waitForUi(() => {
     expect(
       [...view.container.querySelectorAll('button')].some(
-        (button) => button.textContent === 'upload all again',
+        (button) => button.textContent?.includes('Source tray'),
       ),
     ).toBe(true);
   });
   const toggle = [...view.container.querySelectorAll('button')]
-    .find((button) => button.textContent === 'upload all again')!;
+    .find((button) => button.textContent?.includes('Source tray'))!;
   act(() => toggle.click());
   await flushPromises();
   chooseFile(
@@ -78,54 +91,80 @@ async function openUploadFormAndChooseFile(view: ReturnType<typeof renderCompone
   await flushPromises();
 }
 
-describe('RecordingsPage bulk replace confirmation', () => {
+describe('RecordingsPage source mapping', () => {
   beforeEach(() => {
     vi.spyOn(storyboardApi, 'get').mockResolvedValue(COMPLETE_STORYBOARD);
-    vi.spyOn(recordingsApi, 'uploadBulk').mockResolvedValue({
-      results: [],
-      assignedCount: 2,
-      totalScenes: 2,
-    });
+    vi.spyOn(assetsApi, 'list').mockResolvedValue([IMPORTED_ASSET]);
+    vi.spyOn(assetsApi, 'currentRevision').mockResolvedValue(0);
+    vi.spyOn(assetsApi, 'import').mockResolvedValue([IMPORTED_ASSET]);
+    vi.spyOn(assetsApi, 'assign').mockResolvedValue({ revision: 1 });
+    vi.spyOn(assetsApi, 'retry').mockResolvedValue(IMPORTED_ASSET);
   });
   afterEach(() => {
     vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
 
-  it('asks for confirmation before overwriting every recording', async () => {
-    confirmMock.mockResolvedValue(true);
+  it('imports first and requires an explicit reviewed mapping action', async () => {
     const view = renderPage();
     await flushPromises();
-    await openUploadFormAndChooseFile(view);
+    await openSourceTrayAndChooseFile(view);
 
-    const replace = [...view.container.querySelectorAll('button')]
-      .find((button) => button.textContent === 'Replace recordings')!;
-    act(() => replace.click());
+    const importButton = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Import 1 source')!;
+    act(() => importButton.click());
     await flushPromises();
-
-    expect(confirmMock).toHaveBeenCalledOnce();
-    const arg = confirmMock.mock.calls[0]![0] as { destructive?: boolean; body?: string };
-    expect(arg.destructive).toBe(true);
-    expect(arg.body).toContain('overwrites');
-    const uploadBulk = vi.mocked(recordingsApi.uploadBulk);
-    expect(uploadBulk).toHaveBeenCalledOnce();
-    expect(uploadBulk.mock.calls[0]![1]![0]!.name).toBe('new.mp4');
+    expect(assetsApi.import).toHaveBeenCalledOnce();
+    expect(assetsApi.assign).not.toHaveBeenCalled();
+    const assign = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent?.startsWith('Assign 1 source'))!;
+    act(() => assign.click());
+    await flushPromises();
+    expect(assetsApi.assign).toHaveBeenCalledWith(
+      'p1',
+      0,
+      [{ assetId: `asset_${'a'.repeat(64)}`, sceneId: 'one', role: 'screen', timingOriginMs: 0 }],
+    );
     view.unmount();
   });
 
-  it('does not touch existing recordings when the user cancels the dialog', async () => {
-    confirmMock.mockResolvedValue(false);
+  it('does not replace recordings merely by importing sources', async () => {
     const view = renderPage();
     await flushPromises();
-    await openUploadFormAndChooseFile(view);
+    await openSourceTrayAndChooseFile(view);
 
-    const replace = [...view.container.querySelectorAll('button')]
-      .find((button) => button.textContent === 'Replace recordings')!;
-    act(() => replace.click());
+    const importButton = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Import 1 source')!;
+    act(() => importButton.click());
     await flushPromises();
+    expect(assetsApi.assign).not.toHaveBeenCalled();
+    view.unmount();
+  });
 
-    expect(confirmMock).toHaveBeenCalledOnce();
-    expect(recordingsApi.uploadBulk).not.toHaveBeenCalled();
+  it('offers a retry when preview preparation failed', async () => {
+    vi.spyOn(assetsApi, 'list').mockResolvedValue([{
+      ...IMPORTED_ASSET,
+      preparation: {
+        status: 'failed',
+        attempts: 1,
+        updated_at: '2026-09-25T12:00:00.000Z',
+        error: { code: 'preview_failed', message: 'Could not prepare preview.' },
+      },
+    }]);
+    const view = renderPage();
+    await flushPromises();
+    const toggle = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent?.includes('Source tray'))!;
+    act(() => toggle.click());
+    await waitForUi(() => {
+      expect([...view.container.querySelectorAll('button')]
+        .some((button) => button.textContent === 'Retry preview preparation')).toBe(true);
+    });
+    const retry = [...view.container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Retry preview preparation')!;
+    act(() => retry.click());
+    await flushPromises();
+    expect(assetsApi.retry).toHaveBeenCalledWith('p1', IMPORTED_ASSET.id);
     view.unmount();
   });
 

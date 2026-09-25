@@ -1,27 +1,38 @@
 import { z } from 'zod';
 import { isSafeProjectRelativePath, PresentationSourceSchema } from './presentation.js';
+import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
+  asset_id: AssetIdSchema.optional(),
+  source_role: AssetSourceRoleSchema.optional(),
+  timing_origin_ms: z.number().int().nonnegative().optional(),
   duration_sec: z.number().positive().optional(),
   ingested_at: z.string().datetime().optional(),
   source_kind: z.enum(['manual', 'cap-agent', 'bulk', 'split', 'presentation']).optional(),
   capture_session_id: z.string().uuid().optional(),
   captured_at: z.string().datetime().optional(),
 }).superRefine((recording, ctx) => {
-  if (recording.source_kind === 'presentation' && !isSafeProjectRelativePath(recording.source)) {
+  if (!isSafeProjectRelativePath(recording.source)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['source'],
-      message: 'presentation recording source must be a safe project-relative path',
+      message: 'recording source must be a safe project-relative path',
     });
   }
 });
 export type Recording = z.infer<typeof RecordingSchema>;
 
+export const SceneSourceSchema = z.object({
+  asset_id: AssetIdSchema,
+  role: AssetSourceRoleSchema,
+  timing_origin_ms: z.number().int().nonnegative().default(0),
+});
+export type SceneSource = z.infer<typeof SceneSourceSchema>;
+
 export const TimingSchema = z.object({
   word: z.string(),
-  t: z.number(),
+  t: z.number().nonnegative(),
 });
 export type Timing = z.infer<typeof TimingSchema>;
 
@@ -97,6 +108,10 @@ export const LowerThirdSchema = z.object({
   style: z.enum(['frosted', 'solid', 'minimal']).default('frosted'),
   in_sec: z.number().min(0),
   out_sec: z.number().min(0),
+}).superRefine((lowerThird, ctx) => {
+  if (lowerThird.out_sec <= lowerThird.in_sec) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['out_sec'], message: 'out_sec must be after in_sec' });
+  }
 });
 export type LowerThird = z.infer<typeof LowerThirdSchema>;
 
@@ -153,6 +168,8 @@ export const SceneSchema = z.object({
   intent: z.string().optional(),
   type: SceneTypeSchema.default('desktop'),
   recording: RecordingSchema.optional(),
+  /** Independent immutable media tracks sharing the scene timing origin. */
+  sources: z.array(SceneSourceSchema).max(20).optional(),
   presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),
