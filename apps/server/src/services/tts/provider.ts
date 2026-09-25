@@ -6,6 +6,16 @@ export interface TtsVoice {
   description?: string;
 }
 
+export interface TtsCapabilities {
+  speed: { min: number; max: number; default: number };
+  expressiveness: Array<'light' | 'medium' | 'heavy'>;
+  multiSpeaker: boolean;
+  outputFormats: Array<'mp3' | 'wav'>;
+  timings: 'estimated' | 'word' | 'none';
+  subtitles: boolean;
+  maxInputChars: number;
+}
+
 export interface TtsGenerateOpts {
   voice: string;
   speed?: number; // default 1.0
@@ -24,6 +34,9 @@ export interface TtsResult {
 export interface TtsProvider {
   id: string;
   displayName: string;
+  /** Optional for third-party/legacy providers. TtsService supplies a
+   *  conservative compatibility profile when omitted. */
+  capabilities?: TtsCapabilities;
   supportedEmotives: Set<string>;
   /** Real, usable expressive tags this engine honors IN THE TEXT (e.g. xAI's
    *  `[pause]`, `<emphasis>`). Empty for engines with no inline markup (Gemini

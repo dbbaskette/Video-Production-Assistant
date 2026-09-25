@@ -77,6 +77,15 @@ export function createGeminiTtsProvider(apiKey: string, model?: string): TtsProv
   return {
     id: 'gemini',
     displayName: 'Google Gemini TTS',
+    capabilities: {
+      speed: { min: 1, max: 1, default: 1 },
+      expressiveness: ['light', 'medium', 'heavy'],
+      multiSpeaker: false,
+      outputFormats: ['wav'],
+      timings: 'estimated',
+      subtitles: true,
+      maxInputChars: 5000,
+    },
     supportedEmotives: new Set([
       'warm', 'confident', 'thoughtful', 'calm', 'excited',
       'curious', 'serious', 'friendly', 'professional', 'enthusiastic',

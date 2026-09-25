@@ -17,8 +17,8 @@ import {
   deleteProfile,
 } from '../services/voice-profile/index.js';
 import type { VoiceProfile } from '../services/voice-profile/index.js';
-import { VoiceCloneStore } from '../services/voice-clone/store.js';
 import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
+import { listAdvertisedTtsEngines } from '../services/tts/catalog.js';
 
 interface Deps {
   store: ProjectStore;
@@ -72,7 +72,6 @@ async function batchUsesXai(
 export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store, tts, router, workspaceRoot, vpaHome } = deps;
 
-  const voiceCloneStore = new VoiceCloneStore({ vpaHome });
   const activeNarrationRequests = new Map<string, symbol>();
   const requestReservations = new WeakMap<object, { projectId: string; token: symbol }>();
   const activeNarrationJobs = (projectId: string) => jobQueue
@@ -121,44 +120,9 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     releaseRequestReservation(req);
   });
 
-  const listAdvertisedEngines = async () => {
-    const engines = tts.listEngines();
-    let clones: Awaited<ReturnType<VoiceCloneStore['list']>> = [];
-    try {
-      clones = await voiceCloneStore.list();
-    } catch { /* no clones */ }
-
-    return engines.map((engine) => {
-      if (engine.id === 'xai') {
-        const cloneVoices = clones
-          .filter((c) => c.providers.xai?.voice_id)
-          .map((c) => ({
-            id: c.providers.xai!.voice_id,
-            name: `${c.name} (cloned)`,
-            description: 'Custom voice cloned via xAI',
-          }));
-        return { ...engine, voices: [...engine.voices, ...cloneVoices] };
-      }
-      if (engine.id === 'qwen') {
-        // Qwen3-TTS is where local voice cloning lives. Each clone with
-        // local audio is exposed as `clone:<slug>`; the provider resolves
-        // ~/.vpa/voice-clones/<slug>/{audio.wav,transcript.txt} at synth time.
-        const cloneVoices = clones
-          .filter((c) => c.hasAudio)
-          .map((c) => ({
-            id: `clone:${c.id}`,
-            name: `${c.name} (cloned)`,
-            description: 'Voice clone — uses your local recording',
-          }));
-        return { ...engine, voices: [...engine.voices, ...cloneVoices] };
-      }
-      return engine;
-    });
-  };
-
   // GET /api/tts/engines — list available TTS engines, augmented with cloned voices
   app.get('/api/tts/engines', async () => {
-    return listAdvertisedEngines();
+    return listAdvertisedTtsEngines(tts, vpaHome);
   });
 
   // GET /api/voices — list voice profiles
@@ -209,10 +173,17 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(400).send({ error: 'Invalid project narration settings', code: 'invalid_request' });
     }
 
-    const engine = (await listAdvertisedEngines())
+    const engine = (await listAdvertisedTtsEngines(tts, vpaHome))
       .find((candidate) => candidate.id === parsed.data.engine);
     if (!engine || !engine.voices.some((candidate) => candidate.id === parsed.data.voice)) {
       return reply.status(400).send({ error: 'Unknown narration engine or voice', code: 'invalid_request' });
+    }
+    if (parsed.data.speed < engine.capabilities.speed.min || parsed.data.speed > engine.capabilities.speed.max) {
+      return reply.status(400).send({
+        error: `Speed for ${engine.id} must be between ${engine.capabilities.speed.min} and ${engine.capabilities.speed.max}`,
+        code: 'unsupported_speed',
+        supported: engine.capabilities.speed,
+      });
     }
 
     const reservation = reserveNarration(id);

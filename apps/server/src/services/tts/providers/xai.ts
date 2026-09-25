@@ -50,6 +50,15 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
   return {
     id: 'xai',
     displayName: 'xAI (Grok) TTS',
+    capabilities: {
+      speed: { min: 0.7, max: 1.5, default: 1 },
+      expressiveness: [],
+      multiSpeaker: false,
+      outputFormats: ['mp3'],
+      timings: 'estimated',
+      subtitles: true,
+      maxInputChars: 5000,
+    },
     supportedEmotives: new Set([
       'warm', 'confident', 'calm', 'excited', 'serious', 'friendly',
     ]),
@@ -76,11 +85,13 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
       // leak into subtitles.
       const spokenText = stripXaiTags(apiText);
       const voice_id = opts.voice ?? 'Sal';
+      const speed = opts.speed ?? 1.0;
 
       const body = {
         text: apiText,
         voice_id,
         language: 'en',
+        speed,
         output_format: {
           codec: 'mp3',
           sample_rate: 44100,
@@ -115,7 +126,6 @@ export function createXaiTtsProvider(apiKey: string): TtsProvider {
       const audio = Buffer.from(await resp.arrayBuffer());
 
       // Approximate duration: ~150 words/min adjusted by speed
-      const speed = opts.speed ?? 1.0;
       const wordCount = spokenText.split(/\s+/).filter((w) => w.length > 0).length;
       const durationSec = Math.max(1, (wordCount / 150) * 60) / speed;
 

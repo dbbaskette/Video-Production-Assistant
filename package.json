@@ -16,6 +16,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yaml,yml}\"",
     "typecheck": "tsc -b",
     "e2e": "node scripts/run-e2e.mjs",
+    "vpa": "npm run build -w @vpa/cli --silent && node apps/cli/dist/main.js",
+    "check:vpa-production-skill": "npm run build -w @vpa/cli --silent && node scripts/check-vpa-production-skill.mjs",
     "check:agent-recording-skill": "node scripts/check-agent-recording-skill.mjs"
   },
   "devDependencies": {

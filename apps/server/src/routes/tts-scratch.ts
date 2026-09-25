@@ -2,14 +2,16 @@ import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Expressiveness } from '@vpa/shared';
 import type { TtsService } from '../services/tts/index.js';
+import { listAdvertisedTtsEngines } from '../services/tts/catalog.js';
+import { getProfile } from '../services/voice-profile/index.js';
 
 interface Deps {
   vpaHome: string;
   tts: TtsService;
 }
 
-const MAX_TEXT_CHARS = 5000;
 const MAX_CLIPS_KEPT = 50;
 
 interface ScratchClip {
@@ -18,6 +20,8 @@ interface ScratchClip {
   engine: string;
   voice: string;
   speed: number;
+  expressiveness?: Expressiveness;
+  profile?: string;
   text: string;
   durationSec: number;
   format: 'mp3' | 'wav';
@@ -87,34 +91,80 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
       voice?: string;
       text?: string;
       speed?: number;
+      expressiveness?: Expressiveness;
+      profile?: string;
     };
-    const engine = (body.engine ?? '').trim();
-    const voice = (body.voice ?? '').trim();
+    const profileId = (body.profile ?? '').trim();
+    const profile = profileId ? await getProfile(deps.vpaHome, profileId) : null;
+    if (profileId && !profile) {
+      return reply
+        .status(400)
+        .send({ error: `Voice profile not found: ${profileId}`, code: 'profile_not_found' });
+    }
+    const engine = (body.engine ?? profile?.engine ?? '').trim();
+    const voice = (body.voice ?? profile?.voice ?? '').trim();
     const text = (body.text ?? '').trim();
-    const speed = typeof body.speed === 'number' && body.speed > 0 ? body.speed : 1.0;
+    const provider = deps.tts.getProvider(engine);
+    const capabilities = deps.tts.getCapabilities(engine);
+    const advertisedEngine = (await listAdvertisedTtsEngines(deps.tts, deps.vpaHome)).find(
+      (candidate) => candidate.id === engine,
+    );
+    const speed =
+      typeof body.speed === 'number'
+        ? body.speed
+        : (profile?.speed ?? capabilities?.speed.default ?? 1.0);
 
     if (!engine || !voice) {
-      return reply.status(400).send({ error: 'engine and voice are required', code: 'invalid_request' });
+      return reply
+        .status(400)
+        .send({ error: 'engine and voice are required', code: 'invalid_request' });
     }
     if (!text) {
       return reply.status(400).send({ error: 'text must not be empty', code: 'invalid_request' });
     }
-    if (text.length > MAX_TEXT_CHARS) {
-      return reply.status(400).send({
-        error: `text must be ${MAX_TEXT_CHARS} characters or fewer`,
-        code: 'text_too_long',
-      });
-    }
-    if (!deps.tts.getProvider(engine)) {
+    if (!provider || !capabilities) {
       return reply.status(400).send({
         error: `TTS engine not registered: ${engine}`,
         code: 'engine_unavailable',
       });
     }
+    if (text.length > capabilities.maxInputChars) {
+      return reply.status(400).send({
+        error: `text must be ${capabilities.maxInputChars} characters or fewer`,
+        code: 'text_too_long',
+      });
+    }
+    if (!advertisedEngine?.voices.some((candidate) => candidate.id === voice)) {
+      return reply
+        .status(400)
+        .send({ error: `Voice not found for ${engine}: ${voice}`, code: 'voice_not_found' });
+    }
+    const speedRange = capabilities.speed;
+    if (!Number.isFinite(speed) || speed < speedRange.min || speed > speedRange.max) {
+      return reply.status(400).send({
+        error: `Speed for ${engine} must be between ${speedRange.min} and ${speedRange.max}`,
+        code: 'unsupported_speed',
+        supported: speedRange,
+      });
+    }
+    if (
+      body.expressiveness &&
+      !capabilities.expressiveness.includes(body.expressiveness)
+    ) {
+      return reply.status(400).send({
+        error: `Expressiveness is not supported by ${engine}`,
+        code: 'unsupported_expressiveness',
+        supported: capabilities.expressiveness,
+      });
+    }
 
     let result;
     try {
-      result = await deps.tts.generate(engine, text, { voice, speed });
+      result = await deps.tts.generate(engine, text, {
+        voice,
+        speed,
+        ...(body.expressiveness ? { expressiveness: body.expressiveness } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = /\(403\b/.test(message) ? 403 : /\(401\b/.test(message) ? 401 : 502;
@@ -131,6 +181,8 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
       engine,
       voice,
       speed,
+      ...(body.expressiveness ? { expressiveness: body.expressiveness } : {}),
+      ...(profileId ? { profile: profileId } : {}),
       text,
       durationSec: result.durationSec,
       format,
@@ -139,7 +191,7 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
     await writeFile(audioPath, result.audio);
     await writeFile(sidecarPath, JSON.stringify(clip, null, 2), 'utf-8');
     void pruneOldest(dir, MAX_CLIPS_KEPT).catch(() => undefined);
-    return clip;
+    return { ...clip, audioUrl: `/api/tts/scratch/${id}/audio` };
   });
 
   // GET /api/tts/scratch/:id/audio — stream the audio file

@@ -22,7 +22,7 @@ describe('xAI provider — keeps xAI tags, strips only app emotives', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it('sends xAI expressive tags to the API but drops app emotive words', async () => {
-    let sentBody: { text: string } | null = null;
+    let sentBody: { text: string; speed: number } | null = null;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       sentBody = JSON.parse(init.body as string);
       return {
@@ -34,7 +34,7 @@ describe('xAI provider — keeps xAI tags, strips only app emotives', () => {
     }));
 
     const provider = createXaiTtsProvider('test-key');
-    await provider.generate('[warm] <slow>Watch this</slow> [pause] closely.', { voice: 'Sal' });
+    await provider.generate('[warm] <slow>Watch this</slow> [pause] closely.', { voice: 'Sal', speed: 1.4 });
 
     const text = sentBody!.text;
     // App emotive removed…
@@ -43,5 +43,6 @@ describe('xAI provider — keeps xAI tags, strips only app emotives', () => {
     expect(text).toContain('<slow>');
     expect(text).toContain('[pause]');
     expect(text).toBe('<slow>Watch this</slow> [pause] closely.');
+    expect(sentBody!.speed).toBe(1.4);
   });
 });
