@@ -166,11 +166,25 @@ npm run e2e          # Playwright E2E tests
 ./start.sh --help      # show all options
 ```
 
+### VPA CLI and Codex production skill
+
+With VPA running, the local CLI can discover narration options, create standalone audio, narrate every scripted scene in a project, and wait for the resulting job. It talks to the VPA API and never reads provider credentials itself.
+
+```bash
+npm run vpa -- narration engines list
+npm run vpa -- narration voices list --engine xai
+npm run vpa -- narration create --text "Hello" --profile my-voice --output hello.mp3
+npm run vpa -- narration project PROJECT_ID --profile my-voice --wait
+```
+
+Project narration skips scenes without scripts and preserves existing narration unless `--overwrite` is explicitly supplied. Run `npm run vpa -- --help` for all commands. Codex can use the repository's `vpa-production` skill for the same discovery-first workflow.
+
 ## Architecture
 
 ```
 apps/server/          Fastify REST server (services + routes)
 apps/web/             Vite + React studio UI
+apps/cli/             Local HTTP CLI for VPA automation
 packages/shared/      Shared Zod schemas + TypeScript types
 prompts/              Editable LLM system prompts
 tests/e2e/            Playwright E2E tests

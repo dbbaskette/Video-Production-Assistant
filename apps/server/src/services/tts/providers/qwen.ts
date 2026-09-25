@@ -79,6 +79,15 @@ export function createQwenTtsProvider(): TtsProvider {
   return {
     id: 'qwen',
     displayName: 'Qwen3-TTS (local) — voice cloning',
+    capabilities: {
+      speed: { min: 0.5, max: 2, default: 1 },
+      expressiveness: [],
+      multiSpeaker: false,
+      outputFormats: ['wav'],
+      timings: 'estimated',
+      subtitles: true,
+      maxInputChars: 5000,
+    },
     // Qwen3-TTS Base doesn't have a documented inline-tag taxonomy, so
     // leave the supported set empty — the script gate won't whitelist
     // emotive tags that the model would just speak literally.

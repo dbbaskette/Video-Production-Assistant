@@ -46,6 +46,15 @@ export function createFakeTtsProvider(): TtsProvider {
   return {
     id: 'fake',
     displayName: 'Fake TTS (Development)',
+    capabilities: {
+      speed: { min: 0.5, max: 2, default: 1 },
+      expressiveness: [],
+      multiSpeaker: false,
+      outputFormats: ['mp3'],
+      timings: 'estimated',
+      subtitles: true,
+      maxInputChars: 5000,
+    },
     supportedEmotives: new Set([
       'warm',
       'confident',

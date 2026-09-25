@@ -245,6 +245,47 @@ describe('narration routes', () => {
     expect(res.json().code).toBe('invalid_request');
   });
 
+  it('rejects project narration speed outside the selected engine capability', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
+    ctx.tts.register({
+      id: 'fixed-speed',
+      displayName: 'Fixed speed',
+      capabilities: {
+        speed: { min: 1, max: 1, default: 1 },
+        expressiveness: [],
+        multiSpeaker: false,
+        outputFormats: ['mp3'],
+        timings: 'none',
+        subtitles: false,
+        maxInputChars: 5_000,
+      },
+      voices: [{ id: 'voice', name: 'Voice' }],
+      supportedEmotives: new Set(),
+      expressiveTags: [],
+      async generate() {
+        return { audio: Buffer.from('audio'), durationSec: 1 };
+      },
+    });
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/narration/generate-project`,
+      payload: {
+        engine: 'fixed-speed',
+        voice: 'voice',
+        speed: 1.5,
+        expressiveness: 'medium',
+        overwrite: false,
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      code: 'unsupported_speed',
+      supported: { min: 1, max: 1, default: 1 },
+    });
+  });
+
   it('allows only one active project narration job per project', async () => {
     await saveStoryboard(projectPath, makeSampleStoryboard(projectId));
     const active = jobQueue.create('narration-generate-project', { projectId, label: 'Narration' });

@@ -1021,6 +1021,16 @@ export interface TtsEngineInfo {
   /** Real expressive tags this engine honors in the text (empty when the
    *  engine has no inline markup, e.g. Gemini). */
   expressiveTags: string[];
+  ready: true;
+  capabilities: {
+    speed: { min: number; max: number; default: number };
+    expressiveness: Expressiveness[];
+    multiSpeaker: boolean;
+    outputFormats: Array<'mp3' | 'wav'>;
+    timings: 'estimated' | 'word' | 'none';
+    subtitles: boolean;
+    maxInputChars: number;
+  };
 }
 
 export interface VoiceProfileInfo {

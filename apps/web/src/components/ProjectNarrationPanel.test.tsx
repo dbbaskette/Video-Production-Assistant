@@ -18,9 +18,19 @@ const scenes: Scene[] = [
   },
 ];
 
+const baseCapabilities = {
+  speed: { min: 1, max: 1, default: 1 },
+  expressiveness: [],
+  multiSpeaker: false,
+  outputFormats: ['mp3'] as Array<'mp3' | 'wav'>,
+  timings: 'estimated' as const,
+  subtitles: true,
+  maxInputChars: 5_000,
+};
+
 const engines = [
-  { id: 'fake', displayName: 'Fake', voices: [{ id: 'alice', name: 'Alice' }], supportedEmotives: [], expressiveTags: [] },
-  { id: 'gemini', displayName: 'Gemini', voices: [{ id: 'Kore', name: 'Kore' }, { id: 'Puck', name: 'Puck' }], supportedEmotives: [], expressiveTags: [] },
+  { id: 'fake', displayName: 'Fake', voices: [{ id: 'alice', name: 'Alice' }], supportedEmotives: [], expressiveTags: [], ready: true as const, capabilities: baseCapabilities },
+  { id: 'gemini', displayName: 'Gemini', voices: [{ id: 'Kore', name: 'Kore' }, { id: 'Puck', name: 'Puck' }], supportedEmotives: [], expressiveTags: [], ready: true as const, capabilities: baseCapabilities },
 ];
 
 function select(container: HTMLElement, label: string): HTMLSelectElement {

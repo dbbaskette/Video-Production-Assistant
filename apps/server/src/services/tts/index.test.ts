@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { TtsService, createFakeTtsProvider } from './index.js';
+import { TtsService, createFakeTtsProvider, type TtsProvider } from './index.js';
 
 describe('TtsService', () => {
   let service: TtsService;
@@ -15,11 +15,45 @@ describe('TtsService', () => {
     expect(engines[0]!.id).toBe('fake');
     expect(engines[0]!.displayName).toBe('Fake TTS (Development)');
     expect(engines[0]!.voices.length).toBeGreaterThan(0);
+    expect(engines[0]).toMatchObject({
+      ready: true,
+      capabilities: {
+        speed: { min: 0.5, max: 2, default: 1 },
+        outputFormats: ['mp3'],
+        maxInputChars: 5000,
+      },
+    });
   });
 
   it('gets a provider by id', () => {
     expect(service.getProvider('fake')).toBeDefined();
     expect(service.getProvider('nonexistent')).toBeUndefined();
+  });
+
+  it('adds conservative discovery capabilities without replacing legacy provider instances', async () => {
+    class LegacyProvider implements TtsProvider {
+      id = 'legacy';
+      displayName = 'Legacy';
+      voices = [{ id: 'voice', name: 'Voice' }];
+      supportedEmotives = new Set<string>();
+      expressiveTags: string[] = [];
+
+      async generate() {
+        return { audio: Buffer.from('legacy'), durationSec: 1 };
+      }
+    }
+
+    const legacy = new LegacyProvider();
+    service.register(legacy);
+
+    expect(service.getProvider('legacy')).toBe(legacy);
+    expect(service.listEngines().find((engine) => engine.id === 'legacy')?.capabilities).toMatchObject({
+      speed: { min: 1, max: 1, default: 1 },
+      timings: 'none',
+    });
+    await expect(service.generate('legacy', 'hello', { voice: 'voice' })).resolves.toMatchObject({
+      durationSec: 1,
+    });
   });
 
   it('generates audio with timings', async () => {
