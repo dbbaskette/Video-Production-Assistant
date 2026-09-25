@@ -13,6 +13,7 @@ import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
 import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
 import { sourceDocsNeedSummarization } from '../services/project-source-docs/context.js';
 import type { AgentRecordingCoordinator } from '../services/agent-recording/coordinator.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 import {
   LowerThirdSchema,
   resolvePlannedSceneDuration,
@@ -213,7 +214,7 @@ export async function registerLowerThirdsRoutes(app: FastifyInstance, deps: Deps
             projectPath: project.path,
             sceneId,
             sceneName: scene.name,
-            videoPath: join(project.path, scene.recording.source),
+            videoPath: await resolveSafeProjectPath(project.path, scene.recording.source),
             videoMimeType: 'video/mp4',
           };
           operationState.stage = 'video-understanding';

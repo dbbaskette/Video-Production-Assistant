@@ -21,9 +21,20 @@ export interface ProjectFiles {
   presentationStagingDir: string;
   /** Rolling backups of storyboard.yaml, one per save. Pruned after 30. */
   snapshotsDir: string;
+  vpaDir: string;
+  assetsDir: string;
+  assetOriginalsDir: string;
+  assetManifest: string;
+  revisionsDir: string;
+  revisionState: string;
+  revisionSnapshotsDir: string;
+  revisionTransactionsDir: string;
 }
 
 export function projectFiles(root: string): ProjectFiles {
+  const vpaDir = path.join(root, '.vpa');
+  const assetsDir = path.join(vpaDir, 'assets');
+  const revisionsDir = path.join(vpaDir, 'revisions');
   return {
     root,
     metadata: path.join(root, 'project.yaml'),
@@ -37,6 +48,14 @@ export function projectFiles(root: string): ProjectFiles {
     presentationJobsDir: path.join(root, 'presentation-jobs'),
     presentationStagingDir: path.join(root, '.presentation-staging'),
     snapshotsDir: path.join(root, '.snapshots'),
+    vpaDir,
+    assetsDir,
+    assetOriginalsDir: path.join(assetsDir, 'originals'),
+    assetManifest: path.join(assetsDir, 'manifest.json'),
+    revisionsDir,
+    revisionState: path.join(revisionsDir, 'state.json'),
+    revisionSnapshotsDir: path.join(revisionsDir, 'snapshots'),
+    revisionTransactionsDir: path.join(revisionsDir, 'transactions'),
   };
 }
 

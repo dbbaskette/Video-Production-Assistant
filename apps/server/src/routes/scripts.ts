@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ProjectStore } from '../services/project/store.js';
@@ -20,6 +19,7 @@ import type { AgentRecordingCoordinator } from '../services/agent-recording/coor
 import { sha256File } from '../services/recording/metadata.js';
 import { loadSceneAtRecordingVersion } from '../services/recording/version.js';
 import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 
 const GenerateBodySchema = z.object({
   groundInVideo: z.boolean().optional(),
@@ -211,7 +211,7 @@ export async function registerScriptRoutes(app: FastifyInstance, deps: Deps): Pr
             projectPath: project.path,
             sceneId,
             sceneName: operationScene.name,
-            videoPath: join(project.path, operationScene.recording.source),
+            videoPath: await resolveSafeProjectPath(project.path, operationScene.recording.source),
             videoMimeType: 'video/mp4',
           };
           operationState.stage = 'video-understanding';

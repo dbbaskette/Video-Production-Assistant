@@ -121,9 +121,9 @@ describe('narration service', () => {
       wsRoot(),
     );
 
-    expect(result.audioPath).toBe('narration/scene-01.mp3');
-    expect(result.srtPath).toBe('narration/scene-01.srt');
-    expect(result.vttPath).toBe('narration/scene-01.vtt');
+    expect(result.audioPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.mp3$/);
+    expect(result.srtPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.srt$/);
+    expect(result.vttPath).toMatch(/^narration\/scene-01-[a-f0-9]{64}\.vtt$/);
     expect(result.durationSec).toBeGreaterThan(0);
     expect(result.timingCount).toBeGreaterThan(0);
     expect(result.unsupportedEmotives).toEqual([]);
@@ -144,11 +144,34 @@ describe('narration service', () => {
     // Storyboard should be updated
     const updated = await loadStoryboard(projectPath);
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
-    expect(scene?.narration?.audio).toBe('narration/scene-01.mp3');
-    expect(scene?.narration?.subtitles?.srt).toBe('narration/scene-01.srt');
+    expect(scene?.narration?.audio).toBe(result.audioPath);
+    expect(scene?.narration?.subtitles?.srt).toBe(result.srtPath);
     expect(scene?.narration?.tts?.engine).toBe('fake');
     expect(scene?.narration?.tts?.voice).toBe('alice');
     expect(scene?.narration?.timings?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps previously referenced narration bytes when audio is regenerated', async () => {
+    await saveStoryboard(projectPath, makeSampleStoryboard());
+    const first = await generateNarration(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+    );
+    const firstBytes = await readFile(path.join(projectPath, first.audioPath));
+    const storyboard = (await loadStoryboard(projectPath))!;
+    storyboard.scenes[0]!.narration!.script = 'This regenerated narration has different words.';
+    await saveStoryboard(projectPath, storyboard);
+
+    const second = await generateNarration(
+      { projectPath, sceneId: 'scene-01', engine: 'fake', voice: 'alice' },
+      tts,
+      fakeLlm,
+      wsRoot(),
+    );
+    expect(second.audioPath).not.toBe(first.audioPath);
+    expect(await readFile(path.join(projectPath, first.audioPath))).toEqual(firstBytes);
   });
 
   it('persists the requested expressiveness level on the scene', async () => {
@@ -410,7 +433,8 @@ describe('narration service', () => {
     expect(overwritten.completed).toBe(1);
     const updated = await loadStoryboard(projectPath);
     expect(updated!.scenes[0]!.narration!.audio).toBeUndefined();
-    expect(updated!.scenes[0]!.narration!.chunks![0]!.audio).toContain('scene-01-chunk-00.mp3');
+    expect(updated!.scenes[0]!.narration!.chunks![0]!.audio)
+      .toMatch(/^narration\/scene-01-chunk-00-[a-f0-9]{64}\.mp3$/);
   });
 
   it('persists a stable public failure reason instead of provider diagnostics', async () => {

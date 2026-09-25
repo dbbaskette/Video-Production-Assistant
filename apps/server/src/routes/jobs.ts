@@ -43,7 +43,7 @@ export async function registerJobRoutes(app: FastifyInstance): Promise<void> {
 
     const checkTerminal = () => {
       const j = jobQueue.get(req.params.id)!;
-      if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
+      if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled' || j.status === 'interrupted') {
         unsubscribe();
         reply.raw.end();
       }
@@ -54,5 +54,18 @@ export async function registerJobRoutes(app: FastifyInstance): Promise<void> {
       clearInterval(interval);
       unsubscribe();
     });
+  });
+
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/retry', async (req, reply) => {
+    const job = jobQueue.get(req.params.id);
+    if (!job) return reply.code(404).send({ error: 'Job not found', code: 'not_found' });
+    try {
+      return await jobQueue.retry(req.params.id);
+    } catch {
+      return reply.code(409).send({
+        error: 'This job cannot be resumed automatically. Start the operation again.',
+        code: 'retry_unavailable',
+      });
+    }
   });
 }

@@ -248,7 +248,7 @@ describe('recording routes', () => {
       expect(res.statusCode).toBe(201);
       const body = res.json();
       expect(body.sceneId).toBe('scene-01');
-      expect(body.relativePath).toBe('recordings/scene-01.mp4');
+      expect(body.relativePath).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
       expect(body.metadata.duration_sec).toBe(47.2);
       expect(body.analysis).toMatchObject({
         status: 'ready',
@@ -276,8 +276,8 @@ describe('recording routes', () => {
         message: 'No model is assigned to the video-understanding role. Choose one in global model settings.',
       });
       const saved = await loadStoryboard(projectPath);
-      expect(saved?.scenes[0]?.recording?.source).toBe('recordings/scene-01.mp4');
-      await expect(stat(path.join(projectPath, 'recordings', 'scene-01.mp4'))).resolves.toBeDefined();
+      expect(saved?.scenes[0]?.recording?.source).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
+      await expect(stat(path.join(projectPath, saved!.scenes[0]!.recording!.source))).resolves.toBeDefined();
     });
 
     it('keeps the local recording and existing metadata when Gemini analysis fails', async () => {
@@ -297,9 +297,9 @@ describe('recording routes', () => {
         name: 'Intro',
         description: 'Intro scene',
         type: 'desktop',
-        recording: { source: 'recordings/scene-01.mp4' },
+        recording: { source: expect.stringMatching(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/) },
       });
-      await expect(stat(path.join(projectPath, 'recordings', 'scene-01.mp4'))).resolves.toBeDefined();
+      await expect(stat(path.join(projectPath, saved!.scenes[0]!.recording!.source))).resolves.toBeDefined();
     });
 
     it('rejects a manual upload while the scene has a nonterminal Cap session', async () => {
@@ -600,7 +600,7 @@ describe('recording routes', () => {
         name: 'A browser opens the deployment dashboard',
         description: 'A browser opens the deployment dashboard and filters unhealthy workloads.',
         type: 'browser',
-        recording: { source: 'recordings/scene-01.mp4' },
+        recording: { source: expect.stringMatching(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/) },
       });
     });
 
@@ -634,7 +634,7 @@ describe('recording routes', () => {
         name: 'Intro',
         description: 'Intro scene',
         type: 'desktop',
-        recording: { source: 'recordings/scene-01.mp4' },
+        recording: { source: expect.stringMatching(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/) },
       });
     });
 
@@ -694,7 +694,7 @@ describe('recording routes', () => {
           name: 'Intro',
           description: 'Intro scene',
           type: 'desktop',
-          recording: { source: 'recordings/scene-01.mp4' },
+          recording: { source: expect.stringMatching(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/) },
         });
       },
     );
@@ -981,7 +981,7 @@ describe('recording routes', () => {
       expect(body.scenes).toHaveLength(2);
       expect(body.scenes[0].name).toBeTruthy();
       expect(body.scenes[0].recording).toBeDefined();
-      expect(body.scenes[0].recording.source).toContain('recordings/');
+      expect(body.scenes[0].recording.source).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
       expect(body.scenes[1].recording).toBeDefined();
       expect(ctx.resolveText).toHaveBeenCalledWith(
         'general',

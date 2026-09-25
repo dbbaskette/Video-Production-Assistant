@@ -1,7 +1,7 @@
-import { join } from 'node:path';
 import type { Scene, Storyboard } from '@vpa/shared';
 import { loadStoryboard } from '../storyboard/index.js';
 import { sha256File } from './metadata.js';
+import { resolveSafeProjectPath } from '../project/safe-path.js';
 
 export interface RecordingVersion {
   path: string;
@@ -33,7 +33,7 @@ export async function loadVersionedSceneRecording(
   if (!storyboard || !scene?.recording?.source) {
     throw new RecordingVersionConflictError();
   }
-  const recordingPath = join(projectPath, scene.recording.source);
+  const recordingPath = await resolveSafeProjectPath(projectPath, scene.recording.source);
   return {
     storyboard,
     scene,

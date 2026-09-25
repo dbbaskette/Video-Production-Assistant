@@ -6,7 +6,7 @@ import type { ProjectStore } from '../services/project/store.js';
 import { loadStoryboard, saveStoryboard, updateScene } from '../services/storyboard/index.js';
 import { renderLowerThirdsOverlay, OverlayRenderError } from '../services/overlay/render.js';
 import { resolveLtColors } from '../services/overlay/colors.js';
-import { projectFiles } from '../services/project/paths.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 
 interface OverlayRouteDeps {
   store: ProjectStore;
@@ -64,8 +64,7 @@ export async function registerOverlayRoutes(
       }
 
       // 5. Build absolute recording path
-      const files = projectFiles(entry.path);
-      const recordingAbsolute = join(entry.path, scene.recording.source);
+      const recordingAbsolute = await resolveSafeProjectPath(entry.path, scene.recording.source);
 
       // 6. Resolve LT colors (brand-aware) before rendering
       const colors = await resolveLtColors(entry.path, {

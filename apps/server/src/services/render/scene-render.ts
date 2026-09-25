@@ -35,6 +35,7 @@ import {
   defaultBrandColorResolver,
 } from '../frame/resolve.js';
 import { resolveRenderSceneDuration } from './scene-duration.js';
+import { resolveSafeProjectPath } from '../project/safe-path.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -93,7 +94,7 @@ export async function renderSingleScene(
   // 3. Produce overlay.mp4
   const overlayRel = join(outDirRel, 'overlay.mp4');
   const overlayPath = join(projectPath, overlayRel);
-  const recordingPath = join(projectPath, scene.recording.source);
+  const recordingPath = await resolveSafeProjectPath(projectPath, scene.recording.source);
   const hasLts = (scene.lower_thirds?.length ?? 0) > 0;
   const existingOverlay = scene.overlay_render
     ? join(projectPath, scene.overlay_render)

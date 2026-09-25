@@ -11,6 +11,9 @@ import { loadStoryboard, saveStoryboard, updateScene } from '../services/storybo
 import { batchRequiresWriting, generateNarration, generateChunkNarration, generateAllChunks, inspectNarrationBatch, splitScriptIntoChunks, type ChunkSelector } from '../services/narration/index.js';
 import { generateProjectNarration } from '../services/narration/project-generation.js';
 import { jobQueue } from '../lib/job-queue.js';
+import { freezeProjectJobInput } from '../services/jobs/frozen-input.js';
+import { createSubmittedJob, jobSubmissionFailure, readIdempotencyKey } from '../lib/job-submission.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 import {
   listProfiles,
   saveProfile,
@@ -209,11 +212,23 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     }
 
     const scenes = storyboard.scenes.map(({ id: sceneId, name }) => ({ id: sceneId, name }));
-    const job = jobQueue.create('narration-generate-project', {
-      projectId: id,
-      label: 'Project narration',
-    });
+    const frozenInput = await freezeProjectJobInput(project.path, parsed.data);
+    let submission;
+    try {
+      submission = await createSubmittedJob('narration-generate-project', {
+        projectId: id,
+        label: 'Project narration',
+        ...frozenInput,
+      }, readIdempotencyKey(req.headers));
+    } catch (error) {
+      releaseNarration(id, reservation);
+      const failure = jobSubmissionFailure(error);
+      if (failure) return reply.status(failure.status).send(failure.body);
+      throw error;
+    }
+    const { job } = submission;
     releaseNarration(id, reservation);
+    if (submission.reused) return { jobId: job.id, status: job.status, reused: true };
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', {
       totalScenes: scenes.length,
@@ -546,10 +561,21 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       throw error;
     }
 
-    const job = jobQueue.create('narration-generate-all', {
-      projectId: id,
-      label: `TTS: ${sceneId}`,
-    });
+    const frozenInput = await freezeProjectJobInput(projectPath, body);
+    let submission;
+    try {
+      submission = await createSubmittedJob('narration-generate-all', {
+        projectId: id,
+        label: `TTS: ${sceneId}`,
+        ...frozenInput,
+      }, readIdempotencyKey(req.headers));
+    } catch (error) {
+      const failure = jobSubmissionFailure(error);
+      if (failure) return reply.status(failure.status).send(failure.body);
+      throw error;
+    }
+    const { job } = submission;
+    if (submission.reused) return { jobId: job.id, status: job.status, reused: true };
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { sceneId, engine: body.engine, voice: body.voice, selector: body.selector ?? 'missing' });
 
@@ -598,7 +624,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
     const { jobId } = req.params as { jobId: string };
     const j = jobQueue.get(jobId);
     if (!j) return reply.status(404).send({ error: 'Job not found', code: 'not_found' });
-    if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled') {
+    if (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled' || j.status === 'interrupted') {
       return { cancelled: false, status: j.status };
     }
     if (
@@ -606,15 +632,12 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       || j.type === 'narration-generate-all'
       || j.type === 'render'
     ) {
-      if (j.status !== 'cancelling') {
-        jobQueue.setStatus(jobId, 'cancelling');
-        jobQueue.emit(jobId, 'cancel-requested', {});
-      }
-      return { cancelled: true, status: 'cancelling' };
+      return jobQueue.requestCancellation(jobId);
     }
-    jobQueue.setStatus(jobId, 'cancelled');
-    jobQueue.emit(jobId, 'cancel', {});
-    return { cancelled: true };
+    return reply.status(409).send({
+      error: 'This job cannot be stopped safely. Wait for it to finish.',
+      code: 'cancellation_unavailable',
+    });
   });
 
   // PUT /api/projects/:id/scenes/:sceneId/narration/script — save edited script
@@ -960,7 +983,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
         .send({ error: 'No audio generated for this scene', code: 'no_audio' });
     }
 
-    const audioPath = join(projectPath, scene.narration.audio);
+    const audioPath = await resolveSafeProjectPath(projectPath, scene.narration.audio);
     try {
       const fileStat = await stat(audioPath);
       reply.header('Content-Type', 'audio/mpeg');
@@ -988,7 +1011,7 @@ export async function registerNarrationRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'No audio for this chunk', code: 'no_audio' });
     }
 
-    const audioPath = join(projectPath, chunk.audio);
+    const audioPath = await resolveSafeProjectPath(projectPath, chunk.audio);
     try {
       const fileStat = await stat(audioPath);
       // Detect content type from file extension

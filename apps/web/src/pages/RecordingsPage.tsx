@@ -22,12 +22,11 @@
 import { useEffect, useState } from 'react';
 import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Circle, ChevronDown, ChevronRight } from 'lucide-react';
-import { storyboardApi, recordingsApi, type UploadProgress } from '../lib/api.js';
+import { CheckCircle2, Circle } from 'lucide-react';
+import { storyboardApi, recordingsApi, assetsApi, type UploadProgress } from '../lib/api.js';
 import { RecordingUpload } from '../components/RecordingUpload.js';
 import { STATUS_COLOR } from '../lib/palette.js';
-import { useUi } from '../components/ui/UiProvider.js';
-import type { ProjectTrackerEntry, Scene } from '@vpa/shared';
+import type { Asset, ProjectTrackerEntry, Scene } from '@vpa/shared';
 import { recordingsDurationLabel } from '../lib/scene-duration.js';
 
 interface WorkspaceContext {
@@ -45,7 +44,6 @@ export function RecordingsPage() {
   const { project } = useOutletContext<WorkspaceContext>();
   const { projectId } = useParams<{ projectId: string }>();
   const queryClient = useQueryClient();
-  const ui = useUi();
   void project; // referenced for outlet typing
 
   const { data: storyboard } = useQuery({
@@ -65,26 +63,7 @@ export function RecordingsPage() {
 
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
-  const [bulkBannerVisible, setBulkBannerVisible] = useState(false);
   const [generateBannerVisible, setGenerateBannerVisible] = useState(false);
-  // In-progress phase hides bulk-upload by default; this expands it on demand.
-  const [bulkExpanded, setBulkExpanded] = useState(false);
-  // Complete phase hides upload UI by default; this brings it back.
-  const [completeUploadAgain, setCompleteUploadAgain] = useState(false);
-
-  // Bulk: assign uploaded recordings to existing scenes by file order.
-  const bulkMutation = useMutation({
-    mutationFn: (files: File[]) =>
-      recordingsApi.uploadBulk(projectId!, files, { onProgress: setUploadProgress }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
-      setPendingFiles([]);
-      setBulkExpanded(false);
-      setCompleteUploadAgain(false);
-      setBulkBannerVisible(true);
-    },
-    onSettled: () => setUploadProgress(null),
-  });
 
   // Generate: no storyboard yet — a scene-per-file is created.
   const generateMutation = useMutation({
@@ -100,39 +79,18 @@ export function RecordingsPage() {
 
   // Auto-dismiss success banners.
   useEffect(() => {
-    if (!bulkBannerVisible) return;
-    const t = window.setTimeout(() => setBulkBannerVisible(false), 6000);
-    return () => window.clearTimeout(t);
-  }, [bulkBannerVisible]);
-  useEffect(() => {
     if (!generateBannerVisible) return;
     const t = window.setTimeout(() => setGenerateBannerVisible(false), 8000);
     return () => window.clearTimeout(t);
   }, [generateBannerVisible]);
 
-  const isUploading = bulkMutation.isPending || generateMutation.isPending;
+  const isUploading = generateMutation.isPending;
   const uploadPct = uploadProgress?.fraction != null ? Math.round(uploadProgress.fraction * 100) : null;
-  const error = bulkMutation.error || generateMutation.error;
+  const error = generateMutation.error;
   const errorMsg = error instanceof Error ? error.message : null;
 
   const handleUploadFresh = () => {
     if (pendingFiles.length > 0) generateMutation.mutate(pendingFiles);
-  };
-  const handleUploadBulk = () => {
-    if (pendingFiles.length > 0) bulkMutation.mutate(pendingFiles);
-  };
-  // Complete-phase bulk upload overwrites EVERY scene's recording — strictly
-  // more destructive than the per-scene replace (which runs
-  // confirmDestructiveSave). Ask before committing.
-  const handleReplaceAll = async () => {
-    if (pendingFiles.length === 0 || bulkMutation.isPending) return;
-    const ok = await ui.confirm({
-      title: 'Replace every recording?',
-      body: `This overwrites the recordings of all ${scenes.length} scenes with the files above and invalidates any cached overlays or framed videos. This can't be undone.`,
-      confirmLabel: 'Replace recordings',
-      destructive: true,
-    });
-    if (ok) bulkMutation.mutate(pendingFiles);
   };
   const removePendingFile = (index: number) => {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
@@ -148,6 +106,8 @@ export function RecordingsPage() {
             ? 'All scenes have recordings.'
             : `${recordedScenes.length} of ${scenes.length} scenes recorded — fill in the rest below.`}
       </p>
+
+      <SourceTray projectId={projectId!} scenes={scenes} />
 
       {/* ── PHASE: fresh — no storyboard yet ──────────────────────── */}
       {phase === 'fresh' && (
@@ -197,100 +157,7 @@ export function RecordingsPage() {
 
       {/* ── PHASE: in-progress — fill in missing scenes ───────────── */}
       {phase === 'in-progress' && (
-        <>
-          <SceneList scenes={scenes} projectId={projectId!} />
-
-          {/* Bulk upload — secondary, collapsed by default. The whole point
-              of demoting it is to stop competing with per-scene Upload
-              affordances. Users who want to drop 5 files at once can
-              still do that, just one click away. */}
-          <div
-            style={{
-              marginTop: 24,
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              background: 'var(--bg-elev)',
-            }}
-          >
-            <button
-              onClick={() => setBulkExpanded((v) => !v)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                width: '100%',
-                padding: '12px 16px',
-                background: 'transparent',
-                border: 'none',
-                borderRadius: 8,
-                color: 'var(--fg)',
-                cursor: 'pointer',
-                fontSize: 13,
-                fontWeight: 500,
-                textAlign: 'left',
-              }}
-              aria-expanded={bulkExpanded}
-            >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                {bulkExpanded ? (
-                  <ChevronDown size={14} strokeWidth={2} color="var(--fg-muted)" aria-hidden />
-                ) : (
-                  <ChevronRight size={14} strokeWidth={2} color="var(--fg-muted)" aria-hidden />
-                )}
-                Upload many at once (assigns to scenes by file order)
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>secondary</span>
-            </button>
-            {bulkExpanded && (
-              <div style={{ padding: '0 16px 16px' }}>
-                <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
-                  Files attach to scenes in storyboard order. Drop {scenes.length} MP4s and the
-                  Nth file becomes the recording for the Nth scene.
-                </p>
-                <RecordingUpload
-                  onFilesSelected={(files) => setPendingFiles(files)}
-                  isUploading={isUploading}
-                  progress={uploadProgress}
-                  multiple
-                />
-                <PendingFiles
-                  files={pendingFiles}
-                  onRemove={removePendingFile}
-                  disabled={isUploading}
-                />
-                {pendingFiles.length > 0 && (
-                  <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-                    <button
-                      onClick={handleUploadBulk}
-                      disabled={isUploading}
-                      className="primary"
-                      style={{ padding: '8px 18px', fontSize: 13, fontWeight: 600 }}
-                    >
-                      {isUploading
-                        ? `Uploading…${uploadPct != null ? ` ${uploadPct}%` : ''}`
-                        : `Upload to ${Math.min(pendingFiles.length, scenes.length)} scene${Math.min(pendingFiles.length, scenes.length) === 1 ? '' : 's'}`}
-                    </button>
-                    <button
-                      onClick={() => setPendingFiles([])}
-                      disabled={isUploading}
-                      style={{
-                        padding: '8px 14px',
-                        borderRadius: 'var(--radius-sm)',
-                        border: '1px solid var(--border)',
-                        background: 'transparent',
-                        color: 'var(--fg-muted)',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                      }}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </>
+        <SceneList scenes={scenes} projectId={projectId!} />
       )}
 
       {/* ── PHASE: complete — collapsed UX, link to upload again ──── */}
@@ -313,22 +180,7 @@ export function RecordingsPage() {
               ✓ All {scenes.length} scenes have recordings
             </div>
             <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
-              Need to swap a recording? Open the scene from the storyboard, or{' '}
-              <button
-                onClick={() => setCompleteUploadAgain((v) => !v)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--accent)',
-                  cursor: 'pointer',
-                  padding: 0,
-                  fontSize: 12,
-                  textDecoration: 'underline',
-                }}
-              >
-                {completeUploadAgain ? 'hide upload form' : 'upload all again'}
-              </button>
-              .
+              To replace one or many recordings, import them in the source tray and review each scene pairing before assigning.
             </div>
           </div>
           <Link
@@ -345,91 +197,6 @@ export function RecordingsPage() {
           >
             Open Storyboard →
           </Link>
-        </div>
-      )}
-
-      {phase === 'complete' && completeUploadAgain && (
-        <div style={{ marginTop: 16 }}>
-          <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 12px' }}>
-            Replaces every scene's recording with the file at the matching index. Drop {scenes.length} MP4s.
-          </p>
-          <RecordingUpload
-            onFilesSelected={(files) => setPendingFiles(files)}
-            isUploading={isUploading}
-            progress={uploadProgress}
-            multiple
-          />
-          <PendingFiles
-            files={pendingFiles}
-            onRemove={removePendingFile}
-            disabled={isUploading}
-          />
-          {pendingFiles.length > 0 && (
-            <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-              <button
-                onClick={() => void handleReplaceAll()}
-                disabled={isUploading}
-                className="primary"
-                style={{ padding: '8px 18px', fontSize: 13, fontWeight: 600 }}
-              >
-                {isUploading ? `Uploading…${uploadPct != null ? ` ${uploadPct}%` : ''}` : 'Replace recordings'}
-              </button>
-              <button
-                onClick={() => setPendingFiles([])}
-                disabled={isUploading}
-                style={{
-                  padding: '8px 14px',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border)',
-                  background: 'transparent',
-                  color: 'var(--fg-muted)',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                }}
-              >
-                Clear
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Success banners (shared across phases) */}
-      {bulkBannerVisible && bulkMutation.isSuccess && bulkMutation.data && (
-        <div
-          style={{
-            marginTop: 16,
-            padding: '12px 16px',
-            background: 'var(--success-bg)',
-            border: '1px solid var(--success)',
-            borderRadius: 'var(--radius-sm)',
-            fontSize: 13,
-            color: 'var(--success)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 12,
-          }}
-        >
-          <span>
-            Successfully uploaded {bulkMutation.data.assignedCount} recording
-            {bulkMutation.data.assignedCount === 1 ? '' : 's'} to {bulkMutation.data.totalScenes} scene
-            {bulkMutation.data.totalScenes === 1 ? '' : 's'}.
-          </span>
-          <button
-            onClick={() => setBulkBannerVisible(false)}
-            aria-label="Dismiss"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--success)',
-              cursor: 'pointer',
-              padding: 4,
-              lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
         </div>
       )}
 
@@ -488,6 +255,195 @@ export function RecordingsPage() {
           {errorMsg}
         </div>
       )}
+    </div>
+  );
+}
+
+function SourceTray({ projectId, scenes }: { projectId: string; scenes: Scene[] }) {
+  const queryClient = useQueryClient();
+  const [files, setFiles] = useState<File[]>([]);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState(false);
+
+  const assetsQuery = useQuery({
+    queryKey: ['assets', projectId],
+    queryFn: () => assetsApi.list(projectId),
+  });
+  const revisionQuery = useQuery({
+    queryKey: ['revision', projectId],
+    queryFn: () => assetsApi.currentRevision(projectId),
+  });
+  useEffect(() => {
+    if (assetsQuery.data) queryClient.invalidateQueries({ queryKey: ['revision', projectId] });
+  }, [assetsQuery.data, projectId, queryClient]);
+  const importMutation = useMutation({
+    mutationFn: () => assetsApi.import(projectId, files, { onProgress: setProgress }),
+    onSuccess: (imported) => {
+      setFiles([]);
+      setMapping((current) => {
+        const next = { ...current };
+        imported.forEach((asset, index) => {
+          const scene = scenes[index];
+          if (scene) next[asset.id] = scene.id;
+        });
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ['assets', projectId] });
+    },
+    onSettled: () => setProgress(null),
+  });
+  const assignMutation = useMutation({
+    mutationFn: async () => {
+      const selected = Object.entries(mapping).filter((entry): entry is [string, string] => Boolean(entry[1]));
+      if (revisionQuery.data == null || selected.length === 0) throw new Error('Choose at least one scene.');
+      return assetsApi.assign(
+        projectId,
+        revisionQuery.data,
+        selected.map(([assetId, sceneId]) => {
+          const asset = assets.find((candidate) => candidate.id === assetId)!;
+          const role = asset.media_kind === 'video' ? 'screen' : asset.media_kind === 'audio' ? 'microphone' : 'image';
+          return { assetId, sceneId, role, timingOriginMs: 0 };
+        }),
+      );
+    },
+    onSuccess: () => {
+      setMapping({});
+      queryClient.invalidateQueries({ queryKey: ['storyboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['revision', projectId] });
+    },
+  });
+  const retryMutation = useMutation({
+    mutationFn: (assetId: string) => assetsApi.retry(projectId, assetId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['assets', projectId] }),
+  });
+  const assets = assetsQuery.data ?? [];
+  const selectedCount = Object.values(mapping).filter(Boolean).length;
+  const replacementCount = Object.entries(mapping).filter(([assetId, sceneId]) => {
+    if (!sceneId) return false;
+    const scene = scenes.find((candidate) => candidate.id === sceneId);
+    return Boolean(scene?.recording && scene.recording.asset_id !== assetId);
+  }).length;
+  const operationError = importMutation.error ?? assignMutation.error;
+
+  return (
+    <section style={{ marginTop: 24, border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', background: 'var(--bg-elev)' }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px', border: 0, background: 'transparent', color: 'var(--fg)', cursor: 'pointer', textAlign: 'left' }}
+      >
+        <span>
+          <strong>Source tray</strong>
+          <span style={{ display: 'block', color: 'var(--fg-muted)', fontSize: 12, marginTop: 3 }}>
+            Import once, preview sources, then choose exactly which scene receives each file.
+          </span>
+        </span>
+        <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>{assets.length} source{assets.length === 1 ? '' : 's'} {expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div style={{ borderTop: '1px solid var(--border)', padding: 16 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: 13 }}>
+              Choose media
+              <input
+                type="file"
+                multiple
+                accept="video/mp4,video/webm,image/png,image/jpeg,audio/mpeg,audio/wav"
+                style={{ display: 'none' }}
+                onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+              />
+            </label>
+            {files.length > 0 && (
+              <button className="primary" disabled={importMutation.isPending} onClick={() => importMutation.mutate()}>
+                {importMutation.isPending
+                  ? `Importing${progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : '…'}`
+                  : `Import ${files.length} source${files.length === 1 ? '' : 's'}`}
+              </button>
+            )}
+            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>MP4, WebM, PNG, JPEG, MP3, WAV · 2 GiB max · video 20 min max</span>
+          </div>
+
+          {assets.length > 0 && (
+            <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
+              {assets.map((asset) => (
+                <SourceRow
+                  key={asset.id}
+                  asset={asset}
+                  projectId={projectId}
+                  scenes={scenes}
+                  sceneId={mapping[asset.id] ?? ''}
+                  onScene={(sceneId) => setMapping((current) => ({ ...current, [asset.id]: sceneId }))}
+                  onRetry={() => retryMutation.mutate(asset.id)}
+                />
+              ))}
+            </div>
+          )}
+
+          {selectedCount > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+              <button className="primary" disabled={assignMutation.isPending || revisionQuery.data == null} onClick={() => assignMutation.mutate()}>
+                {assignMutation.isPending
+                  ? 'Assigning…'
+                  : `Assign ${selectedCount} source${selectedCount === 1 ? '' : 's'}${replacementCount > 0 ? ` · replace ${replacementCount} recording${replacementCount === 1 ? '' : 's'}` : ''}`}
+              </button>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Review every pairing before you commit.</span>
+            </div>
+          )}
+          {operationError && (
+            <p style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 0 }}>
+              {operationError instanceof Error
+                ? operationError.message
+                : 'The source operation failed.'}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SourceRow({
+  asset,
+  projectId,
+  scenes,
+  sceneId,
+  onScene,
+  onRetry,
+}: {
+  asset: Asset;
+  projectId: string;
+  scenes: Scene[];
+  sceneId: string;
+  onScene: (sceneId: string) => void;
+  onRetry: () => void;
+}) {
+  const url = assetsApi.contentUrl(projectId, asset.id);
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '88px minmax(0, 1fr) minmax(180px, 260px)', gap: 12, alignItems: 'center', padding: 10, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--surface)' }}>
+      <div style={{ width: 88, height: 50, borderRadius: 6, overflow: 'hidden', background: 'var(--bg)', display: 'grid', placeItems: 'center' }}>
+        {asset.media_kind === 'image' ? <img src={url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+        {asset.media_kind === 'video' ? <video src={url} muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : null}
+        {asset.media_kind === 'audio' ? <span style={{ fontSize: 20 }}>♪</span> : null}
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{asset.original_name}</div>
+        <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 3 }}>{asset.media_kind} · {asset.origin} · {formatBytes(asset.size_bytes)} · {asset.preparation.status}</div>
+        {asset.preparation.status === 'failed' && (
+          <button type="button" onClick={onRetry} style={{ marginTop: 5, border: 0, padding: 0, background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>
+            Retry preview preparation
+          </button>
+        )}
+      </div>
+      <select value={sceneId} onChange={(event) => onScene(event.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', color: 'var(--fg)' }}>
+        <option value="">Do not assign</option>
+        {scenes.map((scene) => (
+          <option key={scene.id} value={scene.id}>
+            {scene.name}{scene.recording ? ' (replaces current recording)' : ''}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

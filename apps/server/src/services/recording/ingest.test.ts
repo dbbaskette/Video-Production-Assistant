@@ -46,16 +46,17 @@ describe('recording ingest', () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
-  it('copies file to recordings directory', async () => {
+  it('copies file to the immutable asset library', async () => {
     const sb = makeSampleStoryboard('a0000000-0000-4000-8000-000000000001');
     await saveStoryboard(projectRoot, sb);
 
     const result = await ingestRecording(projectRoot, 'scene-01', sourceFile, sampleMetadata);
     expect(result.sceneId).toBe('scene-01');
-    expect(result.relativePath).toBe('recordings/scene-01.mp4');
+    expect(result.relativePath).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
+    expect(result.assetId).toMatch(/^asset_[a-f0-9]{64}$/);
     expect(result.metadata.duration_sec).toBe(47.2);
 
-    const destPath = path.join(projectRoot, 'recordings', 'scene-01.mp4');
+    const destPath = path.join(projectRoot, result.relativePath);
     const content = await readFile(destPath, 'utf8');
     expect(content).toBe('fake-mp4-data');
   });
@@ -69,18 +70,19 @@ describe('recording ingest', () => {
     const updated = await loadStoryboard(projectRoot);
     expect(updated).not.toBeNull();
     const scene = updated!.scenes.find((s) => s.id === 'scene-01');
-    expect(scene?.recording?.source).toBe('recordings/scene-01.mp4');
+    expect(scene?.recording?.source).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
+    expect(scene?.recording?.asset_id).toMatch(/^asset_[a-f0-9]{64}$/);
     expect(scene?.recording?.duration_sec).toBe(47.2);
     expect(scene?.recording?.ingested_at).toBeTruthy();
   });
 
-  it('creates recordings directory if missing', async () => {
+  it('creates the asset originals directory if missing', async () => {
     const sb = makeSampleStoryboard('a0000000-0000-4000-8000-000000000003');
     await saveStoryboard(projectRoot, sb);
 
-    await ingestRecording(projectRoot, 'scene-02', sourceFile, sampleMetadata);
+    const result = await ingestRecording(projectRoot, 'scene-02', sourceFile, sampleMetadata);
 
-    const destPath = path.join(projectRoot, 'recordings', 'scene-02.mp4');
+    const destPath = path.join(projectRoot, result.relativePath);
     const s = await stat(destPath);
     expect(s.isFile()).toBe(true);
   });
@@ -89,7 +91,7 @@ describe('recording ingest', () => {
     const result = await ingestRecording(projectRoot, 'scene-01', sourceFile, sampleMetadata);
     expect(result.sceneId).toBe('scene-01');
 
-    const destPath = path.join(projectRoot, 'recordings', 'scene-01.mp4');
+    const destPath = path.join(projectRoot, result.relativePath);
     const content = await readFile(destPath, 'utf8');
     expect(content).toBe('fake-mp4-data');
   });

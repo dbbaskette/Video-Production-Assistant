@@ -44,6 +44,7 @@ import {
   type StagedUpload,
 } from '../services/recording/staged-upload.js';
 import { safeSceneDiagnosticFields } from '../lib/safe-diagnostics.js';
+import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 
 interface Deps {
   store: ProjectStore;
@@ -410,7 +411,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'No recording for this scene', code: 'no_recording' });
     }
 
-    const filePath = path.join(projectPath, scene.recording.source);
+    const filePath = await resolveSafeProjectPath(projectPath, scene.recording.source);
     let fileStat;
     try {
       fileStat = await stat(filePath);
@@ -468,7 +469,7 @@ export async function registerRecordingRoutes(app: FastifyInstance, deps: Deps):
       return reply.status(404).send({ error: 'No recording for this scene', code: 'no_recording' });
     }
 
-    const filePath = path.join(projectPath, scene.recording.source);
+    const filePath = await resolveSafeProjectPath(projectPath, scene.recording.source);
     const metadata = await probe(filePath);
     return metadata;
   });

@@ -248,7 +248,7 @@ async function waitForJob(
   const started = Date.now();
   while (true) {
     const job = await client.json<Job>('GET', `/api/jobs/${encodeURIComponent(id)}`);
-    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted')
       return job;
     if (Date.now() - started >= timeoutMs) {
       throw new VpaCliError(`Timed out waiting for job ${id}`, 'job_timeout');

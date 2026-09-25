@@ -29,6 +29,8 @@ import {
   type ResolvedModelSummary,
   PresentationJobSchema,
   type PresentationJob,
+  type Asset,
+  type AssetMapping,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -766,6 +768,46 @@ export const recordingsApi = {
 
   async executeSplit(projectId: string, boundaries: SceneBoundary[]): Promise<Storyboard> {
     return request<Storyboard>('POST', `/api/projects/${projectId}/recordings/execute-split`, { boundaries });
+  },
+};
+
+export const assetsApi = {
+  async list(projectId: string): Promise<Asset[]> {
+    const response = await request<{ assets: Asset[] }>('GET', `/api/projects/${projectId}/assets`);
+    return response.assets;
+  },
+  contentUrl(projectId: string, assetId: string): string {
+    return `${BASE}/api/projects/${projectId}/assets/${assetId}/content`;
+  },
+  async import(projectId: string, files: File[], opts: UploadOpts = {}): Promise<Asset[]> {
+    const form = new FormData();
+    files.forEach((file, index) => form.append(`file${index}`, file));
+    const { value } = await uploadRequest('POST', `/api/projects/${projectId}/assets/import`, form, opts);
+    return (value as { assets: Asset[] }).assets;
+  },
+  async currentRevision(projectId: string): Promise<number> {
+    const response = await request<{ revision: number }>('GET', `/api/projects/${projectId}/revision`);
+    return response.revision;
+  },
+  async retry(projectId: string, assetId: string): Promise<Asset> {
+    const response = await request<{ asset: Asset }>('POST', `/api/projects/${projectId}/assets/${assetId}/retry`);
+    return response.asset;
+  },
+  async assign(
+    projectId: string,
+    expectedRevision: number,
+    mappings: AssetMapping[],
+  ): Promise<{ revision: number }> {
+    const response = await request<{ result: { revision: number } }>(
+      'POST',
+      `/api/projects/${projectId}/assets/mappings`,
+      {
+        expectedRevision,
+        idempotencyKey: crypto.randomUUID(),
+        mappings,
+      },
+    );
+    return { revision: response.result.revision };
   },
 };
 

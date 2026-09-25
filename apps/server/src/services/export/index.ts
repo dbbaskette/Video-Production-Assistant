@@ -1,7 +1,6 @@
 import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { loadStoryboard } from '../storyboard/index.js';
-import { projectFiles } from '../project/paths.js';
+import { resolveSafeProjectPath } from '../project/safe-path.js';
 import type { Scene } from '@vpa/shared';
 
 export interface ExportManifest {
@@ -38,11 +37,9 @@ async function collectSceneFiles(
   scene: Scene,
 ): Promise<string[]> {
   const files: string[] = [];
-  const pf = projectFiles(projectRoot);
-
   // Recording
   if (scene.recording?.source) {
-    const absPath = join(projectRoot, scene.recording.source);
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.recording.source);
     if (await fileExists(absPath)) {
       files.push(scene.recording.source);
     }
@@ -50,7 +47,7 @@ async function collectSceneFiles(
 
   // Narration audio
   if (scene.narration?.audio) {
-    const absPath = join(projectRoot, scene.narration.audio);
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.narration.audio);
     if (await fileExists(absPath)) {
       files.push(scene.narration.audio);
     }
@@ -58,7 +55,7 @@ async function collectSceneFiles(
 
   // Subtitles SRT
   if (scene.narration?.subtitles?.srt) {
-    const absPath = join(projectRoot, scene.narration.subtitles.srt);
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.narration.subtitles.srt);
     if (await fileExists(absPath)) {
       files.push(scene.narration.subtitles.srt);
     }
@@ -66,7 +63,7 @@ async function collectSceneFiles(
 
   // Subtitles VTT
   if (scene.narration?.subtitles?.vtt) {
-    const absPath = join(projectRoot, scene.narration.subtitles.vtt);
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.narration.subtitles.vtt);
     if (await fileExists(absPath)) {
       files.push(scene.narration.subtitles.vtt);
     }
@@ -74,7 +71,7 @@ async function collectSceneFiles(
 
   // Overlay render
   if (scene.overlay_render) {
-    const absPath = join(projectRoot, scene.overlay_render);
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.overlay_render);
     if (await fileExists(absPath)) {
       files.push(scene.overlay_render);
     }
