@@ -10,6 +10,7 @@ import {
 } from './composition.js';
 import { SourceTranscriptSchema, VisualEffectSchema } from './visual-evidence.js';
 import { FeedbackNoteSchema } from './review-feedback.js';
+import { EditorialRangeSchema } from './assistance.js';
 
 const AssignAssetCommandSchema = z.object({
   type: z.literal('scene.assign-asset'),
@@ -123,6 +124,12 @@ const CorrectTranscriptWordCommandSchema = z.object({
   text: z.string().trim().min(1).max(120),
 }).strict();
 
+const SetEditorialRangeCommandSchema = z.object({
+  type: z.literal('editorial.range.set'),
+  sceneId: z.string().min(1),
+  range: EditorialRangeSchema,
+}).strict();
+
 const AddFeedbackNoteCommandSchema = z.object({ type: z.literal('feedback.add'), note: FeedbackNoteSchema }).strict();
 const ClaimFeedbackNoteCommandSchema = z.object({ type: z.literal('feedback.claim'), noteId: z.string(), actor: z.string().min(1).max(200), claimedAt: z.string().datetime() }).strict();
 const ResolveFeedbackNoteCommandSchema = z.object({ type: z.literal('feedback.resolve'), noteId: z.string(), resolvingRevision: z.number().int().nonnegative(), resolution: z.string().trim().min(1).max(4_000) }).strict();
@@ -146,6 +153,7 @@ export const ProjectCommandSchema = z.discriminatedUnion('type', [
   SetVisualEffectsCommandSchema,
   SetTranscriptCommandSchema,
   CorrectTranscriptWordCommandSchema,
+  SetEditorialRangeCommandSchema,
   AddFeedbackNoteCommandSchema,
   ClaimFeedbackNoteCommandSchema,
   ResolveFeedbackNoteCommandSchema,

@@ -41,7 +41,7 @@
 
 ## Progress
 
-- [ ] Brand kits merged (#28)
-- [ ] Evidence-driven editing merged (#9, #22)
+- [x] Brand kits merged (#28)
+- [x] Evidence-driven editing implemented (#9, #22; merge tracked in PR)
 - [ ] Output variants merged (#104)
 - [ ] Integrated verification complete and roadmap closed (#88)
