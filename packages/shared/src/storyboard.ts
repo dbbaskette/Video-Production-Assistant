@@ -4,6 +4,7 @@ import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 import { SceneCompositionSchema } from './composition.js';
 import { EvidenceItemSchema, SourceTranscriptSchema, VisualEffectSchema } from './visual-evidence.js';
 import { FeedbackNoteSchema } from './review-feedback.js';
+import { EditorialRangeSchema } from './assistance.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
@@ -181,6 +182,8 @@ export const SceneSchema = z.object({
   transcript: SourceTranscriptSchema.optional(),
   /** Cached source-time inspection artifacts. */
   evidence: z.array(EvidenceItemSchema).max(1_000).optional(),
+  /** Explicitly accepted source ranges that variants and later edits may reuse. */
+  editorial_ranges: z.array(EditorialRangeSchema).max(1_000).optional(),
   presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),

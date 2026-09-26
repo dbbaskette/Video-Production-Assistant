@@ -475,6 +475,17 @@ export class RevisionStore {
         ...storyboard,
         scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, transcript } : candidate),
       });
+    } else if (command.type === 'editorial.range.set') {
+      const index = sceneIndexFor(command.sceneId);
+      const scene = storyboard.scenes[index]!;
+      const clip = scene.composition?.clips.find((candidate) => candidate.id === command.range.clip_instance_id);
+      if (!clip || clip.source_asset_id !== command.range.source_asset_id) throw new RevisionError('invalid_command', 'Editorial range must reference an existing clip source.');
+      if (command.range.source_in_ms < clip.source_in_ms || command.range.source_out_ms > clip.source_out_ms) throw new RevisionError('invalid_command', 'Editorial range must stay inside its clip source interval.');
+      const ranges = [...(scene.editorial_ranges ?? []).filter((range) => range.id !== command.range.id), command.range];
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, editorial_ranges: ranges } : candidate),
+      });
     } else if (command.type === 'feedback.add') {
       if (storyboard.feedback_notes?.some((note) => note.id === command.note.id)) throw new RevisionError('invalid_command', 'Feedback note ID is already in use.');
       const scene = storyboard.scenes.find((candidate) => candidate.id === command.note.scene_id);

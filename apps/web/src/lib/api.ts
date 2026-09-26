@@ -44,6 +44,8 @@ import {
   type ProposalOperation,
   type FeedbackNote,
   type ProjectRevision,
+  AssistanceResponseSchema,
+  type AssistanceResponse,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -909,6 +911,15 @@ export const sourceEvidenceApi = {
   },
   artifactUrl(projectId: string, sceneId: string, evidenceId: string): string {
     return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/evidence/artifacts/${evidenceId}`;
+  },
+};
+
+export const assistanceApi = {
+  async inspect(projectId: string, targetDurationSec: number): Promise<AssistanceResponse> {
+    return AssistanceResponseSchema.parse(await request('GET', `/api/projects/${projectId}/assistance?targetDurationSec=${targetDurationSec}`));
+  },
+  async apply(projectId: string, proposalId: string, input: { expectedRevision: number; targetDurationSec: number; idempotencyKey: string }): Promise<{ revision: number; reused?: boolean }> {
+    return request('POST', `/api/projects/${projectId}/assistance/${proposalId}/apply`, input);
   },
 };
 

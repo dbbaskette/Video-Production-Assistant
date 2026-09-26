@@ -6,6 +6,7 @@ import type { ReviewItem } from '../lib/api.js';
 import { SEVERITY_COLOR, reviewSummaryColor, reviewSummaryLabel } from '../lib/palette.js';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { TightenScriptModal } from '../components/TightenScriptModal.js';
+import { AssistancePanel } from '../components/AssistancePanel.js';
 import {
   canTightenQualityReviewCategory,
   qualityReviewCategoryTab,
@@ -129,6 +130,8 @@ export function ReviewPage() {
         {renderStatus?.stale && <p style={{ color: 'var(--warning)', fontSize: 12, marginBottom: 0 }}>The project is now at revision {renderStatus.currentRevision}; this export remains available but is no longer current.</p>}
         {(renderStatus?.artifacts?.length ?? 0) > 1 && <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', fontSize: 12 }}>Previous exports ({renderStatus!.artifacts!.length - 1})</summary>{renderStatus!.artifacts!.slice(1).map((artifact) => <div key={artifact.artifactId} style={{ display: 'flex', gap: 10, paddingTop: 8, fontSize: 12 }}><span>Revision {artifact.revision} · {new Date(artifact.completedAt).toLocaleString()}</span><a href={renderApi.videoUrl(projectId!, artifact.artifactId)} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Play</a><a href={renderApi.downloadUrl(projectId!, `${project.name}-r${artifact.revision}.mp4`, artifact.artifactId)} style={{ color: 'var(--accent)' }}>Download</a></div>)}</details>}
       </section>
+
+      <AssistancePanel projectId={projectId!} />
 
       <section style={{ padding: 18, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 24 }}>
         <strong style={{ fontSize: 14 }}>Draft history</strong>
