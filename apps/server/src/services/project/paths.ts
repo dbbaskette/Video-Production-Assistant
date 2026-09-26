@@ -31,6 +31,7 @@ export interface ProjectFiles {
   revisionTransactionsDir: string;
   capturesDir: string;
   ideation: string;
+  variants: string;
 }
 
 export function projectFiles(root: string): ProjectFiles {
@@ -60,6 +61,7 @@ export function projectFiles(root: string): ProjectFiles {
     revisionTransactionsDir: path.join(revisionsDir, 'transactions'),
     capturesDir: path.join(vpaDir, 'captures'),
     ideation: path.join(vpaDir, 'ideation.json'),
+    variants: path.join(vpaDir, 'variants.json'),
   };
 }
 

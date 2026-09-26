@@ -22,6 +22,10 @@ import { projectFiles } from '../services/project/paths.js';
 import { getQualityReview } from './quality-review.js';
 import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 import { createSubmittedJob, jobSubmissionFailure, readIdempotencyKey } from '../lib/job-submission.js';
+import { VariantStore, VariantStoreError } from '../services/variants/store.js';
+import { validateVariant, variantDimensions } from '../services/variants/validate.js';
+import { prepareVariantSnapshot, resolveVariantNarration } from '../services/variants/prepare.js';
+import type { OutputVariant } from '@vpa/shared';
 
 interface Deps {
   store: ProjectStore;
@@ -29,14 +33,17 @@ interface Deps {
   workspaceRoot: string;
   registryFile: string;
   renderVideo?: typeof renderFinalVideo;
-  finalizeArtifact?: (inputPath: string, outputPath: string, quality: 'draft' | '1080p') => Promise<{ width: number; height: number }>;
+  finalizeArtifact?: (inputPath: string, outputPath: string, quality: 'draft' | '1080p', variant?: OutputVariant | null) => Promise<{ width: number; height: number }>;
 }
 
-async function finalizeArtifact(inputPath: string, outputPath: string, quality: 'draft' | '1080p') {
-  const target = quality === 'draft' ? { width: 1280, height: 720 } : { width: 1920, height: 1080 };
+async function finalizeArtifact(inputPath: string, outputPath: string, quality: 'draft' | '1080p', variant?: OutputVariant | null) {
+  const target = variant ? variantDimensions(variant.aspect_ratio, quality) : quality === 'draft' ? { width: 1280, height: 720 } : { width: 1920, height: 1080 };
+  const filter = variant?.crop.mode === 'cover'
+    ? `scale=${target.width}:${target.height}:force_original_aspect_ratio=increase,crop=${target.width}:${target.height}:(iw-ow)*${variant.crop.focus_x}:(ih-oh)*${variant.crop.focus_y},fps=30`
+    : `scale=${target.width}:${target.height}:force_original_aspect_ratio=decrease,pad=${target.width}:${target.height}:(ow-iw)/2:(oh-ih)/2,fps=30`;
   await runFfmpeg([
     '-y', '-i', inputPath,
-    '-vf', `scale=${target.width}:${target.height}:force_original_aspect_ratio=decrease,pad=${target.width}:${target.height}:(ow-iw)/2:(oh-ih)/2,fps=30`,
+    '-vf', filter,
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', quality === 'draft' ? '26' : '20',
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
   ]);
@@ -71,6 +78,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
        *  if the project has no explicit music selected. */
       useBrandMusic?: boolean;
       quality?: 'draft' | '1080p';
+      variantId?: string | null;
     };
     const opts: RenderOptions = {
       audioMode: body.audioMode === 'mix' ? 'mix' : 'replace',
@@ -105,6 +113,21 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
         code: 'render_blocked',
         blockers: workflow.render.blockers,
       });
+    }
+
+    let variant: OutputVariant | null = null;
+    if (body.variantId) {
+      try {
+        variant = await new VariantStore(projectPath).get(body.variantId);
+      } catch (error) {
+        const code = error instanceof VariantStoreError ? error.code : 'not_found';
+        return reply.status(code === 'not_found' ? 404 : 409).send({ error: error instanceof Error ? error.message : 'Variant unavailable.', code: 'variant_not_found' });
+      }
+      const currentRevision = await new RevisionStore(projectPath).currentRevision();
+      const validation = validateVariant(variant, storyboard!, project, currentRevision);
+      if (validation.blockers.length > 0) {
+        return reply.status(409).send({ error: 'The output variant needs review before rendering.', code: 'variant_blocked', blockers: validation.blockers, warnings: validation.warnings });
+      }
     }
 
     // Resolve the project's brand so we can pull bumpers / default music. The
@@ -221,7 +244,18 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }
     }
 
-    const frozenInput = await snapshotProjectJobInput(projectPath, { ...body, musicScope });
+    const frozenInput = await snapshotProjectJobInput(projectPath, { ...body, musicScope, variant });
+    let frozenRevision;
+    try {
+      frozenRevision = await new RevisionStore(frozenInput.projectPath).readRevision(frozenInput.inputRevision);
+    } catch (error) {
+      await frozenInput.cleanup();
+      throw error;
+    }
+    if (variant && (frozenInput.inputRevision !== variant.source_revision || JSON.stringify(frozenRevision.project.brand) !== JSON.stringify(variant.source_brand))) {
+      await frozenInput.cleanup();
+      return reply.status(409).send({ error: 'The project changed while this variant render was being prepared. Review and rebase the variant.', code: 'variant_stale' });
+    }
     let submission;
     try {
       submission = await createSubmittedJob('render', {
@@ -250,6 +284,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
 
     void (async () => {
       try {
+        if (variant) await prepareVariantSnapshot(frozenInput.projectPath, variant);
         const result = await renderVideo(frozenInput.projectPath, opts, (event) => {
           jobQueue.emit(job.id, 'progress', event);
         });
@@ -264,16 +299,27 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           useBrandBumpers,
           useBrandMusic,
           quality: body.quality ?? '1080p',
+          variantId: variant?.id ?? null,
+          variantDefinition: variant,
         };
-        const artifactId = `render-${job.id}-r${frozenInput.inputRevision}`.replace(/[^A-Za-z0-9._-]/g, '-');
+        const artifactId = `render-${job.id}-r${frozenInput.inputRevision}${variant ? `-${variant.id}` : ''}`.replace(/[^A-Za-z0-9._-]/g, '-');
         const artifactRel = join('renders', 'artifacts', `${artifactId}.mp4`);
         const artifactPath = join(projectPath, artifactRel);
         await mkdir(join(projectPath, 'renders', 'artifacts'), { recursive: true });
-        const target = await finalize(result.outputPath, artifactPath, body.quality ?? '1080p');
+        let finalizeInput = result.outputPath;
+        if (variant) {
+          const narration = await resolveVariantNarration(frozenInput.projectPath, variant);
+          if (narration) {
+            const localized = join(frozenInput.projectPath, '.vpa', 'variants', variant.id, 'localized-audio.mp4');
+            await mkdir(join(frozenInput.projectPath, '.vpa', 'variants', variant.id), { recursive: true });
+            await runFfmpeg(['-y', '-i', result.outputPath, '-i', narration, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', localized]);
+            finalizeInput = localized;
+          }
+        }
+        const target = await finalize(finalizeInput, artifactPath, body.quality ?? '1080p', variant);
         // Compatibility pointer for older clients. Prior outputs remain under
         // their immutable artifact paths and are never overwritten.
-        await copyFile(artifactPath, join(projectPath, 'renders', 'final.mp4'));
-        const frozenProject = await new RevisionStore(frozenInput.projectPath).readRevision(frozenInput.inputRevision);
+        if (!variant) await copyFile(artifactPath, join(projectPath, 'renders', 'final.mp4'));
         const outputInfo = await stat(artifactPath);
         const assetManifest = await readFile(projectFiles(frozenInput.projectPath).assetManifest, 'utf8').then((raw) => JSON.parse(raw) as { assets?: Array<{ id: string; checksum: string }> }).catch(() => ({ assets: [] }));
         await writeRenderManifest(projectPath, {
@@ -285,6 +331,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           rendererVersion: 'vpa-renderer-2',
           fonts: [],
           completedAt: new Date().toISOString(),
+          ...(variant ? { variant: { id: variant.id, name: variant.name, aspectRatio: variant.aspect_ratio, cropMode: variant.crop.mode, sourceRevision: variant.source_revision, targetLanguage: variant.target_language, localizationProvider: variant.captions[0]?.provider ?? variant.narration_replacement?.provider ?? null } } : {}),
           output: {
             path: artifactRel,
             sizeBytes: outputInfo.size,
@@ -297,8 +344,8 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
             audioCodec: 'aac',
           },
           options: manifestOptions,
-          fingerprint: await buildRenderFingerprint(frozenInput.projectPath, frozenProject.project, frozenProject.storyboard, manifestOptions),
-        });
+          fingerprint: await buildRenderFingerprint(frozenInput.projectPath, frozenRevision.project, frozenRevision.storyboard, manifestOptions),
+        }, { makeCurrent: !variant });
         jobQueue.complete(job.id, {
           projectId: id,
           outputPath: artifactPath,

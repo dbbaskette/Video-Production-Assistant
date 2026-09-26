@@ -46,6 +46,9 @@ import {
   type ProjectRevision,
   AssistanceResponseSchema,
   type AssistanceResponse,
+  VariantValidationSchema,
+  type OutputVariantDraft,
+  type VariantValidation,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -1609,6 +1612,7 @@ export interface RenderManifest {
   revision: number;
   inputFingerprint: string;
   completedAt: string;
+  variant?: { id: string; name: string; aspectRatio: '16:9' | '1:1' | '9:16'; cropMode: 'contain' | 'cover'; sourceRevision: number; targetLanguage: string | null; localizationProvider: string | null };
   output: { path: string; sizeBytes: number; durationSec: number; sceneCount: number; width?: number; height?: number; fps?: number; videoCodec?: string; audioCodec?: string };
   options: unknown;
 }
@@ -1640,7 +1644,28 @@ export interface RenderOptions {
    *  music is selected. Default true. */
   useBrandMusic?: boolean;
   quality?: 'draft' | '1080p';
+  /** Render an explicitly pinned output variant without replacing the base artifact. */
+  variantId?: string | null;
 }
+
+export const variantsApi = {
+  async list(projectId: string): Promise<{ variants: VariantValidation[] }> {
+    const value = await request<{ variants: unknown[] }>('GET', `/api/projects/${projectId}/variants`);
+    return { variants: value.variants.map((variant) => VariantValidationSchema.parse(variant)) };
+  },
+  async create(projectId: string, variant: OutputVariantDraft): Promise<VariantValidation> {
+    return VariantValidationSchema.parse(await request('POST', `/api/projects/${projectId}/variants`, variant));
+  },
+  async update(projectId: string, variant: OutputVariantDraft, expectedUpdatedAt: string): Promise<VariantValidation> {
+    return VariantValidationSchema.parse(await request('PUT', `/api/projects/${projectId}/variants/${encodeURIComponent(variant.id)}`, { variant, expectedUpdatedAt }));
+  },
+  async rebase(projectId: string, variantId: string, expectedUpdatedAt: string): Promise<VariantValidation> {
+    return VariantValidationSchema.parse(await request('POST', `/api/projects/${projectId}/variants/${encodeURIComponent(variantId)}/rebase`, { expectedUpdatedAt }));
+  },
+  async remove(projectId: string, variantId: string, expectedUpdatedAt: string): Promise<{ deleted: boolean }> {
+    return request('DELETE', `/api/projects/${projectId}/variants/${encodeURIComponent(variantId)}?expectedUpdatedAt=${encodeURIComponent(expectedUpdatedAt)}`);
+  },
+};
 
 export interface MusicTrack {
   id: string;

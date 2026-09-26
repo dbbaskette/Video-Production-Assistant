@@ -12,11 +12,13 @@
  * the project pages.
  */
 
+import { useState } from 'react';
 import { useParams, useOutletContext, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { storyboardApi, BASE as API_BASE } from '../lib/api.js';
 import { ProjectMusicAndRender } from './ProjectOverview.js';
 import type { ProjectTrackerEntry, Storyboard, SceneTransition } from '@vpa/shared';
+import { VariantsPanel } from '../components/VariantsPanel.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -25,6 +27,7 @@ interface WorkspaceContext {
 export function RenderPage() {
   const { project } = useOutletContext<WorkspaceContext>();
   const { projectId } = useParams<{ projectId: string }>();
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
 
   const { data: storyboard } = useQuery({
     queryKey: ['storyboard', projectId],
@@ -55,10 +58,12 @@ export function RenderPage() {
               multi-minute render. Sits above the render controls because
               it's review-context, not an action. */}
           <SceneStrip projectId={project.id} storyboard={storyboard!} />
+          <VariantsPanel projectId={project.id} storyboard={storyboard!} selectedVariantId={selectedVariantId} onSelect={setSelectedVariantId} />
           <ProjectMusicAndRender
             projectId={project.id}
             projectName={project.name}
             hasStoryboard={hasStoryboard}
+            selectedVariantId={selectedVariantId}
           />
         </div>
       ) : (
