@@ -6,6 +6,7 @@ import {
   type ImportProjectRequest,
   type ListProjectsResponse,
   type Project,
+  type ProjectTrackerEntry,
   type BrandRegistry,
   type BrandWithDoc,
   type DesignMdFrontMatter,
@@ -39,6 +40,8 @@ import {
   type EvidenceItem,
   type MappedTranscriptWord,
   type SourceTranscript,
+  type ProductionBrief,
+  type ProposalOperation,
   type FeedbackNote,
   type ProjectRevision,
 } from '@vpa/shared';
@@ -439,6 +442,9 @@ export const api = {
     const data = await request<unknown>('PUT', `/api/projects/${id}/brand`, { brand });
     return ProjectSchema.parse(data);
   },
+  async updateProductionBrief(id: string, brief: ProductionBrief): Promise<{ project: Project; result: { revision: number } }> {
+    return request('PUT', `/api/projects/${id}/brief`, brief);
+  },
   /** Remove every tracker entry whose directory no longer exists on disk.
    *  Returns the entries that were pruned. Doesn't touch the filesystem. */
   async pruneMissingProjects(): Promise<{ removed: Array<{ id: string; name: string; path: string }> }> {
@@ -448,6 +454,15 @@ export const api = {
    *  dashboard "Remove from list" affordance. */
   async removeProjectFromTracker(id: string): Promise<{ removed: boolean }> {
     return request('DELETE', `/api/projects/${id}/tracker`);
+  },
+  async renameProject(id: string, name: string): Promise<Project> {
+    return ProjectSchema.parse(await request('PUT', `/api/projects/${id}/name`, { name }));
+  },
+  async archiveProject(id: string): Promise<{ project: ProjectTrackerEntry }> {
+    return request('POST', `/api/projects/${id}/archive`);
+  },
+  async reopenProject(id: string): Promise<{ project: ProjectTrackerEntry }> {
+    return request('POST', `/api/projects/${id}/reopen`);
   },
 };
 
@@ -610,8 +625,14 @@ export const ideationApi = {
   async sendMessage(projectId: string, content: string): Promise<IdeationMessage> {
     return request<IdeationMessage>('POST', `/api/projects/${projectId}/ideation/message`, { content });
   },
-  async accept(projectId: string): Promise<Storyboard> {
-    return request<Storyboard>('POST', `/api/projects/${projectId}/ideation/accept`);
+  async editProposal(projectId: string, operation: ProposalOperation): Promise<IdeationState> {
+    return request('PATCH', `/api/projects/${projectId}/ideation/proposal`, operation);
+  },
+  async acceptPreview(projectId: string): Promise<{ mode: 'create' | 'replace'; proposed: number; preserved: string[]; removed: string[] }> {
+    return request('GET', `/api/projects/${projectId}/ideation/accept-preview`);
+  },
+  async accept(projectId: string): Promise<Storyboard & { acceptance?: { mode: string; preserved: string[]; removed: string[]; revision: number } }> {
+    return request('POST', `/api/projects/${projectId}/ideation/accept`);
   },
 };
 

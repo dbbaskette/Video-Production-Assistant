@@ -85,6 +85,19 @@ describe('projects routes', () => {
     const project = res.json();
     expect(project.name).toBe('demo-1');
     expect(project.path).toBe(path.join(ctx.projects, 'demo-1'));
+    expect(project.production_brief).toMatchObject({ target_duration_sec: 180, aspect_ratio: '16:9', tone: 'clear' });
+  });
+
+  it('updates the production brief and supports rename, archive, and reopen without removing media', async () => {
+    const project = await ctx.store.create({ name: 'lifecycle' });
+    const brief = { version: 1, purpose: 'Teach exports', audience: 'Editors', target_duration_sec: 90, aspect_ratio: '16:9', tone: 'educational', brand: null };
+    const updated = await ctx.app.inject({ method: 'PUT', url: `/api/projects/${project.id}/brief`, payload: brief });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ project: { objective: 'Teach exports', audience: 'Editors', production_brief: brief }, result: { revision: 1 } });
+    expect((await ctx.app.inject({ method: 'PUT', url: `/api/projects/${project.id}/name`, payload: { name: 'renamed' } })).json().name).toBe('renamed');
+    expect((await ctx.app.inject({ method: 'POST', url: `/api/projects/${project.id}/archive` })).json().project.archived).toBe(true);
+    expect((await ctx.store.readProject(project.id)).path).toBe(project.path);
+    expect((await ctx.app.inject({ method: 'POST', url: `/api/projects/${project.id}/reopen` })).json().project.archived).toBe(false);
   });
 
   it('POST /api/projects rejects duplicate name with 409', async () => {

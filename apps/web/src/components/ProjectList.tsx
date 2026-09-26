@@ -7,7 +7,7 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FolderOpen, Search, X } from 'lucide-react';
+import { Archive, ArchiveRestore, FolderOpen, Pencil, Search, X } from 'lucide-react';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { api } from '../lib/api.js';
 import { ProjectMediaSummary } from './ProjectMediaSummary.js';
@@ -43,6 +43,14 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => api.removeProjectFromTracker(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  });
+  const lifecycleMutation = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'archive' | 'reopen' }) => action === 'archive' ? api.archiveProject(id) : api.reopenProject(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
+  });
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameProject(id, name),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['projects'] }),
   });
 
@@ -173,6 +181,11 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
                 });
                 if (ok) removeMutation.mutate(project.id);
               }}
+              onArchive={() => lifecycleMutation.mutate({ id: project.id, action: project.archived ? 'reopen' : 'archive' })}
+              onRename={async () => {
+                const name = await ui.prompt({ title: 'Rename project', body: 'The project folder and media stay in place.', defaultValue: project.name, confirmLabel: 'Rename', validate: (value) => /^[a-zA-Z0-9_-]{1,100}$/.test(value) ? null : 'Use letters, numbers, dashes, or underscores.' });
+                if (name && name !== project.name) renameMutation.mutate({ id: project.id, name });
+              }}
             />
           ))}
         </ul>
@@ -185,16 +198,21 @@ function ProjectCard({
   project,
   onOpen,
   onRemove,
+  onArchive,
+  onRename,
 }: {
   project: ProjectTrackerEntry;
   onOpen: (project: ProjectTrackerEntry) => void;
   onRemove: () => void;
+  onArchive: () => void;
+  onRename: () => void;
 }) {
   const details = (
     <>
       <span className="project-list-card__title-row">
         <span className="project-list-card__name">{project.name}</span>
         {project.missing && <span className="project-list-card__missing">Missing</span>}
+        {project.archived && <span className="project-list-card__missing">Archived</span>}
       </span>
       {!project.missing && <ProjectMediaSummary projectId={project.id} compact />}
       <span className="project-list-card__time">
@@ -230,6 +248,21 @@ function ProjectCard({
       >
         <X size={14} aria-hidden="true" />
       </button>
+      {!project.missing && (
+        <div className="project-list-card__actions">
+          <button type="button" aria-label={`Rename ${project.name}`} title="Rename project" onClick={onRename}>
+            <Pencil size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            aria-label={`${project.archived ? 'Reopen' : 'Archive'} ${project.name}`}
+            title={project.archived ? 'Reopen project' : 'Archive project'}
+            onClick={onArchive}
+          >
+            {project.archived ? <ArchiveRestore size={14} aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}
+          </button>
+        </div>
+      )}
     </li>
   );
 }

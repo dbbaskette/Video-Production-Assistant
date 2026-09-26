@@ -23,6 +23,7 @@ import { registerVoiceCloneRoutes } from './routes/voice-clone.js';
 import { registerTtsScratchRoutes } from './routes/tts-scratch.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerRenderRoutes } from './routes/render.js';
+import { registerProductionRoutes } from './routes/production.js';
 import { registerSceneRenderRoutes } from './routes/scene-render.js';
 import { registerMusicRoutes } from './routes/music.js';
 import { registerSourceDocsRoutes } from './routes/source-docs.js';
@@ -362,6 +363,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       registryFile: bPaths.registryFile,
     }),
   );
+  await app.register(async (instance) => registerProductionRoutes(instance, { store }));
   await app.register(async (instance) =>
     registerSceneRenderRoutes(instance, {
       store,

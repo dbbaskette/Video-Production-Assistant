@@ -33,6 +33,9 @@ describe('ProjectList', () => {
     vi.spyOn(api, 'listProjects').mockResolvedValue({ projects });
     vi.spyOn(api, 'removeProjectFromTracker').mockResolvedValue({ removed: true });
     vi.spyOn(api, 'pruneMissingProjects').mockResolvedValue({ removed: [] });
+    vi.spyOn(api, 'renameProject').mockResolvedValue({} as never);
+    vi.spyOn(api, 'archiveProject').mockResolvedValue({ project: projects[0]! });
+    vi.spyOn(api, 'reopenProject').mockResolvedValue({ project: projects[0]! });
   });
 
   afterEach(() => {
@@ -98,6 +101,21 @@ describe('ProjectList', () => {
     await waitForUi(() => expect(view.container.textContent).toContain('No projects yet'));
     expect(view.container.textContent).toContain('0 projects');
     expect(view.container.textContent).not.toContain('No projects match this search');
+    view.unmount();
+  });
+
+  it('keeps rename and archive controls outside the open-project link', async () => {
+    const view = renderProjectList();
+    await waitForUi(() => expect(view.container.querySelector('[aria-label="Open Alpha"]')).not.toBeNull());
+
+    const open = view.container.querySelector<HTMLAnchorElement>('[aria-label="Open Alpha"]')!;
+    const rename = view.container.querySelector<HTMLButtonElement>('[aria-label="Rename Alpha"]')!;
+    const archive = view.container.querySelector<HTMLButtonElement>('[aria-label="Archive Alpha"]')!;
+    expect(open.contains(rename)).toBe(false);
+    expect(open.contains(archive)).toBe(false);
+
+    act(() => archive.click());
+    await waitForUi(() => expect(api.archiveProject).toHaveBeenCalledWith(projects[1]!.id));
     view.unmount();
   });
 });

@@ -710,6 +710,26 @@ a:hover { text-decoration: underline; }
 }
 .project-list-card__remove:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
 .project-list-card__remove:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.project-list-card__actions {
+  display: flex;
+  align-items: stretch;
+  border-left: 1px solid var(--border);
+}
+.project-list-card__actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+}
+.project-list-card__actions button:hover:not(:disabled) { background: var(--accent-bg); color: var(--accent); }
+.project-list-card__actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .project-list-empty { display: grid; justify-items: center; gap: 8px; }
 .project-list-empty strong { color: var(--fg); font-size: 14px; }
 .project-list-empty span { color: var(--fg-muted); }
