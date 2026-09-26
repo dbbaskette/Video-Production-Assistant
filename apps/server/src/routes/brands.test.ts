@@ -253,6 +253,31 @@ describe('POST /api/brands', () => {
   });
 });
 
+describe('manual and versioned brand kits', () => {
+  it('creates a validated starter kit without calling a model', async () => {
+    resolveText.mockClear();
+    const created = await app.inject({
+      method: 'POST', url: '/api/brands/manual',
+      payload: { name: 'Manual Kit', primary_color: '#112233', font_family: 'Helvetica', tone: 'Direct.' },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ registry: { id: 'manual-kit', version: 1 }, doc: { frontMatter: { colors: { primary: '#112233' } } } });
+    expect(resolveText).not.toHaveBeenCalled();
+    expect((await app.inject({ method: 'GET', url: '/api/brands/manual-kit/versions' })).json()).toEqual({ versions: [1] });
+  });
+
+  it('keeps prior versions readable and validates missing assets', async () => {
+    const created = await app.inject({ method: 'POST', url: '/api/brands/manual', payload: { name: 'Pinned Kit' } });
+    const kit = created.json();
+    const next = { ...kit.doc.frontMatter, colors: { ...kit.doc.frontMatter.colors, primary: '#334455' } };
+    const updated = await app.inject({ method: 'PUT', url: '/api/brands/pinned-kit', payload: { front_matter: next, body: 'Updated' } });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().registry.version).toBe(2);
+    expect((await app.inject({ method: 'GET', url: '/api/brands/pinned-kit/versions/1' })).json().doc.frontMatter.colors.primary).toBe('#2563EB');
+    expect((await app.inject({ method: 'GET', url: '/api/brands/pinned-kit/validate?version=1' })).json()).toMatchObject({ valid: true, version: 1, missingAssets: [] });
+  });
+});
+
 describe('POST /api/brands/:slug/generate', () => {
   it('resumes with front_matter and completes the brand', async () => {
     // Step 1: Create brand

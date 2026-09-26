@@ -1,10 +1,20 @@
 import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { writeFile, mkdir, stat, readFile as fsReadFile } from 'node:fs/promises';
 import { join, basename, extname } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { BrandPaths } from '../services/brand/paths.js';
 import { jobQueue } from '../lib/job-queue.js';
-import { listBrands, readBrand, deleteBrand, updateBrandDoc } from '../services/brand/store.js';
+import {
+  createBrand,
+  listBrandVersions,
+  listBrands,
+  readBrand,
+  readBrandVersion,
+  deleteBrand,
+  updateBrandDoc,
+  validateBrandVersion,
+} from '../services/brand/store.js';
 import { runBrandExtractJob, runBrandGenerateJob } from '../services/brand-generation/index.js';
 import type { ExtractInput } from '../services/document-extract/index.js';
 import { ModelRoutingError, type ModelRouter } from '../services/llm/model-router.js';
@@ -23,6 +33,7 @@ export interface BrandRouteOptions {
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.md', '.markdown', '.txt']);
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function slugify(name: string): string {
   return name
@@ -36,6 +47,7 @@ interface ReferencingProject {
   id: string;
   name: string;
   path: string;
+  applied_version: number;
 }
 
 async function listReferencingProjects(
@@ -57,7 +69,7 @@ async function listReferencingProjects(
       const raw = yaml.default.load(yamlText, { schema: yaml.default.CORE_SCHEMA }) as Record<string, unknown>;
       const project = ProjectSchema.safeParse(raw);
       if (project.success && project.data.brand?.id === brandSlug) {
-        results.push({ id: entry.id, name: entry.name, path: entry.path });
+        results.push({ id: entry.id, name: entry.name, path: entry.path, applied_version: project.data.brand.applied_version });
       }
     } catch {
       // Skip projects that can't be read
@@ -76,9 +88,45 @@ export async function registerBrandRoutes(
   const pendingSlugs = new Set<string>();
 
   // ──────────────────── GET /api/brands ────────────────────
-  app.get('/api/brands', async (_req, reply) => {
+  app.get('/api/brands', async (_req, _reply) => {
     const registry = await listBrands(registryFile);
     return registry;
+  });
+
+  // Manual creation is intentionally separate from the model-assisted source
+  // pipeline. It is synchronous and never resolves or calls an LLM.
+  app.post('/api/brands/manual', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const slug = typeof body.slug === 'string' && body.slug.trim() ? slugify(body.slug) : slugify(name);
+    if (!name || !slug) return reply.code(400).send({ error: 'name is required', code: 'invalid_request' });
+    const existing = await listBrands(registryFile);
+    if (existing.brands.some((brand) => brand.id === slug)) {
+      return reply.code(409).send({ error: `Brand "${slug}" already exists`, code: 'already_exists' });
+    }
+    const primary = typeof body.primary_color === 'string' ? body.primary_color : '#2563EB';
+    const secondary = typeof body.secondary_color === 'string' ? body.secondary_color : '#0F172A';
+    const fontFamily = typeof body.font_family === 'string' && body.font_family.trim() ? body.font_family.trim() : 'Inter';
+    const tone = typeof body.tone === 'string' ? body.tone.trim() : 'Clear, confident, and concise.';
+    const parsed = DesignMdFrontMatter.safeParse({
+      version: 'alpha', name, description: typeof body.description === 'string' ? body.description : undefined,
+      colors: { primary, secondary, surface: '#FFFFFF', neutral: '#F1F5F9' },
+      typography: {
+        headline: { fontFamily, fontSize: '40px', fontWeight: 700, lineHeight: 1.1 },
+        body: { fontFamily, fontSize: '18px', fontWeight: 400, lineHeight: 1.5 },
+      },
+      rounded: { sm: '6px', md: '12px' }, spacing: { sm: '8px', md: '16px', lg: '24px' }, components: {},
+      vpa: {
+        voice: { tone, avoid: [] },
+        audio: { music_mood: null, sonic_logo: null, bumper_intro: null, bumper_outro: null, default_music_track: null },
+        logo: { primary: null, mono: null, safe_zone_ratio: 0.25 },
+        lower_thirds: { template: 'bar-left-accent', bg: '{colors.primary}', fg: '#FFFFFF' },
+        production: {}, taglines: [],
+      },
+    });
+    if (!parsed.success) return reply.code(400).send({ error: 'Manual brand settings are invalid.', code: 'invalid_request', details: parsed.error.flatten() });
+    const created = await createBrand(paths, registryFile, { slug, name, frontMatter: parsed.data, body: '# Brand rationale\n\nCreated manually in VPA.\n' });
+    return reply.code(201).send(created);
   });
 
   // ──────────────────── POST /api/brands ────────────────────
@@ -274,14 +322,43 @@ export async function registerBrandRoutes(
       try {
         const brand = await readBrand(paths, registryFile, slug);
         return brand;
-      } catch (err: any) {
-        if (err.message?.includes('not found')) {
+      } catch (err: unknown) {
+        if (errorMessage(err).includes('not found')) {
           return reply.code(404).send({ error: `Brand "${slug}" not found` });
         }
         throw err;
       }
     },
   );
+
+  app.get<{ Params: { slug: string } }>('/api/brands/:slug/versions', async (req, reply) => {
+    try {
+      return { versions: await listBrandVersions(paths, registryFile, req.params.slug) };
+    } catch {
+      return reply.code(404).send({ error: `Brand "${req.params.slug}" not found`, code: 'not_found' });
+    }
+  });
+
+  app.get<{ Params: { slug: string; version: string } }>('/api/brands/:slug/versions/:version', async (req, reply) => {
+    const version = Number(req.params.version);
+    if (!Number.isInteger(version) || version < 1) return reply.code(400).send({ error: 'Invalid brand version.', code: 'invalid_request' });
+    try {
+      return await readBrandVersion(paths, registryFile, req.params.slug, version);
+    } catch {
+      return reply.code(404).send({ error: `Brand version ${version} not found`, code: 'not_found' });
+    }
+  });
+
+  app.get<{ Params: { slug: string }; Querystring: { version?: string } }>('/api/brands/:slug/validate', async (req, reply) => {
+    try {
+      const current = await readBrand(paths, registryFile, req.params.slug);
+      const requested = req.query.version === undefined ? current.registry.version : Number(req.query.version);
+      if (!Number.isInteger(requested) || requested < 1) return reply.code(400).send({ error: 'Invalid brand version.', code: 'invalid_request' });
+      return await validateBrandVersion(paths, registryFile, req.params.slug, requested);
+    } catch {
+      return reply.code(404).send({ error: 'Brand version not found.', code: 'not_found' });
+    }
+  });
 
   // ──────────────────── GET /api/brands/:slug/download ────────────────────
   // Markdown-only download (preserved for backwards compat / quick access).
@@ -381,8 +458,8 @@ export async function registerBrandRoutes(
       try {
         const forked = await forkBrand(paths, registryFile, parentSlug, { name });
         return reply.code(201).send(forked);
-      } catch (err: any) {
-        if (err.message?.includes('not found')) {
+      } catch (err: unknown) {
+        if (errorMessage(err).includes('not found')) {
           return reply.code(404).send({ error: `Brand "${parentSlug}" not found` });
         }
         throw err;
@@ -411,8 +488,8 @@ export async function registerBrandRoutes(
           }
           const brand = await readBrand(paths, registryFile, slug);
           return reply.code(200).send(brand);
-        } catch (err: any) {
-          if (err.message?.includes('not found')) {
+        } catch (err: unknown) {
+          if (errorMessage(err).includes('not found')) {
             return reply.code(404).send({ error: `Brand "${slug}" not found` });
           }
           throw err;
@@ -434,8 +511,8 @@ export async function registerBrandRoutes(
             body: typeof body.body === 'string' ? body.body : '',
           });
           return reply.code(200).send(updated);
-        } catch (err: any) {
-          if (err.message?.includes('not found')) {
+        } catch (err: unknown) {
+          if (errorMessage(err).includes('not found')) {
             return reply.code(404).send({ error: `Brand "${slug}" not found` });
           }
           throw err;
@@ -659,7 +736,9 @@ export async function registerBrandRoutes(
       // Sanitise the filename — keep alphanumerics, dash, underscore, dot.
       // Prevents shell-special chars and ensures the path round-trips through
       // URLs cleanly.
-      const safeName = filename.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 200) || 'upload';
+      const normalizedName = filename.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 160) || 'upload';
+      const digest = createHash('sha256').update(fileData).digest('hex').slice(0, 16);
+      const safeName = `${digest}-${normalizedName}`;
       const destPath = join(destDir, safeName);
       await writeFile(destPath, fileData);
 
@@ -681,6 +760,11 @@ export async function registerBrandRoutes(
           },
           logo: { primary: null, mono: null, safe_zone_ratio: 0.25 },
           lower_thirds: { template: 'bar-left-accent' as const, bg: '{colors.primary}', fg: '{colors.surface}' },
+          production: {
+            captions: { preset: 'clean' as const, font_family: 'Inter', foreground: '#FFFFFF', background: '#111827' },
+            callouts: { preset: 'label' as const, foreground: '#FFFFFF', background: '#2563EB' },
+            narration: { profile_id: null, speed: 1 },
+          },
           taglines: [] as string[],
         };
         const vpa = fm.vpa ?? defaultVpa;
@@ -701,40 +785,9 @@ export async function registerBrandRoutes(
           body: current.doc.body,
         });
 
-        // Best-effort delete the previous file when it's a) actually different
-        // from the new one (same-name uploads were overwritten in place by
-        // writeFile above), and b) not referenced by any other vpa pointer
-        // (primary + mono can legitimately share the same image). Without this
-        // the brand `assets/` directory accumulates orphans that ride along in
-        // the download.zip bundle.
-        if (
-          typeof previousPath === 'string' &&
-          previousPath.startsWith('assets/') &&
-          previousPath !== relPath
-        ) {
-          const u = updatedVpa as {
-            logo?: { primary?: unknown; mono?: unknown };
-            audio?: {
-              bumper_intro?: unknown;
-              bumper_outro?: unknown;
-              default_music_track?: unknown;
-              sonic_logo?: unknown;
-            };
-          };
-          const stillReferenced = [
-            u.logo?.primary,
-            u.logo?.mono,
-            u.audio?.bumper_intro,
-            u.audio?.bumper_outro,
-            u.audio?.default_music_track,
-            u.audio?.sonic_logo,
-          ].some((v) => v === previousPath);
-          if (!stillReferenced) {
-            const abs = join(paths.assetsDir(slug), previousPath.replace(/^assets\//, ''));
-            const { unlink } = await import('node:fs/promises');
-            await unlink(abs).catch(() => {});
-          }
-        }
+        // Assets are content-addressed and retained. Older pinned brand
+        // versions may still reference the previous path.
+        void previousPath;
       }
 
       return reply.code(201).send({ path: relPath });
@@ -742,9 +795,8 @@ export async function registerBrandRoutes(
   );
 
   // ──────────────────── DELETE /api/brands/:slug/assets/* ────────────────────
-  // Clear a brand asset by category. Removes the front-matter pointer and the
-  // file on disk. Used by the "Remove" button next to each uploadable slot in
-  // the Brand Assets tab.
+  // Clear a brand asset by category. The current pointer is removed, while
+  // the content-addressed file remains available to pinned older versions.
   app.delete<{ Params: { slug: string }; Querystring: { field?: string } }>(
     '/api/brands/:slug/assets',
     async (req, reply) => {
@@ -781,16 +833,9 @@ export async function registerBrandRoutes(
         frontMatter: { ...fm, vpa: { ...vpa, [group]: updatedGroup } },
         body: current.doc.body,
       });
-      // Best-effort delete the file too — we don't want orphaned bumpers on
-      // disk. Failure is harmless (front-matter pointer is gone, render won't
-      // find it).
-      if (typeof currentPath === 'string' && currentPath.startsWith('assets/')) {
-        try {
-          const abs = join(paths.assetsDir(slug), currentPath.replace(/^assets\//, ''));
-          const { unlink } = await import('node:fs/promises');
-          await unlink(abs).catch(() => {});
-        } catch { /* ignore */ }
-      }
+      // Keep the immutable asset on disk because a pinned older version may
+      // still reference it. Brand deletion remains the cleanup boundary.
+      void currentPath;
       return reply.send({ cleared: true });
     },
   );

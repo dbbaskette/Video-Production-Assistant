@@ -491,6 +491,21 @@ export const brandsApi = {
   async detail(slug: string): Promise<BrandWithDoc> {
     return request<BrandWithDoc>('GET', `/api/brands/${slug}`);
   },
+  async manual(input: { name: string; slug?: string; description?: string; primary_color?: string; secondary_color?: string; font_family?: string; tone?: string }): Promise<BrandWithDoc> {
+    return request<BrandWithDoc>('POST', '/api/brands/manual', input);
+  },
+  async update(slug: string, frontMatter: DesignMdFrontMatter, body: string): Promise<BrandWithDoc> {
+    return request<BrandWithDoc>('PUT', `/api/brands/${slug}`, { front_matter: frontMatter, body });
+  },
+  async versions(slug: string): Promise<{ versions: number[] }> {
+    return request('GET', `/api/brands/${slug}/versions`);
+  },
+  async version(slug: string, version: number): Promise<BrandWithDoc> {
+    return request('GET', `/api/brands/${slug}/versions/${version}`);
+  },
+  async validate(slug: string, version?: number): Promise<{ valid: boolean; version: number; missingAssets: string[]; fonts: string[] }> {
+    return request('GET', `/api/brands/${slug}/validate${version ? `?version=${version}` : ''}`);
+  },
   async create(form: FormData): Promise<{ job_id: string; slug: string }> {
     const { value } = await uploadRequest('POST', '/api/brands', form);
     return value as { job_id: string; slug: string };
@@ -556,7 +571,7 @@ export const brandsApi = {
     const encodedPath = stripped.split('/').map(encodeURIComponent).join('/');
     return `${BASE}/api/brands/${slug}/assets/${encodedPath}`;
   },
-  async listProjects(slug: string): Promise<{ projects: Array<{ id: string; name: string; path: string }> }> {
+  async listProjects(slug: string): Promise<{ projects: Array<{ id: string; name: string; path: string; applied_version: number }> }> {
     return request('GET', `/api/brands/${slug}/projects`);
   },
 };

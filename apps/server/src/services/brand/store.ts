@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { BrandRegistry, BrandWithDoc, DesignMd, DesignMdFrontMatter } from '@vpa/shared';
@@ -28,6 +29,8 @@ export async function createBrand(
   const now = new Date().toISOString();
   const text = serializeDesignMd(input.frontMatter, input.body);
   await atomicWriteFile(paths.designMd(input.slug), text);
+  await mkdir(paths.versionsDir(input.slug), { recursive: true });
+  await atomicWriteFile(paths.versionDesignMd(input.slug, 1), text);
 
   if (input.forkedFrom) {
     await atomicWriteFile(
@@ -83,10 +86,81 @@ export async function updateBrandDoc(
 ): Promise<BrandWithDoc> {
   const current = await readBrand(paths, registryFile, slug);
   DesignMdFrontMatter.parse(input.frontMatter);
-  await atomicWriteFile(paths.designMd(slug), serializeDesignMd(input.frontMatter, input.body));
+  await mkdir(paths.versionsDir(slug), { recursive: true });
+  const currentText = serializeDesignMd(current.doc.frontMatter, current.doc.body);
+  await atomicWriteFile(paths.versionDesignMd(slug, current.registry.version), currentText);
+  const nextText = serializeDesignMd(input.frontMatter, input.body);
+  await atomicWriteFile(paths.designMd(slug), nextText);
   const nextVersion = current.registry.version + 1;
+  await atomicWriteFile(paths.versionDesignMd(slug, nextVersion), nextText);
   await updateEntry(registryFile, slug, { version: nextVersion, name: input.frontMatter.name });
   return readBrand(paths, registryFile, slug);
+}
+
+function parseDesignMd(raw: string): DesignMd {
+  const parsed = matter(raw, {
+    engines: {
+      yaml: { parse: (s) => yaml.load(s) as object, stringify: (o) => yaml.dump(o) },
+    },
+  });
+  return DesignMd.parse({ frontMatter: parsed.data, body: parsed.content.trimStart() });
+}
+
+export async function readBrandVersion(
+  paths: BrandPaths,
+  registryFile: string,
+  slug: string,
+  version: number,
+): Promise<BrandWithDoc> {
+  const current = await readBrand(paths, registryFile, slug);
+  if (version === current.registry.version) return current;
+  const raw = await readFile(paths.versionDesignMd(slug, version), 'utf8').catch(() => null);
+  if (!raw) throw new Error(`Brand "${slug}" version ${version} not found`);
+  return { registry: { ...current.registry, version }, doc: parseDesignMd(raw) };
+}
+
+export async function listBrandVersions(paths: BrandPaths, registryFile: string, slug: string): Promise<number[]> {
+  const current = await readBrand(paths, registryFile, slug);
+  const names = await readdir(paths.versionsDir(slug)).catch(() => []);
+  const versions = names.flatMap((name) => {
+    const match = /^v(\d+)\.design\.md$/.exec(name);
+    return match ? [Number(match[1])] : [];
+  });
+  versions.push(current.registry.version);
+  return [...new Set(versions)].sort((a, b) => b - a);
+}
+
+export interface BrandValidation {
+  valid: boolean;
+  version: number;
+  missingAssets: string[];
+  fonts: string[];
+}
+
+export async function validateBrandVersion(
+  paths: BrandPaths,
+  registryFile: string,
+  slug: string,
+  version: number,
+): Promise<BrandValidation> {
+  const brand = await readBrandVersion(paths, registryFile, slug, version);
+  const vpa = brand.doc.frontMatter.vpa;
+  const referenced = [
+    vpa?.logo.primary,
+    vpa?.logo.mono,
+    vpa?.audio.bumper_intro,
+    vpa?.audio.bumper_outro,
+    vpa?.audio.default_music_track,
+    vpa?.audio.sonic_logo,
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const missingAssets: string[] = [];
+  for (const relative of referenced) {
+    const absolute = join(paths.brandDir(slug), relative);
+    const info = await stat(absolute).catch(() => null);
+    if (!info?.isFile()) missingAssets.push(relative);
+  }
+  const fonts = [...new Set(Object.values(brand.doc.frontMatter.typography).map((level) => level.fontFamily))];
+  return { valid: missingAssets.length === 0, version, missingAssets, fonts };
 }
 
 export async function deleteBrand(

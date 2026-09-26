@@ -4,8 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { brandsApi, ApiError, type UploadProgress } from '../lib/api';
 import { useUi } from '../components/ui/UiProvider.js';
 import type { DesignMdFrontMatter, BrandWithDoc } from '@vpa/shared';
+import { BrandReviewForm } from '../components/BrandReviewForm.js';
+import { BrandPreviewPane } from '../components/BrandPreviewPane.js';
 
-type Tab = 'overview' | 'tokens' | 'markdown' | 'assets' | 'usage';
+type Tab = 'overview' | 'tokens' | 'markdown' | 'assets' | 'usage' | 'history';
 
 /* ── Sub-components ────────────────────────────────────────── */
 
@@ -490,6 +492,7 @@ function UsagePane({ slug }: { slug: string }) {
           >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 2 }}>Pinned to brand v{p.applied_version}</div>
               <div
                 style={{
                   fontSize: 12,
@@ -531,6 +534,9 @@ export default function BrandDetail() {
 
   const [tab, setTab] = useState<Tab>('overview');
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<DesignMdFrontMatter | null>(null);
+  const [draftBody, setDraftBody] = useState('');
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['brand', slug],
@@ -544,6 +550,26 @@ export default function BrandDetail() {
   });
 
   const isDefault = registry?.default_brand_id === slug;
+  const versions = useQuery({
+    queryKey: ['brand-versions', slug],
+    queryFn: () => brandsApi.versions(slug!),
+    enabled: !!slug,
+  });
+  const validation = useQuery({
+    queryKey: ['brand-validation', slug, data?.registry.version],
+    queryFn: () => brandsApi.validate(slug!, data!.registry.version),
+    enabled: !!slug && !!data,
+  });
+
+  const saveMut = useMutation({
+    mutationFn: () => brandsApi.update(slug!, draft!, draftBody),
+    onSuccess: () => {
+      setEditing(false);
+      queryClient.invalidateQueries({ queryKey: ['brand', slug] });
+      queryClient.invalidateQueries({ queryKey: ['brand-versions', slug] });
+      queryClient.invalidateQueries({ queryKey: ['brand-validation', slug] });
+    },
+  });
 
   const setDefaultMut = useMutation({
     mutationFn: (val: boolean) => brandsApi.setDefault(slug!, val),
@@ -640,6 +666,9 @@ export default function BrandDetail() {
 
   const { registry: entry, doc } = data;
   const fm = doc.frontMatter;
+  const unavailableFonts = validation.data?.fonts.filter((font) =>
+    typeof document !== 'undefined' && document.fonts ? !document.fonts.check(`12px "${font}"`) : false,
+  ) ?? [];
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'overview', label: 'Overview' },
@@ -647,6 +676,7 @@ export default function BrandDetail() {
     { key: 'markdown', label: 'Markdown' },
     { key: 'assets', label: 'Assets' },
     { key: 'usage', label: 'Usage' },
+    { key: 'history', label: 'History' },
   ];
 
   return (
@@ -700,6 +730,9 @@ export default function BrandDetail() {
         <button type="button" onClick={handleFork} disabled={forkMut.isPending}>
           {forkMut.isPending ? 'Forking...' : 'Fork'}
         </button>
+        <button type="button" className="primary" onClick={() => { setDraft(fm); setDraftBody(doc.body); setEditing(true); }}>
+          Edit kit
+        </button>
 
         <div style={{ flex: 1 }} />
 
@@ -722,6 +755,18 @@ export default function BrandDetail() {
         )}
       </div>
 
+      {editing && draft && (
+        <section className="card" style={{ padding: 18, marginBottom: 20 }} aria-label="Edit brand kit">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+            <div><strong>Edit visual kit</strong><div className="hint">Saving creates a new immutable version. Existing projects stay pinned.</div></div>
+            <div style={{ display: 'flex', gap: 8 }}><button onClick={() => setEditing(false)}>Cancel</button><button className="primary" disabled={saveMut.isPending} onClick={() => saveMut.mutate()}>{saveMut.isPending ? 'Saving…' : 'Save as new version'}</button></div>
+          </div>
+          {saveMut.isError && <p role="alert" style={{ color: 'var(--danger)' }}>{saveMut.error instanceof Error ? saveMut.error.message : 'Save failed'}</p>}
+          <div className="brand-new__panes"><BrandReviewForm value={draft} onChange={setDraft} /><BrandPreviewPane value={draft} body={draftBody} /></div>
+          <details style={{ marginTop: 14 }}><summary>Advanced rationale markdown</summary><textarea aria-label="Brand rationale markdown" rows={12} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} style={{ width: '100%', marginTop: 8 }} /></details>
+        </section>
+      )}
+
       {/* Tabs */}
       <div className="brand-detail__tabs">
         {tabs.map((t) => (
@@ -738,6 +783,10 @@ export default function BrandDetail() {
       {/* Tab content */}
       {tab === 'overview' && (
         <div>
+          <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+            <strong>{validation.data?.valid ? 'Ready for production' : validation.isLoading ? 'Checking production readiness…' : 'Needs attention'}</strong>
+            {validation.data && <div className="hint">Assets: {validation.data.missingAssets.length ? `missing ${validation.data.missingAssets.join(', ')}` : 'available'} · Fonts: {unavailableFonts.length ? `unavailable in this browser: ${unavailableFonts.join(', ')}` : validation.data.fonts.join(', ') || 'none declared'}</div>}
+          </div>
           {fm.description && <p className="brand-detail__overview-desc">{fm.description}</p>}
 
           <div className="brand-detail__color-grid">
@@ -795,6 +844,14 @@ export default function BrandDetail() {
       {tab === 'assets' && <AssetsPane data={data} slug={slug!} onRefresh={() => queryClient.invalidateQueries({ queryKey: ['brand', slug] })} />}
 
       {tab === 'usage' && <UsagePane slug={slug!} />}
+
+      {tab === 'history' && (
+        <div className="card" style={{ padding: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Immutable kit versions</h3>
+          <p className="hint">Projects keep their applied version until you explicitly upgrade or roll them back.</p>
+          <div style={{ display: 'grid', gap: 8 }}>{versions.data?.versions.map((version) => <div key={version} style={{ display: 'flex', justifyContent: 'space-between', padding: 10, border: '1px solid var(--border)', borderRadius: 8 }}><span>Version {version}</span><span className="hint">{version === entry.version ? 'Current library version' : 'Available for rollback'}</span></div>)}</div>
+        </div>
+      )}
     </main>
   );
 }

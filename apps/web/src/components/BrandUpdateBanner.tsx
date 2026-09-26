@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { brandsApi } from '../lib/api';
+import { api, brandsApi } from '../lib/api';
 
 interface Props {
   projectId: string;
@@ -20,12 +20,7 @@ export function BrandUpdateBanner({ projectId, brandId, appliedVersion }: Props)
 
   const apply = useMutation({
     mutationFn: async (newVersion: number) => {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brand: { id: brandId, applied_version: newVersion } }),
-      });
-      if (!res.ok) throw new Error(`Apply failed: ${res.status}`);
+      await api.setProjectBrand(projectId, { id: brandId, applied_version: newVersion });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['project', projectId] }),
   });

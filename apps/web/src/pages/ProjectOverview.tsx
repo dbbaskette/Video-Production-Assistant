@@ -20,6 +20,7 @@ import { SnapshotHistory } from '../components/SnapshotHistory.js';
 import { ProjectActionCard } from '../components/ProjectActionCard.js';
 import { RenderPreflight } from '../components/RenderPreflight.js';
 import { ModelAssignments } from '../components/ModelAssignments.js';
+import { BrandUpdateBanner } from '../components/BrandUpdateBanner.js';
 import { useWorkflowStatus } from '../lib/pipeline.js';
 import { ApiError } from '../lib/api.js';
 
@@ -199,10 +200,11 @@ function RenderSection({
     enabled: !!projectId,
   });
   const brandSlug = projectQuery.data?.brand?.id ?? null;
+  const brandVersion = projectQuery.data?.brand?.applied_version ?? null;
   const brandQuery = useQuery({
-    queryKey: ['brand', brandSlug],
-    queryFn: () => brandsApi.detail(brandSlug!),
-    enabled: !!brandSlug,
+    queryKey: ['brand', brandSlug, brandVersion],
+    queryFn: () => brandsApi.version(brandSlug!, brandVersion!),
+    enabled: !!brandSlug && !!brandVersion,
   });
   const brandAudio = brandQuery.data?.doc.frontMatter.vpa?.audio as
     | {
@@ -1244,6 +1246,11 @@ function ProjectBrandSection({ projectId }: { projectId: string }) {
 
   const appliedBrandId = project?.brand?.id ?? null;
   const appliedBrand = registry?.brands.find((b) => b.id === appliedBrandId) ?? null;
+  const brandVersions = useQuery({
+    queryKey: ['brand-versions', appliedBrandId],
+    queryFn: () => brandsApi.versions(appliedBrandId!),
+    enabled: !!appliedBrandId,
+  });
 
   return (
     <div
@@ -1325,6 +1332,16 @@ function ProjectBrandSection({ projectId }: { projectId: string }) {
             </option>
           ))}
         </select>
+        {appliedBrandId && project?.brand && (
+          <select
+            aria-label="Applied brand version"
+            value={project.brand.applied_version}
+            onChange={(event) => setBrand.mutate({ id: appliedBrandId, applied_version: Number(event.target.value) })}
+            disabled={setBrand.isPending || !brandVersions.data}
+          >
+            {brandVersions.data?.versions.map((version) => <option key={version} value={version}>Version {version}{version === appliedBrand?.version ? ' (current)' : ''}</option>)}
+          </select>
+        )}
         {setBrand.isPending && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Saving...</span>}
         {setBrand.isError && (
           <span style={{ fontSize: 12, color: 'var(--danger)' }}>
@@ -1332,6 +1349,7 @@ function ProjectBrandSection({ projectId }: { projectId: string }) {
           </span>
         )}
       </div>
+      {appliedBrandId && project?.brand && <div style={{ marginTop: 12 }}><BrandUpdateBanner projectId={projectId} brandId={appliedBrandId} appliedVersion={project.brand.applied_version} /></div>}
     </div>
   );
 }

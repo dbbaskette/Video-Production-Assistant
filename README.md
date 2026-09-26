@@ -92,8 +92,8 @@ The left sidebar lays out the workflow as a sequence of dedicated phase pages. E
 
 | Feature | Description |
 |---|---|
-| **Brand Library** | Create reusable brand profiles from PDFs, URLs, or free text. Stored as `design.md` files. **Brand Assets** tab supports logos, **start/end bumpers** (videos), **default music** track, and other media — auto-applied to every render using that brand. Uploading a replacement asset removes the previous file from disk (skipped only when another field still references it), so the **Download** zip stays clean of orphans. **Usage** tab lists every project linked to the brand. |
-| **Per-project Brand** | Apply a brand to a project; the picker on Project Overview and the badge in the sidebar surface the active brand. The Render page displays which brand assets will be applied + per-render opt-out checkboxes. |
+| **Brand Library** | Create reusable brand profiles manually or from PDFs, URLs, and free text. The visual editor covers colors, typography, voice, captions, callouts, narration, lower thirds and production assets. Every save creates an immutable version; content-addressed assets remain available to pinned projects. |
+| **Per-project Brand** | Apply a specific brand version to a project, explicitly upgrade or roll back, and validate referenced assets before rendering. The Render page displays which pinned brand assets will be applied plus per-render opt-out controls. |
 | **Voices Library** | Record or upload voice clones in-browser; ffmpeg transcodes to canonical 24 kHz mono WAV. Use them with Fish Audio (local) or register them as xAI custom voices |
 | **AI Ideation** | Chat-based storyboard planning with scene proposals and refinement |
 | **Task-based model routing** | Assign separate global specialists for video understanding, writing, and general analysis, with optional per-project overrides. Grounded writing uses a local validated brief so only Gemini receives video. See [model routing](docs/model-routing.md). |
@@ -261,6 +261,7 @@ docs/superpowers/     Design specs and implementation plans
 Create reusable brand profiles from documents (PDF, markdown, URL, free text). Each brand is stored as a `design.md` file with VPA-specific extensions, plus a folder of asset files.
 
 - Brand directories: `<VPA_HOME>/brands/<slug>/design.md`
+- Immutable design versions: `<VPA_HOME>/brands/<slug>/versions/vN.design.md`
 - Brand assets: `<VPA_HOME>/brands/<slug>/assets/`
   - Logos: `assets/<filename>.{png,svg,jpg,webp}`
   - **Bumpers**: `assets/bumpers/<filename>.mp4` — start + end videos automatically prepended/appended at render time
@@ -270,7 +271,7 @@ Create reusable brand profiles from documents (PDF, markdown, URL, free text). E
 - Voice profiles: `<VPA_HOME>/voices/*.yaml`
 - Voice clones: `<VPA_HOME>/voice-clones/<slug>/`
 
-Each project's `project.yaml` carries an applied brand reference (`brand: { id, applied_version }`); the active brand surfaces in the project sidebar and Overview. The brand-detail page has tabs for **Overview**, **Tokens**, **Markdown**, **Assets** (logos + bumpers + music upload UI with inline preview / remove), and **Usage** (every project linked to this brand). The **Download** button produces a zip of the entire brand for backup or sharing.
+Each project's `project.yaml` carries an applied brand reference (`brand: { id, applied_version }`). Rendering resolves that exact immutable kit, so library changes never silently alter an accepted project. Project Overview offers explicit upgrades and rollbacks. The brand-detail page provides visual editing, readiness validation, immutable history, assets, and affected-project usage. The **Download** button produces a zip of the entire brand for backup or sharing.
 
 ## Voices
 

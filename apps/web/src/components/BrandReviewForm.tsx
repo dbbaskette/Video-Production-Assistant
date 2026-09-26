@@ -10,6 +10,11 @@ function defaultVpa() {
       bg: '{colors.primary}',
       fg: '{colors.neutral}',
     },
+    production: {
+      captions: { preset: 'clean' as const, font_family: 'Inter', foreground: '#FFFFFF', background: '#111827' },
+      callouts: { preset: 'label' as const, foreground: '#FFFFFF', background: '#2563EB' },
+      narration: { profile_id: null, speed: 1 },
+    },
     taglines: [] as string[],
   };
 }
@@ -218,6 +223,37 @@ export function BrandReviewForm({ value, onChange }: Props) {
             <option value="centered-fade">centered-fade</option>
             <option value="minimal-line">minimal-line</option>
           </select>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Production defaults</legend>
+        <label>
+          Caption style
+          <select
+            value={vpa.production.captions.preset}
+            onChange={(e) => setVpa({ production: { ...vpa.production, captions: { ...vpa.production.captions, preset: e.target.value as 'clean' | 'boxed' | 'karaoke' } } })}
+          >
+            <option value="clean">Clean</option><option value="boxed">Boxed</option><option value="karaoke">Karaoke</option>
+          </select>
+        </label>
+        <label>
+          Caption font
+          <input value={vpa.production.captions.font_family} onChange={(e) => setVpa({ production: { ...vpa.production, captions: { ...vpa.production.captions, font_family: e.target.value } } })} />
+        </label>
+        <label>
+          Callout style
+          <select value={vpa.production.callouts.preset} onChange={(e) => setVpa({ production: { ...vpa.production, callouts: { ...vpa.production.callouts, preset: e.target.value as 'label' | 'spotlight' | 'outline' } } })}>
+            <option value="label">Label</option><option value="spotlight">Spotlight</option><option value="outline">Outline</option>
+          </select>
+        </label>
+        <label>
+          Narration profile ID (optional)
+          <input value={vpa.production.narration.profile_id ?? ''} onChange={(e) => setVpa({ production: { ...vpa.production, narration: { ...vpa.production.narration, profile_id: e.target.value || null } } })} />
+        </label>
+        <label>
+          Narration speed
+          <input type="number" min={0.5} max={2} step={0.05} value={vpa.production.narration.speed} onChange={(e) => setVpa({ production: { ...vpa.production, narration: { ...vpa.production.narration, speed: Number(e.target.value) } } })} />
         </label>
       </fieldset>
 

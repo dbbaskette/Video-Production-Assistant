@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { brandPaths } from './paths.js';
-import { createBrand, readBrand, updateBrandDoc, deleteBrand, listBrands } from './store.js';
+import { createBrand, readBrand, readBrandVersion, listBrandVersions, updateBrandDoc, deleteBrand, listBrands } from './store.js';
 
 let tmp: string;
 let paths: ReturnType<typeof brandPaths>;
@@ -78,6 +78,9 @@ describe('brand store', () => {
     const updated = await readBrand(paths, registryFile, 'tanzu');
     expect(updated.registry.version).toBe(2);
     expect(updated.doc.body).toContain('## New');
+    expect((await readBrandVersion(paths, registryFile, 'tanzu', 1)).doc.body).toContain('## Old');
+    expect((await readBrandVersion(paths, registryFile, 'tanzu', 2)).doc.body).toContain('## New');
+    expect(await listBrandVersions(paths, registryFile, 'tanzu')).toEqual([2, 1]);
   });
 
   it('deleteBrand removes directory and registry entry', async () => {

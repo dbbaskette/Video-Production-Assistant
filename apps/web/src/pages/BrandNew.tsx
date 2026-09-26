@@ -214,6 +214,12 @@ export default function BrandNew() {
     onError: (err) => setError(err instanceof Error ? err.message : 'Generate failed'),
   });
 
+  const manualMutation = useMutation({
+    mutationFn: () => brandsApi.manual({ name: name.trim() }),
+    onSuccess: (brand) => navigate(`/brands/${brand.registry.id}`),
+    onError: (err) => setError(err instanceof Error ? err.message : 'Manual brand creation failed'),
+  });
+
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files;
     if (!selected) return;
@@ -264,7 +270,7 @@ export default function BrandNew() {
           )}
 
           <label className="label" style={{ marginTop: 20 }}>
-            Sources (at least one)
+            Sources for AI extraction (optional)
           </label>
 
           <label className="label">Upload files (PDF, MD, TXT)</label>
@@ -300,6 +306,13 @@ export default function BrandNew() {
             </button>
             <button
               type="button"
+              disabled={!name.trim() || manualMutation.isPending}
+              onClick={() => manualMutation.mutate()}
+            >
+              {manualMutation.isPending ? 'Creating…' : 'Create manually'}
+            </button>
+            <button
+              type="button"
               className="primary"
               disabled={!canSubmit || createMutation.isPending}
               onClick={() => createMutation.mutate()}
@@ -307,6 +320,7 @@ export default function BrandNew() {
               {createMutation.isPending ? 'Creating...' : 'Extract Brand Tokens'}
             </button>
           </div>
+          <p className="hint">Manual creation uses a validated starter kit and makes no model call. You can edit every token on the next screen.</p>
         </>
       )}
 
