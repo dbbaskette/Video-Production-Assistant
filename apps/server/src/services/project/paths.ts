@@ -29,6 +29,7 @@ export interface ProjectFiles {
   revisionState: string;
   revisionSnapshotsDir: string;
   revisionTransactionsDir: string;
+  capturesDir: string;
 }
 
 export function projectFiles(root: string): ProjectFiles {
@@ -56,6 +57,7 @@ export function projectFiles(root: string): ProjectFiles {
     revisionState: path.join(revisionsDir, 'state.json'),
     revisionSnapshotsDir: path.join(revisionsDir, 'snapshots'),
     revisionTransactionsDir: path.join(revisionsDir, 'transactions'),
+    capturesDir: path.join(vpaDir, 'captures'),
   };
 }
 

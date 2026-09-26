@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -116,6 +116,91 @@ describe('RevisionStore', () => {
       idempotencyKey: 'stale-legacy-0001',
       commands: [{ type: 'project.patch', patch: { audience: 'Developers' } }],
     })).rejects.toMatchObject({ code: 'stale_revision', currentRevision: 1 });
+  });
+
+  it('applies linked clip edits atomically and restores the prior composition', async () => {
+    const { root, files } = await fixture();
+    const now = '2026-09-25T12:00:00.000Z';
+    const screenId = `asset_${'a'.repeat(64)}`;
+    const micId = `asset_${'b'.repeat(64)}`;
+    await mkdir(files.assetsDir, { recursive: true });
+    await writeFile(files.assetManifest, JSON.stringify({
+      version: 1,
+      assets: [
+        { id: screenId, checksum: 'a'.repeat(64), original_name: 'screen.webm', source: '.vpa/assets/originals/screen.webm', origin: 'source', media_kind: 'video', mime_type: 'video/webm', size_bytes: 100, imported_at: now, duration_sec: 10, timing_origin_ms: 0, preparation: { status: 'ready', attempts: 1, updated_at: now } },
+        { id: micId, checksum: 'b'.repeat(64), original_name: 'mic.webm', source: '.vpa/assets/originals/mic.webm', origin: 'source', media_kind: 'audio', mime_type: 'audio/webm', size_bytes: 100, imported_at: now, duration_sec: 10, timing_origin_ms: 0, preparation: { status: 'ready', attempts: 1, updated_at: now } },
+      ],
+    }));
+    const store = new RevisionStore(root);
+    await store.execute({
+      expectedRevision: 0,
+      idempotencyKey: 'composition-set-0001',
+      commands: [{
+        type: 'composition.set',
+        sceneId: 'scene-01',
+        composition: {
+          version: 1,
+          clips: [{ id: 'clip_original-0001', source_asset_id: screenId, source_role: 'screen', source_in_ms: 0, source_out_ms: 10_000, timeline_start_ms: 0, linked_tracks: [{ asset_id: micId, role: 'microphone', source_offset_ms: 30 }] }],
+          audio_mix: {},
+        },
+      }],
+    });
+    await store.execute({
+      expectedRevision: 1,
+      idempotencyKey: 'composition-edit-0001',
+      commands: [
+        { type: 'clip.split', sceneId: 'scene-01', clipId: 'clip_original-0001', splitSourceMs: 4_000, leftClipId: 'clip_left-00000001', rightClipId: 'clip_right-0000001' },
+        { type: 'clip.duplicate', sceneId: 'scene-01', clipId: 'clip_right-0000001', newClipId: 'clip_copy-00000001' },
+        { type: 'audio.mix.set', sceneId: 'scene-01', role: 'microphone', settings: { gain_db: -6, mute: false, fade_in_ms: 100, fade_out_ms: 200 } },
+      ],
+    });
+    let storyboard = loadYaml(await readFile(files.storyboard, 'utf8'), StoryboardSchema);
+    expect(storyboard.scenes[0]!.composition!.clips.map((clip) => [clip.id, clip.timeline_start_ms])).toEqual([
+      ['clip_left-00000001', 0],
+      ['clip_right-0000001', 4_000],
+      ['clip_copy-00000001', 10_000],
+    ]);
+    expect(storyboard.scenes[0]!.composition!.clips.every((clip) => clip.linked_tracks[0]?.asset_id === micId)).toBe(true);
+    expect(storyboard.scenes[0]!.composition!.audio_mix.microphone?.gain_db).toBe(-6);
+
+    await store.execute({
+      expectedRevision: 2,
+      idempotencyKey: 'composition-edit-0002',
+      commands: [
+        { type: 'clip.trim', sceneId: 'scene-01', clipId: 'clip_left-00000001', sourceInMs: 500, sourceOutMs: 3_500 },
+        { type: 'clip.reorder', sceneId: 'scene-01', clipIds: ['clip_copy-00000001', 'clip_left-00000001', 'clip_right-0000001'] },
+        { type: 'clip.delete', sceneId: 'scene-01', clipId: 'clip_right-0000001' },
+      ],
+    });
+    storyboard = loadYaml(await readFile(files.storyboard, 'utf8'), StoryboardSchema);
+    expect(storyboard.scenes[0]!.composition!.clips.map((clip) => [clip.id, clip.timeline_start_ms])).toEqual([
+      ['clip_copy-00000001', 0],
+      ['clip_left-00000001', 6_000],
+    ]);
+    expect(storyboard.scenes[0]!.composition!.clips[1]).toMatchObject({ source_in_ms: 500, source_out_ms: 3_500 });
+
+    await store.execute({ expectedRevision: 3, idempotencyKey: 'composition-restore-1', commands: [{ type: 'revision.restore', revision: 1 }] });
+    storyboard = loadYaml(await readFile(files.storyboard, 'utf8'), StoryboardSchema);
+    expect(storyboard.scenes[0]!.composition!.clips).toHaveLength(1);
+  });
+
+  it('rejects a linked edit batch without partially changing the composition', async () => {
+    const { root, files } = await fixture();
+    const screenId = `asset_${'c'.repeat(64)}`;
+    await mkdir(files.assetsDir, { recursive: true });
+    await writeFile(files.assetManifest, JSON.stringify({ version: 1, assets: [{ id: screenId, checksum: 'c'.repeat(64), original_name: 'screen.webm', source: '.vpa/assets/originals/screen.webm', origin: 'source', media_kind: 'video', mime_type: 'video/webm', size_bytes: 100, imported_at: '2026-09-25T12:00:00.000Z', duration_sec: 10, timing_origin_ms: 0, preparation: { status: 'ready', attempts: 1, updated_at: '2026-09-25T12:00:00.000Z' } }] }));
+    const store = new RevisionStore(root);
+    await store.execute({ expectedRevision: 0, idempotencyKey: 'composition-set-0002', commands: [{ type: 'composition.set', sceneId: 'scene-01', composition: { version: 1, clips: [{ id: 'clip_original-0002', source_asset_id: screenId, source_role: 'screen', source_in_ms: 0, source_out_ms: 10_000, timeline_start_ms: 0, linked_tracks: [] }], audio_mix: {} } }] });
+    const before = await readFile(files.storyboard, 'utf8');
+    await expect(store.execute({
+      expectedRevision: 1,
+      idempotencyKey: 'composition-bad-0001',
+      commands: [
+        { type: 'clip.trim', sceneId: 'scene-01', clipId: 'clip_original-0002', sourceInMs: 1_000, sourceOutMs: 9_000 },
+        { type: 'clip.split', sceneId: 'scene-01', clipId: 'clip_original-0002', splitSourceMs: 99_000, leftClipId: 'clip_bad-left-001', rightClipId: 'clip_bad-right-01' },
+      ],
+    })).rejects.toMatchObject({ code: 'invalid_command' });
+    expect(await readFile(files.storyboard, 'utf8')).toBe(before);
   });
 
   it('rejects invalid timed scene parameters before committing', async () => {

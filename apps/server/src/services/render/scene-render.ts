@@ -17,7 +17,7 @@
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Scene } from '@vpa/shared';
+import { effectiveMixSettings, type Scene } from '@vpa/shared';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
 import { renderLowerThirdsOverlay } from '../overlay/render.js';
 import { resolveLtColors } from '../overlay/colors.js';
@@ -36,6 +36,7 @@ import {
 } from '../frame/resolve.js';
 import { resolveRenderSceneDuration } from './scene-duration.js';
 import { resolveSafeProjectPath } from '../project/safe-path.js';
+import { materializeSceneComposition } from '../composition/materialize.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -80,7 +81,7 @@ export async function renderSingleScene(
   if (!scene) {
     throw new RenderError(`Scene not found: ${sceneId}`);
   }
-  if (!scene.recording?.source) {
+  if (!scene.recording?.source && !scene.composition) {
     throw new RenderError('Scene has no recording', {
       hint: 'Upload a recording for this scene before rendering',
     });
@@ -94,7 +95,8 @@ export async function renderSingleScene(
   // 3. Produce overlay.mp4
   const overlayRel = join(outDirRel, 'overlay.mp4');
   const overlayPath = join(projectPath, overlayRel);
-  const recordingPath = await resolveSafeProjectPath(projectPath, scene.recording.source);
+  const composed = await materializeSceneComposition(projectPath, scene);
+  const recordingPath = composed?.path ?? await resolveSafeProjectPath(projectPath, scene.recording!.source);
   const hasLts = (scene.lower_thirds?.length ?? 0) > 0;
   const existingOverlay = scene.overlay_render
     ? join(projectPath, scene.overlay_render)
@@ -188,6 +190,7 @@ export async function renderSingleScene(
     burnSubtitles,
     srtPath,
     outputPath: combinedPath,
+    sourceHasAudio: composed?.hasAudio,
   });
 
   const durationSec = await probeDuration(combinedPath);
@@ -271,6 +274,7 @@ interface MuxOpts {
   burnSubtitles: boolean;
   srtPath: string | null;
   outputPath: string;
+  sourceHasAudio?: boolean;
 }
 
 /**
@@ -280,14 +284,20 @@ interface MuxOpts {
  *   mix     → narration full volume, original recording at -20 dB
  */
 async function muxOne(opts: MuxOpts): Promise<void> {
+  const narrationSettings = opts.scene.composition ? effectiveMixSettings(opts.scene.composition, 'narration') : null;
+  const effectiveAudioPath = narrationSettings?.mute ? null : opts.audioPath;
   const args: string[] = ['-y', '-i', opts.videoPath];
-  if (opts.audioPath) args.push('-i', opts.audioPath);
+  if (effectiveAudioPath) args.push('-i', effectiveAudioPath);
 
-  const narrationDuration = opts.audioPath ? await probeDuration(opts.audioPath) : undefined;
+  const narrationDuration = effectiveAudioPath ? await probeDuration(effectiveAudioPath) : undefined;
   const resolvedDuration = resolveRenderSceneDuration(opts.scene, narrationDuration);
   // Presentation source clips have no audio stream. A scene-level `mix`
   // preference therefore narrows to replacement instead of addressing [0:a].
-  const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : opts.audioMode;
+  const effectiveAudioMode = resolvedDuration.flexible || opts.sourceHasAudio === false
+    ? 'replace'
+    : opts.scene.composition && opts.sourceHasAudio
+      ? 'mix'
+      : opts.audioMode;
   const filters: string[] = [];
   if (opts.burnSubtitles && opts.srtPath) {
     filters.push(`subtitles=${escapeForFilter(opts.srtPath)}`);
@@ -309,14 +319,17 @@ async function muxOne(opts: MuxOpts): Promise<void> {
     args.push('-vf', filters[0]!);
   }
 
-  if (opts.audioPath) {
+  if (effectiveAudioPath) {
+    const narrationFilters = narrationSettings ? fadeFilters(narrationDuration ?? 0, narrationSettings) : [];
     if (effectiveAudioMode === 'replace') {
       args.push('-map', needsFilteredVideo ? '[v]' : '0:v:0', '-map', '1:a:0');
       args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
+      if (narrationFilters.length > 0) args.push('-af', narrationFilters.join(','));
       if (!resolvedDuration.flexible) args.push('-shortest');
     } else {
-      const audioFilter = '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]';
+      const sourceVolume = opts.scene.composition ? '1.0' : '0.1';
+      const audioFilter = `[0:a]volume=${sourceVolume}[a0];[1:a]${narrationFilters.length > 0 ? narrationFilters.join(',') : 'anull'}[a1];[a0][a1]amix=inputs=2:duration=longest[aout]`;
       args.push(
         '-filter_complex',
         needsFilteredVideo
@@ -336,4 +349,13 @@ async function muxOne(opts: MuxOpts): Promise<void> {
 
   args.push(opts.outputPath);
   await runFfmpeg(args);
+}
+
+function fadeFilters(durationSec: number, settings: { gain_db: number; fade_in_ms: number; fade_out_ms: number }): string[] {
+  const filters = [`volume=${settings.gain_db}dB`];
+  const fadeIn = Math.min(durationSec, settings.fade_in_ms / 1_000);
+  const fadeOut = Math.min(durationSec, settings.fade_out_ms / 1_000);
+  if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn.toFixed(3)}`);
+  if (fadeOut > 0) filters.push(`afade=t=out:st=${Math.max(0, durationSec - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}`);
+  return filters;
 }

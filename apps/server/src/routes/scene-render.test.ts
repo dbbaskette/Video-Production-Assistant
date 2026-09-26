@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ProjectStore } from '../services/project/store.js';
@@ -56,5 +56,19 @@ describe('scene render failure boundary', () => {
     expect(serialized).not.toContain(projects);
     expect(serialized).not.toContain('private-token');
     expect(serialized).not.toContain('stderrTail');
+  });
+
+  it('streams previews inline while keeping the default export downloadable', async () => {
+    const sceneDir = join(projects, 'render-boundary', 'renders', 'scenes', 'scene-01');
+    await mkdir(sceneDir, { recursive: true });
+    await writeFile(join(sceneDir, 'combined.mp4'), 'video');
+
+    const preview = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/scenes/scene-01/render/file/combined?inline=1` });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers['content-disposition']).toBe('inline; filename="scene-01-combined.mp4"');
+
+    const download = await app.inject({ method: 'GET', url: `/api/projects/${projectId}/scenes/scene-01/render/file/combined` });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers['content-disposition']).toBe('attachment; filename="scene-01-combined.mp4"');
   });
 });

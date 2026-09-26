@@ -4,7 +4,7 @@ import { mkdir, rm, writeFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { loadStoryboard, saveStoryboard, updateScene } from '../storyboard/index.js';
-import type { Scene, SceneTransition, Storyboard, StoryboardDefaults } from '@vpa/shared';
+import { effectiveMixSettings, type Scene, type SceneTransition, type Storyboard, type StoryboardDefaults } from '@vpa/shared';
 import {
   loadFrameManifest,
   defaultAssetsDir,
@@ -23,6 +23,7 @@ import { buildTransitionClip } from './transition-clip.js';
 import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
 import { ensureSilenceClip } from './silence.js';
 import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
+import { materializeSceneComposition } from '../composition/materialize.js';
 
 export { RenderError };
 
@@ -74,6 +75,8 @@ export interface RenderOptions {
      * music — the UI only offers it when a bumper is active.
      */
     scope?: MusicScope;
+    fadeInMs?: number;
+    fadeOutMs?: number;
   };
   /**
    * Optional brand bumper videos. Prepended / appended to the scene chain at
@@ -132,7 +135,7 @@ export async function renderFinalVideo(
   const includeNarration = opts.includeNarration ?? true;
   const includeLowerThirds = opts.includeLowerThirds ?? true;
 
-  const renderableScenes = sb.scenes.filter((s) => s.recording?.source);
+  const renderableScenes = sb.scenes.filter((s) => s.recording?.source || s.composition);
   if (renderableScenes.length === 0) {
     throw new RenderError('No scenes have a recording yet', {
       hint: 'Upload at least one scene recording before rendering',
@@ -169,6 +172,7 @@ export async function renderFinalVideo(
   let ltColors: Awaited<ReturnType<typeof resolveLtColors>> | null = null;
 
   const scenePaths: string[] = [];
+  let anyRenderedAudio = false;
   for (let i = 0; i < renderableScenes.length; i++) {
     if (opts.isCancelled?.()) {
       throw new RenderError('Render cancelled');
@@ -176,6 +180,7 @@ export async function renderFinalVideo(
     // Refresh scene reference from the (possibly updated) storyboard so the
     // frame_render path persisted on a prior iteration is visible here.
     let scene = sb.scenes.find((s) => s.id === renderableScenes[i]!.id)!;
+    const composed = await materializeSceneComposition(projectPath, scene);
     onProgress?.({
       type: 'step',
       step: 'concat-audio',
@@ -212,7 +217,7 @@ export async function renderFinalVideo(
         const baked = await renderLowerThirdsOverlay({
           projectPath,
           sceneId: scene.id,
-          recordingPath: join(projectPath, scene.recording!.source),
+          recordingPath: composed?.path ?? join(projectPath, scene.recording!.source),
           lowerThirds: scene.lower_thirds!,
           colors: ltColors,
         });
@@ -245,6 +250,8 @@ export async function renderFinalVideo(
       workspaceRoot: opts.workspaceRoot ?? '',
       frameDeps,
       includeLowerThirds,
+      sourceVideoPath: composed?.path,
+      sourceHasAudio: composed?.hasAudio,
     });
     // Save per-scene so a crash mid-loop leaves the cached frame_render
     // paths persisted — the next render skips work already done.
@@ -253,6 +260,7 @@ export async function renderFinalVideo(
       await saveStoryboard(projectPath, sb);
     }
     scenePaths.push(sceneMp4);
+    anyRenderedAudio ||= muxResult.hasAudio;
   }
 
   if (opts.isCancelled?.()) {
@@ -303,14 +311,14 @@ export async function renderFinalVideo(
     const targetH = firstSize.height || 1080;
     if (opts.bumperIntro && existsSync(opts.bumperIntro)) {
       const normalised = await normaliseBumper(
-        opts.bumperIntro, targetW, targetH, includeNarration, tmpDir, 'intro',
+        opts.bumperIntro, targetW, targetH, anyRenderedAudio, tmpDir, 'intro',
       );
       introBumperPath = normalised;
       joinPlan.unshift({ path: normalised, durationSec: 0.5, kind: 'bumper' });
     }
     if (opts.bumperOutro && existsSync(opts.bumperOutro)) {
       const normalised = await normaliseBumper(
-        opts.bumperOutro, targetW, targetH, includeNarration, tmpDir, 'outro',
+        opts.bumperOutro, targetW, targetH, anyRenderedAudio, tmpDir, 'outro',
       );
       outroBumperPath = normalised;
       joinPlan.push({ path: normalised, durationSec: 0.5, kind: 'bumper' });
@@ -321,7 +329,7 @@ export async function renderFinalVideo(
   // muxScene's `-an` branch). Tell concatScenes so its filter graph requests
   // a=0 instead of a=1 — otherwise ffmpeg errors out trying to read audio
   // streams that don't exist.
-  await concatScenes(joinPlan, concatOutPath, tmpDir, { hasAudio: includeNarration });
+  await concatScenes(joinPlan, concatOutPath, tmpDir, { hasAudio: anyRenderedAudio });
 
   // Stage 4: optional background music overlay
   if (opts.music) {
@@ -351,6 +359,9 @@ export async function renderFinalVideo(
       scope,
       introDurSec,
       outroDurSec,
+      fadeInSec: (opts.music.fadeInMs ?? 0) / 1_000,
+      fadeOutSec: opts.music.fadeOutMs === undefined ? undefined : opts.music.fadeOutMs / 1_000,
+      hasBaseAudio: anyRenderedAudio,
     });
   }
 
@@ -379,6 +390,9 @@ interface MusicOverlayOpts {
   scope?: MusicScope;       // 'full' (default) or 'bumpers'-only
   introDurSec?: number;     // intro bumper duration (for 'bumpers' scope)
   outroDurSec?: number;     // outro bumper duration (for 'bumpers' scope)
+  fadeInSec?: number;
+  fadeOutSec?: number;
+  hasBaseAudio?: boolean;
 }
 
 /**
@@ -399,6 +413,9 @@ async function overlayMusic(opts: MusicOverlayOpts): Promise<void> {
     totalDurSec: dur,
     introDurSec: opts.introDurSec ?? 0,
     outroDurSec: opts.outroDurSec ?? 0,
+    fadeInSec: opts.fadeInSec,
+    fadeOutSec: opts.fadeOutSec,
+    hasBaseAudio: opts.hasBaseAudio,
   });
 
   await runFfmpeg([
@@ -614,12 +631,15 @@ interface MuxOpts {
    *  points at a baked file. Allows the user to keep edited lower-thirds in
    *  the project but ship the final video without them. */
   includeLowerThirds?: boolean;
+  sourceVideoPath?: string;
+  sourceHasAudio?: boolean;
 }
 
 interface MuxResult {
   /** Storyboard reflecting any `frame_render` writes from the frame pass.
    *  Equal-by-reference to `opts.storyboard` when nothing changed. */
   storyboard: Storyboard;
+  hasAudio: boolean;
 }
 
 async function muxScene(opts: MuxOpts): Promise<MuxResult> {
@@ -636,6 +656,8 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     workspaceRoot,
     frameDeps,
     includeLowerThirds = true,
+    sourceVideoPath,
+    sourceHasAudio,
   } = opts;
 
   // Use the rendered overlay video (with lower thirds) if available AND the
@@ -645,8 +667,7 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   const overlay = includeLowerThirds && scene.overlay_render
     ? join(projectPath, scene.overlay_render)
     : null;
-  const rec = scene.recording!.source;
-  const recPath = join(projectPath, rec);
+  const recPath = sourceVideoPath ?? join(projectPath, scene.recording!.source);
   const upstreamVideo = overlay && existsSync(overlay) ? overlay : recPath;
 
   // Frame pass — slot between lower-thirds bake and audio mux. When no frame
@@ -664,19 +685,25 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   const videoSrc = framePrep?.framedVideo ?? upstreamVideo;
   const updatedStoryboard = framePrep?.updatedStoryboard ?? storyboard;
 
+  const narrationSettings = scene.composition ? effectiveMixSettings(scene.composition, 'narration') : null;
+  const effectiveAudioPath = narrationSettings?.mute ? null : audioPath;
   const args: string[] = ['-y', '-i', videoSrc];
-  if (audioPath) args.push('-i', audioPath);
+  if (effectiveAudioPath) args.push('-i', effectiveAudioPath);
 
   const baseDuration = resolveRenderSceneDuration(scene);
   const [videoDuration, narrationDuration] = await Promise.all([
-    baseDuration.flexible || audioPath ? probeDuration(videoSrc) : Promise.resolve(baseDuration.targetSec),
-    audioPath ? probeDuration(audioPath) : Promise.resolve(undefined),
+    baseDuration.flexible || effectiveAudioPath ? probeDuration(videoSrc) : Promise.resolve(baseDuration.targetSec),
+    effectiveAudioPath ? probeDuration(effectiveAudioPath) : Promise.resolve(undefined),
   ]);
   const resolvedDuration = resolveRenderSceneDuration(scene, narrationDuration);
   // Imported slide clips are intentionally silent. Treat a persisted `mix`
   // preference as replacement for this scene so the graph never references
   // a nonexistent [0:a] stream. Ordinary recordings keep true mix behavior.
-  const effectiveAudioMode = resolvedDuration.flexible ? 'replace' : audioMode;
+  const effectiveAudioMode = resolvedDuration.flexible || sourceHasAudio === false
+    ? 'replace'
+    : scene.composition && sourceHasAudio
+      ? 'mix'
+      : audioMode;
 
   // Detect narration overrun — TTS audio is often a fraction of a second
   // longer than the recording, especially on the last paragraph. With the
@@ -721,20 +748,24 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   }
 
   // Audio routing
-  if (audioPath) {
+  if (effectiveAudioPath) {
+    const narrationFilters = narrationSettings ? fadeFiltersForRender(narrationDuration ?? 0, narrationSettings) : [];
     if (effectiveAudioMode === 'replace') {
       // Drop original audio, use only narration.
       args.push('-map', needsVideoReencode ? '[v]' : '0:v:0', '-map', '1:a:0');
       args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
       args.push('-c:a', 'aac', '-b:a', '192k');
+      if (narrationFilters.length > 0) args.push('-af', narrationFilters.join(','));
       // We deliberately do NOT pass `-shortest` here. When videoPadSec > 0
       // the freeze-pad extends video to match audio so both streams end
       // together. When videoPadSec === 0 audio is already ≤ video — the
       // container will just stop at the natural end of the shorter stream
       // without trimming the longer one.
     } else {
-      // Mix narration over original audio (narration full volume, recording -20dB)
-      const audioFilter = '[0:a]volume=0.1[a0];[1:a]volume=1.0[a1];[a0][a1]amix=inputs=2:duration=longest[aout]';
+      // Composition sources have already had their persisted gains applied.
+      // Legacy sources retain the established -20 dB narration ducking.
+      const sourceVolume = scene.composition ? '1.0' : '0.1';
+      const audioFilter = `[0:a]volume=${sourceVolume}[a0];[1:a]${narrationFilters.length > 0 ? narrationFilters.join(',') : 'anull'}[a1];[a0][a1]amix=inputs=2:duration=longest[aout]`;
       const filterComplex = needsVideoReencode
         ? `[0:v]${vFilters.join(',')}[v];${audioFilter}`
         : audioFilter;
@@ -744,21 +775,26 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
       args.push('-c:a', 'aac', '-b:a', '192k');
     }
   } else {
-    // No narration audio for this scene → render with NO audio track. We
-    // previously did `-c copy` which preserved the recording's original audio
-    // (screen-recording system sounds, mouse clicks, etc.) — surprising users
-    // who unchecked "Include narration" expecting silence. Audio from the
-    // source recording is dropped via `-an`; video copies as before.
-    args.push(
-      '-map', needsVideoReencode ? '[v]' : '0:v:0',
-      '-c:v', needsVideoReencode ? 'libx264' : 'copy', '-an',
-    );
+    const preserveSourceAudio = sourceHasAudio ?? await probeHasAudio(videoSrc);
+    args.push('-map', needsVideoReencode ? '[v]' : '0:v:0');
+    if (preserveSourceAudio) args.push('-map', '0:a:0', '-c:a', 'aac', '-b:a', '192k');
+    else args.push('-an');
+    args.push('-c:v', needsVideoReencode ? 'libx264' : 'copy');
   }
 
   args.push(outputPath);
   await runFfmpeg(args);
 
-  return { storyboard: updatedStoryboard };
+  return { storyboard: updatedStoryboard, hasAudio: Boolean(effectiveAudioPath) || (sourceHasAudio ?? await probeHasAudio(videoSrc)) };
+}
+
+function fadeFiltersForRender(durationSec: number, settings: { gain_db: number; fade_in_ms: number; fade_out_ms: number }): string[] {
+  const filters = [`volume=${settings.gain_db}dB`];
+  const fadeIn = Math.min(durationSec, settings.fade_in_ms / 1_000);
+  const fadeOut = Math.min(durationSec, settings.fade_out_ms / 1_000);
+  if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn.toFixed(3)}`);
+  if (fadeOut > 0) filters.push(`afade=t=out:st=${Math.max(0, durationSec - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}`);
+  return filters;
 }
 
 // ── Stage 3: multi-scene concat ──────────────────────────────────────

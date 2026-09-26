@@ -31,6 +31,11 @@ import {
   type PresentationJob,
   type Asset,
   type AssetMapping,
+  BrowserCaptureSessionSchema,
+  type BrowserCaptureSession,
+  type BrowserCaptureCreate,
+  type BrowserCaptureChunkAck,
+  type ProjectCommand,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -807,6 +812,43 @@ export const assetsApi = {
         mappings,
       },
     );
+    return { revision: response.result.revision };
+  },
+};
+
+export const browserCaptureApi = {
+  async list(projectId: string): Promise<BrowserCaptureSession[]> {
+    const response = await request<{ sessions: unknown[] }>('GET', `/api/projects/${projectId}/browser-captures`);
+    return response.sessions.map((session) => BrowserCaptureSessionSchema.parse(session));
+  },
+  async create(projectId: string, input: BrowserCaptureCreate): Promise<BrowserCaptureSession> {
+    const response = await request<{ session: unknown }>('POST', `/api/projects/${projectId}/browser-captures`, input);
+    return BrowserCaptureSessionSchema.parse(response.session);
+  },
+  async appendChunk(projectId: string, sessionId: string, trackId: string, sequence: number, chunk: Blob): Promise<BrowserCaptureChunkAck> {
+    const form = new FormData();
+    form.append('chunk', chunk, `${trackId}-${sequence}.bin`);
+    const { value } = await uploadRequest('POST', `/api/projects/${projectId}/browser-captures/${sessionId}/tracks/${trackId}/chunks/${sequence}`, form, { timeoutMs: 30_000 });
+    return (value as { acknowledgement: BrowserCaptureChunkAck }).acknowledgement;
+  },
+  async incomplete(projectId: string, sessionId: string): Promise<BrowserCaptureSession> {
+    const response = await request<{ session: unknown }>('POST', `/api/projects/${projectId}/browser-captures/${sessionId}/incomplete`);
+    return BrowserCaptureSessionSchema.parse(response.session);
+  },
+  async complete(projectId: string, sessionId: string): Promise<BrowserCaptureSession> {
+    const response = await request<{ session: unknown }>('POST', `/api/projects/${projectId}/browser-captures/${sessionId}/complete`, undefined, { timeoutMs: 120_000 });
+    return BrowserCaptureSessionSchema.parse(response.session);
+  },
+};
+
+export const compositionApi = {
+  async execute(projectId: string, expectedRevision: number, commands: ProjectCommand[]): Promise<{ revision: number }> {
+    const response = await request<{ result: { revision: number } }>('POST', `/api/projects/${projectId}/commands`, {
+      expectedRevision,
+      idempotencyKey: crypto.randomUUID(),
+      targetState: 'accepted',
+      commands,
+    });
     return { revision: response.result.revision };
   },
 };
@@ -1658,8 +1700,8 @@ export const sceneRenderApi = {
     return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/render/status`);
   },
   /** Stable URL for a rendered file. Range-streamable (the <video> tag will scrub). */
-  fileUrl(projectId: string, sceneId: string, kind: SceneRenderKind): string {
-    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/render/file/${kind}`;
+  fileUrl(projectId: string, sceneId: string, kind: SceneRenderKind, inline = false): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/render/file/${kind}${inline ? '?inline=1' : ''}`;
   },
 };
 

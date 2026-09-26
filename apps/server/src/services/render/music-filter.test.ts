@@ -52,4 +52,24 @@ describe('buildMusicFilterComplex', () => {
     });
     expect(fc).toContain("volume=0:enable='between(t,0.000,20.000)'");
   });
+
+  it('applies composition-defined fixed music fades', () => {
+    const fc = buildMusicFilterComplex({
+      scope: 'full',
+      volumeDb: -12,
+      totalDurSec: 10,
+      introDurSec: 0,
+      outroDurSec: 0,
+      fadeInSec: 0.5,
+      fadeOutSec: 2,
+    });
+    expect(fc).toContain('afade=t=in:st=0:d=0.500');
+    expect(fc).toContain('afade=t=out:st=8.000:d=2.000');
+  });
+
+  it('creates a bounded music-only output when the composed video is silent', () => {
+    const fc = buildMusicFilterComplex({ scope: 'full', volumeDb: -18, totalDurSec: 6, introDurSec: 0, outroDurSec: 0, hasBaseAudio: false });
+    expect(fc).not.toContain('[0:a]');
+    expect(fc).toContain('atrim=duration=6.000[aout]');
+  });
 });

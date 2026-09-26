@@ -24,11 +24,17 @@ export interface MusicFilterOpts {
   introDurSec: number;
   /** Outro bumper duration; 0 when there's no outro bumper. */
   outroDurSec: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
+  hasBaseAudio?: boolean;
 }
 
 export function buildMusicFilterComplex(opts: MusicFilterOpts): string {
-  // 1.5s tail fade keeps the music from cutting off abruptly.
-  const fadeOutStart = Math.max(0, opts.totalDurSec - 1.5);
+  // Preserve the existing 1.5s tail fade unless the composition explicitly
+  // supplies fixed fade controls.
+  const fadeInSec = Math.max(0, Math.min(opts.totalDurSec, opts.fadeInSec ?? 0));
+  const fadeOutSec = Math.max(0, Math.min(opts.totalDurSec, opts.fadeOutSec ?? 1.5));
+  const fadeOutStart = Math.max(0, opts.totalDurSec - fadeOutSec);
 
   const musicChain = [`aloop=loop=-1:size=2147483647`, `volume=${opts.volumeDb}dB`];
 
@@ -46,8 +52,12 @@ export function buildMusicFilterComplex(opts: MusicFilterOpts): string {
     );
   }
 
-  musicChain.push(`afade=t=out:st=${fadeOutStart.toFixed(3)}:d=1.5`);
+  if (fadeInSec > 0) musicChain.push(`afade=t=in:st=0:d=${fadeInSec.toFixed(3)}`);
+  if (fadeOutSec > 0) musicChain.push(`afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`);
 
+  if (opts.hasBaseAudio === false) {
+    return `[1:a]${musicChain.join(',')},atrim=duration=${opts.totalDurSec.toFixed(3)}[aout]`;
+  }
   return [
     `[1:a]${musicChain.join(',')}[music]`,
     `[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`,

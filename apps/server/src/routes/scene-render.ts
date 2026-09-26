@@ -137,7 +137,7 @@ export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps
   // GET /api/projects/:id/scenes/:sceneId/render/file/:kind — range-streams
   // one of {combined, overlay, narration}. Range support lets the <video>
   // tag scrub without buffering the whole file.
-  app.get<{ Params: { id: string; sceneId: string; kind: string } }>(
+  app.get<{ Params: { id: string; sceneId: string; kind: string }; Querystring: { inline?: string } }>(
     '/api/projects/:id/scenes/:sceneId/render/file/:kind',
     async (req, reply) => {
       const { id, sceneId, kind } = req.params;
@@ -177,7 +177,7 @@ export async function registerSceneRenderRoutes(app: FastifyInstance, deps: Deps
       const downloadName = `${sceneId}-${kind}.${ext}`;
       reply.header(
         'Content-Disposition',
-        `attachment; filename="${downloadName.replace(/"/g, '')}"`,
+        `${req.query.inline === '1' ? 'inline' : 'attachment'}; filename="${downloadName.replace(/"/g, '')}"`,
       );
 
       if (range) {

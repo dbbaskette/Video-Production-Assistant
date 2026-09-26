@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 import { SceneSchema } from './storyboard.js';
+import {
+  AudioMixRoleSchema,
+  AudioMixSettingsSchema,
+  ClipInstanceIdSchema,
+  SceneCompositionSchema,
+} from './composition.js';
 
 const AssignAssetCommandSchema = z.object({
   type: z.literal('scene.assign-asset'),
@@ -44,6 +50,55 @@ const RestoreRevisionCommandSchema = z.object({
   revision: z.number().int().nonnegative(),
 }).strict();
 
+const SetCompositionCommandSchema = z.object({
+  type: z.literal('composition.set'),
+  sceneId: z.string().min(1),
+  composition: SceneCompositionSchema,
+}).strict();
+
+const TrimClipCommandSchema = z.object({
+  type: z.literal('clip.trim'),
+  sceneId: z.string().min(1),
+  clipId: ClipInstanceIdSchema,
+  sourceInMs: z.number().int().nonnegative(),
+  sourceOutMs: z.number().int().positive(),
+}).strict();
+
+const SplitClipCommandSchema = z.object({
+  type: z.literal('clip.split'),
+  sceneId: z.string().min(1),
+  clipId: ClipInstanceIdSchema,
+  splitSourceMs: z.number().int().positive(),
+  leftClipId: ClipInstanceIdSchema,
+  rightClipId: ClipInstanceIdSchema,
+}).strict();
+
+const DeleteClipCommandSchema = z.object({
+  type: z.literal('clip.delete'),
+  sceneId: z.string().min(1),
+  clipId: ClipInstanceIdSchema,
+}).strict();
+
+const ReorderClipsCommandSchema = z.object({
+  type: z.literal('clip.reorder'),
+  sceneId: z.string().min(1),
+  clipIds: z.array(ClipInstanceIdSchema).min(1).max(500),
+}).strict();
+
+const DuplicateClipCommandSchema = z.object({
+  type: z.literal('clip.duplicate'),
+  sceneId: z.string().min(1),
+  clipId: ClipInstanceIdSchema,
+  newClipId: ClipInstanceIdSchema,
+}).strict();
+
+const SetAudioMixCommandSchema = z.object({
+  type: z.literal('audio.mix.set'),
+  sceneId: z.string().min(1),
+  role: AudioMixRoleSchema,
+  settings: AudioMixSettingsSchema,
+}).strict();
+
 export const ProjectCommandSchema = z.discriminatedUnion('type', [
   AssignAssetCommandSchema,
   PutSceneCommandSchema,
@@ -52,6 +107,13 @@ export const ProjectCommandSchema = z.discriminatedUnion('type', [
   ReorderScenesCommandSchema,
   PatchProjectCommandSchema,
   RestoreRevisionCommandSchema,
+  SetCompositionCommandSchema,
+  TrimClipCommandSchema,
+  SplitClipCommandSchema,
+  DeleteClipCommandSchema,
+  ReorderClipsCommandSchema,
+  DuplicateClipCommandSchema,
+  SetAudioMixCommandSchema,
 ]);
 export type ProjectCommand = z.infer<typeof ProjectCommandSchema>;
 

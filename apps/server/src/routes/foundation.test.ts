@@ -11,6 +11,8 @@ import { registerCommandRoutes } from './commands.js';
 import { saveStoryboard, loadStoryboard } from '../services/storyboard/index.js';
 import { projectFiles } from '../services/project/paths.js';
 import { AssetStore } from '../services/assets/store.js';
+import { registerBrowserCaptureRoutes } from './browser-capture.js';
+import { BrowserCaptureStore } from '../services/browser-capture/store.js';
 
 async function buildFixture() {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-foundation-home-'));
@@ -34,6 +36,12 @@ async function buildFixture() {
     }),
   }));
   await app.register(async (instance) => registerCommandRoutes(instance, { store }));
+  await app.register(async (instance) => registerBrowserCaptureRoutes(instance, {
+    store,
+    createCaptureStore: (root) => new BrowserCaptureStore(root, {
+      probe: async () => ({ durationSec: 3, width: 1920, height: 1080 }),
+    }),
+  }));
   return { app, home, projects, project };
 }
 
@@ -122,5 +130,36 @@ describe('foundation asset and command routes', () => {
     expect(migrated.asset_id).toMatch(/^asset_[a-f0-9]{64}$/);
     expect(migrated.source).toMatch(/^\.vpa\/assets\/originals\/[a-f0-9]{64}\.mp4$/);
     expect(await readFile(legacyAbsolute)).toEqual(bytes);
+  });
+
+  it('durably acknowledges and completes a browser capture into the same source library', async () => {
+    const created = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/projects/${fixture.project.id}/browser-captures`,
+      payload: {
+        sceneId: 'scene-01',
+        commonClockOriginMs: 1_000,
+        tracks: [{ id: 'track_screen-0001', role: 'screen', kind: 'video', mimeType: 'video/webm;codecs=vp9', timingOriginMs: 0, sharedAudioAvailable: false }],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const sessionId = created.json().session.id as string;
+    const chunk = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3]);
+    const form = new FormData();
+    form.append('chunk', chunk, { filename: 'chunk.bin', contentType: 'application/octet-stream' });
+    const uploaded = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/projects/${fixture.project.id}/browser-captures/${sessionId}/tracks/track_screen-0001/chunks/0`,
+      payload: form.getBuffer(),
+      headers: form.getHeaders(),
+    });
+    expect(uploaded.statusCode).toBe(200);
+    expect(uploaded.json().acknowledgement).toMatchObject({ sequence: 0, reused: false });
+
+    const completed = await fixture.app.inject({ method: 'POST', url: `/api/projects/${fixture.project.id}/browser-captures/${sessionId}/complete` });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().session).toMatchObject({ status: 'completed', tracks: [{ role: 'screen' }] });
+    const storyboard = (await loadStoryboard(fixture.project.path))!;
+    expect(storyboard.scenes[0]!.recording).toMatchObject({ source_kind: 'bulk', source_role: 'screen', capture_session_id: sessionId });
   });
 });
