@@ -10,7 +10,7 @@ import { buildTransitionClip } from '../services/render/transition-clip.js';
 import { jobQueue } from '../lib/job-queue.js';
 import { snapshotProjectJobInput } from '../services/jobs/frozen-input.js';
 import { resolveTrackAudioPath, readMusicTrack } from './music.js';
-import { readBrand } from '../services/brand/store.js';
+import { readBrandVersion, validateBrandVersion } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
 import { effectiveMixSettings, SceneTransitionSchema } from '@vpa/shared';
@@ -124,22 +124,31 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     // null — silently dropping every brand bumper / default-music ever set.
     const bPaths = brandPaths(deps.vpaHome, deps.vpaHome);
     try {
-      const project = await store.readProject(id);
       brandSlug = project.brand?.id ?? null;
       if (brandSlug) {
-        const brand = await readBrand(bPaths, deps.registryFile, brandSlug);
+        const appliedVersion = project.brand!.applied_version;
+        const validation = await validateBrandVersion(bPaths, deps.registryFile, brandSlug, appliedVersion);
+        if (!validation.valid) {
+          return reply.status(409).send({
+            error: 'The pinned brand version references assets that are unavailable.',
+            code: 'brand_assets_missing',
+            brandId: brandSlug,
+            brandVersion: appliedVersion,
+            missingAssets: validation.missingAssets,
+          });
+        }
+        const brand = await readBrandVersion(bPaths, deps.registryFile, brandSlug, appliedVersion);
         const audio = brand.doc.frontMatter.vpa?.audio as
           | { bumper_intro?: string | null; bumper_outro?: string | null; default_music_track?: string | null }
           | undefined;
         if (audio) brandAudio = audio;
       }
     } catch (err) {
-      // Brand lookup is best-effort — a missing brand shouldn't block the
-      // render. Log so future "bumpers missing" reports show up in server
-      // stderr instead of being completely silent (the original swallow was
-      // how this exact bug went unnoticed).
       app.log.warn({ err, projectId: id, brandSlug }, 'render: brand lookup failed');
-      brandAudio = null;
+      return reply.status(409).send({
+        error: 'The project\'s pinned brand version is unavailable. Choose an available version before rendering.',
+        code: 'brand_version_unavailable',
+      });
     }
 
     // Resolve bumpers from brand (if any). Skip silently if the file referenced

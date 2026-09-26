@@ -19,6 +19,8 @@ import {
   type ModelRoutingCoordinator,
 } from '../services/llm/model-routing-coordinator.js';
 import { RevisionStore } from '../services/revisions/store.js';
+import { brandPaths } from '../services/brand/paths.js';
+import { readBrandVersion, validateBrandVersion } from '../services/brand/store.js';
 
 interface Deps {
   store: ProjectStore;
@@ -217,6 +219,21 @@ export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<
           error: 'brand must be { id: string, applied_version: number } or null',
           code: 'invalid_request',
         });
+      }
+      try {
+        const paths = brandPaths(config.vpaHome, config.vpaHome);
+        await readBrandVersion(paths, paths.registryFile, body.brand.id, body.brand.applied_version);
+        const validation = await validateBrandVersion(paths, paths.registryFile, body.brand.id, body.brand.applied_version);
+        if (!validation.valid) {
+          return reply.status(409).send({
+            error: 'That brand version has missing assets and cannot be applied.',
+            code: 'brand_assets_missing',
+            missingAssets: validation.missingAssets,
+          });
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code === 'brand_assets_missing') throw error;
+        return reply.status(404).send({ error: 'Brand version not found.', code: 'brand_version_not_found' });
       }
     }
     try {

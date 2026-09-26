@@ -74,6 +74,8 @@ export async function seedBrands(
     const destDir = paths.brandDir(slug);
     await mkdir(destDir, { recursive: true });
     await cp(seedPath, destDir, { recursive: true });
+    await mkdir(paths.versionsDir(slug), { recursive: true });
+    await cp(designPath, paths.versionDesignMd(slug, 1));
 
     // Ensure source-docs dir exists (brand pipeline expects it)
     await mkdir(paths.sourceDocsDir(slug), { recursive: true });

@@ -49,6 +49,11 @@ describe('validateBrand', () => {
         audio: { music_mood: null, sonic_logo: null },
         logo: { primary: null, mono: null, safe_zone_ratio: 0.25 },
         lower_thirds: { template: 'bar-left-accent' as const, bg: '{colors.neutral}', fg: '{colors.neutral}' },
+        production: {
+          captions: { preset: 'clean' as const, font_family: 'Inter', foreground: '#FFFFFF', background: '#111827' },
+          callouts: { preset: 'label' as const, foreground: '#FFFFFF', background: '#2563EB' },
+          narration: { profile_id: null, speed: 1 },
+        },
         taglines: [],
       },
     };

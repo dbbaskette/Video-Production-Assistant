@@ -81,6 +81,23 @@ export const VpaExtensions = z.object({
     bg: z.string(),
     fg: z.string(),
   }),
+  production: z.object({
+    captions: z.object({
+      preset: z.enum(['clean', 'boxed', 'karaoke']).default('clean'),
+      font_family: z.string().min(1).default('Inter'),
+      foreground: HexColor.default('#FFFFFF'),
+      background: HexColor.default('#111827'),
+    }).default({}),
+    callouts: z.object({
+      preset: z.enum(['label', 'spotlight', 'outline']).default('label'),
+      foreground: HexColor.default('#FFFFFF'),
+      background: HexColor.default('#2563EB'),
+    }).default({}),
+    narration: z.object({
+      profile_id: z.string().min(1).nullable().default(null),
+      speed: z.number().min(0.5).max(2).default(1),
+    }).default({}),
+  }).default({}),
   taglines: z.array(z.string()).default([]),
 });
 
