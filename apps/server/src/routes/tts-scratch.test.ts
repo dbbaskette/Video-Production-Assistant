@@ -84,6 +84,35 @@ describe('TTS scratch routes', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it('reuses a persisted artifact for an identical idempotent retry without provider work', async () => {
+    const generate = vi.spyOn(tts, 'generate');
+    const request = {
+      method: 'POST' as const,
+      url: '/api/tts/scratch',
+      headers: { 'idempotency-key': 'standalone-narration-1' },
+      payload: { engine: 'fake', voice: 'alice', text: 'Exactly once.' },
+    };
+    const first = await app.inject(request);
+    const second = await app.inject(request);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ id: first.json().id, reused: true });
+    expect(second.json()).not.toHaveProperty('idempotencyKey');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects reuse of a standalone narration key for different inputs', async () => {
+    const generate = vi.spyOn(tts, 'generate');
+    const headers = { 'idempotency-key': 'standalone-narration-2' };
+    await app.inject({ method: 'POST', url: '/api/tts/scratch', headers, payload: { engine: 'fake', voice: 'alice', text: 'First.' } });
+    const conflict = await app.inject({ method: 'POST', url: '/api/tts/scratch', headers, payload: { engine: 'fake', voice: 'alice', text: 'Different.' } });
+
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json().code).toBe('idempotency_conflict');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it.each([
     [{ profile: 'missing', text: 'No profile.' }, 'profile_not_found'],
     [{ engine: 'missing', voice: 'alice', text: 'No engine.' }, 'engine_unavailable'],

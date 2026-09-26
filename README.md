@@ -179,12 +179,26 @@ npm run vpa -- narration project PROJECT_ID --profile my-voice --wait
 
 Project narration skips scenes without scripts and preserves existing narration unless `--overwrite` is explicitly supplied. Run `npm run vpa -- --help` for all commands. Codex can use the repository's `vpa-production` skill for the same discovery-first workflow.
 
+### VPA MCP server
+
+VPA also ships a thin local MCP adapter over the same API contracts. It exposes typed project, narration, revision, job, render, production-recipe, and feedback tools without reading provider credentials or project files itself.
+
+```bash
+npm run build -w @vpa/cli
+npm run build -w @vpa/mcp
+codex mcp add vpa -- node "$(pwd)/apps/mcp/dist/main.js"
+codex mcp list
+```
+
+Start VPA with `./start.sh` before calling tools so the server receives the repository `.env` configuration. If VPA is listening somewhere other than `http://127.0.0.1:3000`, add `--env VPA_API_URL=http://host:port` before the `--` in the `codex mcp add` command. Project mutations and paid narration/render submissions require caller-stable idempotency keys; retries with the same key reuse VPA's durable result instead of repeating work.
+
 ## Architecture
 
 ```
 apps/server/          Fastify REST server (services + routes)
 apps/web/             Vite + React studio UI
 apps/cli/             Local HTTP CLI for VPA automation
+apps/mcp/             Local stdio MCP adapter over the same automation client
 packages/shared/      Shared Zod schemas + TypeScript types
 prompts/              Editable LLM system prompts
 tests/e2e/            Playwright E2E tests

@@ -9,6 +9,15 @@ function Location() {
   return <output aria-label="Location">{useLocation().pathname}</output>;
 }
 
+async function waitFor(assertion: () => void): Promise<void> {
+  let failure: unknown;
+  for (let index = 0; index < 30; index += 1) {
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    try { assertion(); return; } catch (error) { failure = error; }
+  }
+  throw failure;
+}
+
 describe('CommandPalette', () => {
   beforeEach(() => {
     vi.spyOn(api, 'listProjects').mockResolvedValue({ projects: [] });
@@ -60,8 +69,7 @@ describe('CommandPalette', () => {
       </MemoryRouter>,
     );
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })));
-    await flushPromises();
-    await flushPromises();
+    await waitFor(() => expect(view.container.querySelector('[role="alert"]')).not.toBeNull());
 
     expect(view.container.querySelector('[role="alert"]')?.textContent).toContain('Some projects or libraries could not be searched');
     expect(view.container.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);

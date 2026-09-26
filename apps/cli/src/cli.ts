@@ -1,6 +1,8 @@
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { VpaCliError, VpaHttpClient, type HttpClient } from './client.js';
+import { VpaAutomationClient } from './automation.js';
 
 type Expressiveness = 'light' | 'medium' | 'heavy';
 
@@ -59,13 +61,13 @@ Usage:
   vpa narration voices list [--engine ID] [--json]
   vpa narration profiles list [--json]
   vpa narration options describe --engine ID [--json]
-  vpa narration create (--text TEXT | --text-file PATH) (--profile ID | --engine ID --voice ID) [--speed N] [--expressiveness LEVEL] [--output PATH] [--json]
-  vpa narration project PROJECT_ID (--profile ID | --engine ID --voice ID) [--speed N] [--expressiveness LEVEL] [--overwrite] [--wait] [--json]
+  vpa narration create (--text TEXT | --text-file PATH) (--profile ID | --engine ID --voice ID) [--speed N] [--expressiveness LEVEL] [--idempotency-key KEY] [--output PATH] [--json]
+  vpa narration project PROJECT_ID (--profile ID | --engine ID --voice ID) [--speed N] [--expressiveness LEVEL] [--idempotency-key KEY] [--overwrite] [--wait] [--json]
   vpa projects list [--json]
   vpa projects show PROJECT_ID [--json]
   vpa production recipes list [--json]
   vpa production inspect PROJECT_ID RECIPE [--json]
-  vpa production run PROJECT_ID RECIPE [--wait] [--interval-ms N] [--timeout-ms N] [--json]
+  vpa production run PROJECT_ID RECIPE [--idempotency-key KEY] [--wait] [--interval-ms N] [--timeout-ms N] [--json]
   vpa jobs show JOB_ID [--json]
   vpa jobs wait JOB_ID [--interval-ms N] [--timeout-ms N] [--json]
 
@@ -191,11 +193,11 @@ function renderHuman(command: string, value: unknown): string {
 }
 
 async function loadEngines(client: HttpClient): Promise<Engine[]> {
-  return client.json<Engine[]>('GET', '/api/tts/engines');
+  return new VpaAutomationClient(client).listNarrationEngines();
 }
 
 async function loadProfiles(client: HttpClient): Promise<Profile[]> {
-  return client.json<Profile[]>('GET', '/api/voices');
+  return new VpaAutomationClient(client).listNarrationProfiles();
 }
 
 function validateEngineSelection(
@@ -277,6 +279,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
   const sleep =
     dependencies.sleep ??
     ((milliseconds) => new Promise<void>((done) => setTimeout(done, milliseconds)));
+  const automation = new VpaAutomationClient(client);
 
   const emit = (command: string, value: unknown) =>
     stdout(jsonMode ? JSON.stringify(value) : renderHuman(command, value));
@@ -299,11 +302,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
     if (command === 'narration voices list') {
       assertOptions(options, ['engine', 'json']);
       const filter = textOption(options, 'engine');
-      const voices = (await loadEngines(client))
-        .filter((engine) => !filter || engine.id === filter)
-        .flatMap((engine) => engine.voices.map((voice) => ({ engine: engine.id, ...voice })));
-      if (filter && voices.length === 0)
-        invalid(`Narration engine is unavailable or has no voices: ${filter}`);
+      const voices = await automation.listNarrationVoices(filter);
       emit('voices', voices);
       return 0;
     }
@@ -317,39 +316,39 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
       assertOptions(options, ['engine', 'json']);
       const id = textOption(options, 'engine');
       if (!id) invalid('--engine is required');
-      const engine = (await loadEngines(client)).find((candidate) => candidate.id === id);
-      if (!engine) invalid(`Narration engine is unavailable: ${id}`);
+      const engine = await automation.describeNarrationEngine(id);
       emit('object', engine);
       return 0;
     }
     if (command === 'projects list') {
       assertOptions(options, ['json']);
-      const projects = await client.json<unknown>('GET', '/api/projects');
+      const projects = await automation.listProjects();
       emit('projects', projects);
       return 0;
     }
     if (positionals[0] === 'projects' && positionals[1] === 'show' && positionals.length === 3) {
       assertOptions(options, ['json']);
-      const project = await client.json<unknown>(
-        'GET',
-        `/api/projects/${encodeURIComponent(positionals[2]!)}`,
-      );
+      const project = await automation.getProject(positionals[2]!);
       emit('object', project);
       return 0;
     }
     if (command === 'production recipes list') {
       assertOptions(options, ['json']);
-      emit('object', await client.json('GET', '/api/production/recipes'));
+      emit('object', await automation.listProductionRecipes());
       return 0;
     }
     if (positionals[0] === 'production' && positionals[1] === 'inspect' && positionals.length === 4) {
       assertOptions(options, ['json']);
-      emit('object', await client.json('GET', `/api/projects/${encodeURIComponent(positionals[2]!)}/production/recipes/${encodeURIComponent(positionals[3]!)}/inspect`));
+      emit('object', await automation.inspectProductionRecipe(positionals[2]!, positionals[3]! as 'clean-walkthrough' | 'feature-demo' | 'revise-this-draft'));
       return 0;
     }
     if (positionals[0] === 'production' && positionals[1] === 'run' && positionals.length === 4) {
-      assertOptions(options, ['wait', 'interval-ms', 'timeout-ms', 'json']);
-      const started = await client.json<{ jobId: string; status: string }>('POST', `/api/projects/${encodeURIComponent(positionals[2]!)}/production/recipes/${encodeURIComponent(positionals[3]!)}/run`, {});
+      assertOptions(options, ['idempotency-key', 'wait', 'interval-ms', 'timeout-ms', 'json']);
+      const started = await automation.runProductionRecipe(
+        positionals[2]!,
+        positionals[3]! as 'clean-walkthrough' | 'feature-demo' | 'revise-this-draft',
+        textOption(options, 'idempotency-key') ?? randomUUID(),
+      );
       if (options.wait) {
         const intervalMs = numberOption(options, 'interval-ms', 1_000)!;
         const timeoutMs = numberOption(options, 'timeout-ms', 600_000)!;
@@ -370,6 +369,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
         'voice',
         'speed',
         'expressiveness',
+        'idempotency-key',
         'output',
         'json',
       ]);
@@ -379,10 +379,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
         invalid('Supply exactly one of --text or --text-file');
       const text = inlineText ?? (await readText(textFile!));
       const selection = requireSelection(options);
-      const response = await client.json<Record<string, unknown> & { audioUrl: string }>(
-        'POST',
-        '/api/tts/scratch',
-        {
+      const response = await automation.createStandaloneNarration({
           text,
           ...selection,
           ...(numberOption(options, 'speed') === undefined
@@ -391,8 +388,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
           ...(expressivenessOption(options)
             ? { expressiveness: expressivenessOption(options) }
             : {}),
-        },
-      );
+        }, textOption(options, 'idempotency-key')) as Record<string, unknown> & { audioUrl: string };
       const output = textOption(options, 'output');
       let result: Record<string, unknown> = response;
       if (output) {
@@ -417,15 +413,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
         'voice',
         'speed',
         'expressiveness',
+        'idempotency-key',
         'overwrite',
         'wait',
         'json',
       ]);
       const projectId = positionals[2]!;
       const selection = await resolveProjectSelection(client, options);
-      const started = await client.json<{ jobId: string; status: string }>(
-        'POST',
-        `/api/projects/${encodeURIComponent(projectId)}/narration/generate-project`,
+      const started = await automation.startProjectNarration(
+        projectId,
         {
           engine: selection.engine,
           voice: selection.voice,
@@ -433,6 +429,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
           expressiveness: selection.expressiveness ?? 'medium',
           overwrite: options.overwrite === true,
         },
+        textOption(options, 'idempotency-key') ?? randomUUID(),
       );
       if (options.wait) {
         const job = await waitForJob(client, started.jobId, 1_000, 600_000, sleep);

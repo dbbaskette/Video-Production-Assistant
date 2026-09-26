@@ -11,7 +11,12 @@ export class VpaCliError extends Error {
 }
 
 export interface HttpClient {
-  json<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T>;
+  json<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T>;
   bytes(path: string): Promise<Uint8Array>;
 }
 
@@ -35,12 +40,20 @@ export class VpaHttpClient implements HttpClient {
     return new URL(path, `${this.baseUrl}/`).toString();
   }
 
-  async json<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  async json<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    options: { headers?: Record<string, string> } = {},
+  ): Promise<T> {
     let response: Response;
     try {
       response = await this.fetchImpl(this.url(path), {
         method,
-        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+        headers: {
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...options.headers,
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (error) {

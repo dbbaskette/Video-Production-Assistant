@@ -1,20 +1,10 @@
 {
-  "name": "@vpa/cli",
+  "name": "@vpa/mcp",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "bin": {
-    "vpa": "./dist/main.js"
-  },
-  "exports": {
-    "./automation": {
-      "types": "./dist/automation.d.ts",
-      "default": "./dist/automation.js"
-    },
-    "./client": {
-      "types": "./dist/client.d.ts",
-      "default": "./dist/client.js"
-    }
+    "vpa-mcp": "./dist/main.js"
   },
   "scripts": {
     "build": "tsc -b",
@@ -22,7 +12,10 @@
     "typecheck": "tsc -b --pretty"
   },
   "dependencies": {
-    "@vpa/shared": "*"
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@vpa/cli": "*",
+    "@vpa/shared": "*",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.16.0",
