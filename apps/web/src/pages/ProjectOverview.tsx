@@ -130,6 +130,7 @@ function RenderSection({
   musicTrackId,
   musicVolumeDb,
   musicEnabled,
+  selectedVariantId,
 }: {
   projectId: string;
   projectName: string;
@@ -137,6 +138,7 @@ function RenderSection({
   musicTrackId: string | null;
   musicVolumeDb: number;
   musicEnabled: boolean;
+  selectedVariantId: string | null;
 }) {
   const queryClient = useQueryClient();
   const workflowQuery = useWorkflowStatus(projectId);
@@ -293,6 +295,7 @@ function RenderSection({
         musicScope: effectiveMusicScope,
         useBrandBumpers: effectiveUseBrandBumpers,
         useBrandMusic: effectiveUseBrandMusic,
+        variantId: selectedVariantId,
       }),
     onSuccess: ({ jobId }) => {
       setRenderState(initialRenderJobState());
@@ -304,10 +307,10 @@ function RenderSection({
     onError: (err) => {
       queryClient.invalidateQueries({ queryKey: ['workflow-status', projectId] });
       if (err instanceof ApiError && err.status === 409) {
-        const payload = err.payload as { blockers?: Array<{ message: string }> };
+        const payload = err.payload as { blockers?: Array<{ message: string } | string> };
         setRenderState((prev) => ({
           ...prev,
-          error: payload.blockers?.map((item) => `• ${item.message}`).join('\n') ?? err.message,
+          error: payload.blockers?.map((item) => `• ${typeof item === 'string' ? item : item.message}`).join('\n') ?? err.message,
         }));
         return;
       }
@@ -544,7 +547,7 @@ function RenderSection({
             style={{ marginRight: 8, marginBottom: -3, marginTop: -2 }}
             aria-hidden
           />
-          {isRunning ? 'Rendering full project…' : renderBlocked ? 'Resolve blockers to render' : exists ? 'Render again' : 'Render full project'}
+          {isRunning ? 'Rendering…' : renderBlocked ? 'Resolve blockers to render' : selectedVariantId ? 'Render selected variant' : exists ? 'Render again' : 'Render full project'}
         </button>
         {/* Cancel — asks the server to stop at the next safe boundary
             (between scenes / before final concat). Hidden once cancellation
@@ -881,10 +884,12 @@ export function ProjectMusicAndRender({
   projectId,
   projectName,
   hasStoryboard,
+  selectedVariantId = null,
 }: {
   projectId: string;
   projectName: string;
   hasStoryboard: boolean;
+  selectedVariantId?: string | null;
 }) {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [musicEnabled, setMusicEnabled] = useState(true);
@@ -912,6 +917,7 @@ export function ProjectMusicAndRender({
         musicTrackId={selectedTrackId}
         musicEnabled={musicEnabled && !!selectedTrackId}
         musicVolumeDb={musicVolumeDb}
+        selectedVariantId={selectedVariantId}
       />
     </>
   );

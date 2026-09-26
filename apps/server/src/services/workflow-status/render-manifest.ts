@@ -20,6 +20,11 @@ export const RenderManifestSchema = z.object({
   rendererVersion: z.string().min(1),
   fonts: z.array(z.string()),
   completedAt: z.string().datetime(),
+  variant: z.object({
+    id: z.string(), name: z.string(), aspectRatio: z.enum(['16:9', '1:1', '9:16']),
+    cropMode: z.enum(['contain', 'cover']), sourceRevision: z.number().int().nonnegative(),
+    targetLanguage: z.string().nullable(), localizationProvider: z.string().nullable(),
+  }).strict().optional(),
   output: z.object({
     path: z.string(), sizeBytes: z.number().int().nonnegative(), durationSec: z.number().nonnegative(), sceneCount: z.number().int().nonnegative(),
     width: z.number().int().positive().optional(), height: z.number().int().positive().optional(), fps: z.number().positive().optional(),
@@ -40,12 +45,12 @@ export async function readRenderManifest(projectPath: string): Promise<AnyRender
   }
 }
 
-export async function writeRenderManifest(projectPath: string, input: Omit<RenderManifest, 'version'>): Promise<void> {
+export async function writeRenderManifest(projectPath: string, input: Omit<RenderManifest, 'version'>, options: { makeCurrent?: boolean } = {}): Promise<void> {
   const value = { version: 2 as const, ...input };
   const manifests = join(projectPath, 'renders', 'manifests');
   await mkdir(manifests, { recursive: true });
   await atomicWriteFile(join(manifests, `${input.artifactId}.json`), JSON.stringify(value, null, 2));
-  await atomicWriteFile(join(projectPath, 'renders', 'render-manifest.json'), JSON.stringify(value, null, 2));
+  if (options.makeCurrent !== false) await atomicWriteFile(join(projectPath, 'renders', 'render-manifest.json'), JSON.stringify(value, null, 2));
 }
 
 export async function listRenderManifests(projectPath: string): Promise<RenderManifest[]> {

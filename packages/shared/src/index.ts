@@ -11,6 +11,7 @@ export * from './voice-clone.js';
 export * from './workflow-status.js';
 export * from './agent-recording.js';
 export * from './assistance.js';
+export * from './variant.js';
 export * from './presentation.js';
 export * from './scene-duration.js';
 export * from './narration-chunks.js';

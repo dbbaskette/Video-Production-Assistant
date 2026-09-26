@@ -11,6 +11,7 @@ import { registerCommandRoutes } from './routes/commands.js';
 import { registerBrowserCaptureRoutes } from './routes/browser-capture.js';
 import { registerSourceEvidenceRoutes } from './routes/source-evidence.js';
 import { registerAssistanceRoutes } from './routes/assistance.js';
+import { registerVariantRoutes } from './routes/variants.js';
 import { registerFeedbackRoutes } from './routes/feedback.js';
 import { registerBrandRoutes } from './routes/brands.js';
 import { registerStoryboardRoutes } from './routes/storyboard.js';
@@ -289,6 +290,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     evidence: options.sourceEvidence ?? new SourceEvidenceService(),
   }));
   await app.register(async (instance) => registerAssistanceRoutes(instance, { store }));
+  await app.register(async (instance) => registerVariantRoutes(instance, { store }));
   await app.register(async (instance) => registerFeedbackRoutes(instance, { store }));
   await registerBrandRoutes(app, {
     paths: bPaths,

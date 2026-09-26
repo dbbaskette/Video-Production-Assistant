@@ -43,5 +43,5 @@
 
 - [x] Brand kits merged (#28)
 - [x] Evidence-driven editing implemented (#9, #22; merge tracked in PR)
-- [ ] Output variants merged (#104)
+- [x] Output variants implemented (#104; merge tracked in PR)
 - [ ] Integrated verification complete and roadmap closed (#88)
