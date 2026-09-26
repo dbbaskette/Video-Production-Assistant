@@ -91,7 +91,7 @@ export function ProjectMediaSummary({
                 : 'Latest exported video. Review or download this result.'}
             </p>
             <Link className="primary" to={`/project/${projectId}/render`}>
-              Review & export
+              Open render
             </Link>
             <a href={`${renderApi.videoUrl(projectId)}?download=1`}>
               Download {output.state === 'stale' ? 'previous' : 'video'}

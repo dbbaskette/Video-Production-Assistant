@@ -7,7 +7,7 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, ArchiveRestore, FolderOpen, Pencil, Search, X } from 'lucide-react';
+import { Archive, ArchiveRestore, FolderOpen, MoreHorizontal, Pencil, Search, X } from 'lucide-react';
 import type { ProjectTrackerEntry } from '@vpa/shared';
 import { api } from '../lib/api.js';
 import { ProjectMediaSummary } from './ProjectMediaSummary.js';
@@ -78,7 +78,6 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
     <div className="project-list">
       <div className="project-list-toolbar" role="search" aria-label="Recent projects">
         <label className="project-list-search">
-          <span className="project-list-toolbar__label">Find a project</span>
           <span className="project-list-search__field">
             <Search size={14} aria-hidden="true" />
             <input
@@ -103,7 +102,6 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
         </label>
 
         <label className="project-list-sort">
-          <span className="project-list-toolbar__label">Sort</span>
           <select
             aria-label="Sort recent projects"
             value={projectSort}
@@ -236,19 +234,15 @@ function ProjectCard({
           <span className="project-list-card__affordance" aria-hidden="true">Open →</span>
         </a>
       )}
-      <button
-        type="button"
-        className="project-list-card__remove"
-        aria-label={`Remove ${project.name} from recent projects`}
-        title="Remove from recent projects"
-        onClick={onRemove}
-      >
-        <X size={14} aria-hidden="true" />
-      </button>
-      {!project.missing && (
+      <details className="project-list-card__menu">
+        <summary aria-label={`Project actions for ${project.name}`} title="Project actions">
+          <MoreHorizontal size={17} aria-hidden="true" />
+        </summary>
         <div className="project-list-card__actions">
+          {!project.missing && <>
           <button type="button" aria-label={`Rename ${project.name}`} title="Rename project" onClick={onRename}>
             <Pencil size={14} aria-hidden="true" />
+            <span>Rename</span>
           </button>
           <button
             type="button"
@@ -257,9 +251,20 @@ function ProjectCard({
             onClick={onArchive}
           >
             {project.archived ? <ArchiveRestore size={14} aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}
+            <span>{project.archived ? 'Reopen' : 'Archive'}</span>
+          </button>
+          </>}
+          <button
+            type="button"
+            className="project-list-card__remove"
+            aria-label={`Remove ${project.name} from recent projects`}
+            onClick={onRemove}
+          >
+            <X size={14} aria-hidden="true" />
+            <span>Remove from list</span>
           </button>
         </div>
-      )}
+      </details>
     </li>
   );
 }

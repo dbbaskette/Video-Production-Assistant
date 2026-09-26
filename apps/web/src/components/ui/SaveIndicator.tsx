@@ -47,22 +47,7 @@ export function SaveIndicator() {
   if (!visible) return null;
 
   return (
-    <span
-      role="status"
-      aria-live="polite"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '4px 10px',
-        borderRadius: 4,
-        fontSize: 12,
-        fontWeight: 500,
-        color: visible === 'saving' ? 'var(--fg-muted)' : 'var(--success)',
-        background: visible === 'saving' ? 'var(--bg-elev)' : 'transparent',
-        transition: 'opacity 200ms',
-      }}
-    >
+    <span role="status" aria-live="polite" className={`save-indicator save-indicator--${visible}`}>
       {visible === 'saving' ? (
         <>
           <Spinner /> Saving…

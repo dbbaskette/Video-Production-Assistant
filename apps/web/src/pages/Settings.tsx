@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { ApiError, settingsApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
+import { ApiError, settingsApi, tanzuBrandSetupApi, ttsApi, voiceApi, type ModelEntry, type TtsEngineInfo, type VoiceProfileInfo } from '../lib/api.js';
 import { useUi } from '../components/ui/UiProvider.js';
 import { ModelAssignments } from '../components/ModelAssignments.js';
 import {
@@ -724,6 +724,28 @@ export function Settings() {
   const ui = useUi();
   const [deleteErrors, setDeleteErrors] = useState<Record<string, ModelReferences>>({});
   const [deleteMessages, setDeleteMessages] = useState<Record<string, string>>({});
+  const tanzuBrandQuery = useQuery({
+    queryKey: tanzuBrandSetupApi.queryKey,
+    queryFn: () => tanzuBrandSetupApi.status(),
+    refetchInterval: (query) => query.state.data?.state === 'installing' ? 1_500 : false,
+  });
+  const tanzuBrandInstall = useMutation({
+    mutationFn: () => tanzuBrandSetupApi.install(),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: tanzuBrandSetupApi.queryKey });
+    },
+    onError: (installError) => {
+      ui.showToast({
+        tone: 'error',
+        message: 'Tanzu Brand installation could not start',
+        detail: installError instanceof Error ? installError.message : 'Check that VPA is running, then try again.',
+      });
+    },
+  });
+  const tanzuBrandCheck = useMutation({
+    mutationFn: () => tanzuBrandSetupApi.check(),
+    onSuccess: (status) => qc.setQueryData(tanzuBrandSetupApi.queryKey, status),
+  });
   const invalidateModelRouting = useCallback(async () => {
     await Promise.all([
       qc.invalidateQueries({ queryKey: ['settings', 'model-routing'] }),
@@ -831,7 +853,83 @@ export function Settings() {
         </p>
       </header>
 
-      <section id="model-assignments" className="settings-model-assignments">
+      <section id="connected-tools" className="settings-connected-tools">
+        <div className="section-header" style={{ marginBottom: 12 }}>
+          <span className="section-label">Connected tools</span>
+        </div>
+        <p className="settings-section-intro">
+          VPA detects the local packages it uses for production and helps you install missing ones.
+        </p>
+        <article className="settings-dependency-card" aria-label="Tanzu Brand setup">
+          <div className="settings-dependency-card__body">
+            <div className="settings-dependency-card__title">
+              <strong>Tanzu Brand</strong>
+              <span className={`settings-dependency-card__status settings-dependency-card__status--${tanzuBrandQuery.data?.state ?? 'checking'}`}>
+                {tanzuBrandQuery.isLoading
+                  ? 'Detecting…'
+                  : tanzuBrandQuery.data?.state === 'ready'
+                    ? 'Connected'
+                    : tanzuBrandQuery.data?.state === 'installing'
+                      ? 'Installing…'
+                      : tanzuBrandQuery.data?.state === 'error'
+                        ? 'Needs attention'
+                        : 'Not installed'}
+              </span>
+            </div>
+            <p>
+              Supplies verified Tanzu tokens, logos, bumpers, and brand rules. VPA installs the shared package for Codex and Claude from the private GitHub release.
+            </p>
+            {tanzuBrandQuery.data?.state === 'ready' && (
+              <dl className="settings-dependency-card__details">
+                <div><dt>Brand</dt><dd>{tanzuBrandQuery.data.brandVersion ?? 'Detected'}</dd></div>
+                <div><dt>Package</dt><dd>{tanzuBrandQuery.data.packageVersion ?? 'Detected'}</dd></div>
+              </dl>
+            )}
+            {tanzuBrandQuery.data?.message && tanzuBrandQuery.data.state !== 'ready' && (
+              <p className={tanzuBrandQuery.data.state === 'error' ? 'settings-dependency-card__error' : 'hint'} role={tanzuBrandQuery.data.state === 'error' ? 'alert' : undefined}>
+                {tanzuBrandQuery.data.message}
+              </p>
+            )}
+            {tanzuBrandQuery.error && (
+              <p className="settings-dependency-card__error" role="alert">
+                Could not detect Tanzu Brand. Check that VPA is running, then try again.
+              </p>
+            )}
+          </div>
+          <div className="settings-dependency-card__actions">
+            {tanzuBrandQuery.data?.state === 'ready' ? (
+              <button
+                type="button"
+                className="btn--ghost"
+                disabled={tanzuBrandCheck.isPending}
+                onClick={() => tanzuBrandCheck.mutate()}
+              >
+                {tanzuBrandCheck.isPending ? 'Checking…' : 'Check again'}
+              </button>
+            ) : tanzuBrandQuery.data?.state === 'installing' ? (
+              <span className="hint">This can take a minute.</span>
+            ) : (
+              <button
+                type="button"
+                className="btn--accent"
+                disabled={tanzuBrandInstall.isPending || tanzuBrandQuery.isLoading}
+                onClick={async () => {
+                  const confirmed = await ui.confirm({
+                    title: 'Download and install Tanzu Brand?',
+                    body: 'VPA will use your authenticated GitHub CLI to download the latest stable release from dbbaskette/tanzu-brand, verify its checksum and package contents, and install one shared package for Codex and Claude. Existing skill folders may be backed up during migration.',
+                    confirmLabel: 'Download and install',
+                  });
+                  if (confirmed) tanzuBrandInstall.mutate();
+                }}
+              >
+                {tanzuBrandInstall.isPending ? 'Starting…' : tanzuBrandQuery.data?.state === 'error' ? 'Try installation again' : 'Download and install'}
+              </button>
+            )}
+          </div>
+        </article>
+      </section>
+
+      <section id="model-assignments" className="settings-model-assignments" style={{ marginTop: 42 }}>
         <div className="section-header" style={{ marginBottom: 18 }}>
           <span className="section-label">Model assignments</span>
         </div>

@@ -1,48 +1,9 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Lightbulb, Presentation, Video } from 'lucide-react';
 import { ProjectList } from '../components/ProjectList.js';
 import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
-import { brandsApi } from '../lib/api.js';
-import { BrandCard } from '../components/BrandCard.js';
-import { LoadError, LoadingState } from '../components/ui/AsyncState.js';
-
-function BrandsSection() {
-  const { data, isLoading, error, isFetching, refetch } = useQuery({
-    queryKey: ['brands'],
-    queryFn: () => brandsApi.list(),
-  });
-
-  if (isLoading) return <section aria-label="Brands" style={{ marginTop: 36 }}><LoadingState label="Loading brands" /></section>;
-  if (error) return <section aria-label="Brands" style={{ marginTop: 36 }}><LoadError title="Brands could not be loaded" detail="Your projects are still available." onRetry={() => { void refetch(); }} retrying={isFetching} /></section>;
-
-  const list = data!.brands;
-  return (
-    <section aria-label="Brands" style={{ marginTop: 36 }}>
-      <div className="section-header">
-        <span className="section-label">Brands</span>
-        <Link to="/brands/new">
-          <button className="btn--outline-accent" style={{ fontSize: 12, padding: '5px 12px' }}>
-            + New Brand
-          </button>
-        </Link>
-      </div>
-      {list.length === 0 ? (
-        <div className="empty-state">
-          No brands yet. Create your first brand to apply consistent visual identity across video projects.
-        </div>
-      ) : (
-        <div className="brand-grid">
-          {list.map((entry) => (
-            <BrandCard key={entry.id} entry={entry} isDefault={entry.id === data!.default_brand_id} />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
 
 type Modal = 'none' | 'new' | 'open' | 'new-ideation' | 'new-presentation';
 
@@ -72,61 +33,62 @@ export function Dashboard() {
   };
 
   return (
-    <main className="page">
-      <header style={{ marginBottom: 32 }}>
+    <main className="page dashboard">
+      <header className="dashboard__header">
         <h1>Video Production Assistant</h1>
         <p style={{ color: 'var(--fg-muted)', fontSize: 14, margin: 0 }}>
-          Speed up the post-recording phase of demo video creation.
+          Plan, narrate, and finish polished videos in one workspace.
         </p>
       </header>
 
       <div className="hero-grid">
         <button
           className="hero-card hero-card--ideate"
-          aria-label="Ideate a new demo"
+          aria-label="Start with an idea"
           onClick={() => setModal('new-ideation')}
         >
-          <span className="hero-card__icon"><Lightbulb size={28} strokeWidth={1.5} /></span>
-          <div className="hero-card__title">Ideate a new demo</div>
+          <span className="hero-card__icon">
+            <Lightbulb size={28} strokeWidth={1.5} />
+          </span>
+          <div className="hero-card__title">Start with an idea</div>
           <div className="hero-card__desc">
-            Drop docs and describe what to demo. AI proposes a storyboard.
+            Describe your goal or add reference docs. VPA will propose a storyboard.
           </div>
         </button>
         <button
           className="hero-card hero-card--presentation"
-          aria-label="I have a presentation"
+          aria-label="Import slides"
           onClick={() => setModal('new-presentation')}
         >
-          <span className="hero-card__icon"><Presentation size={28} strokeWidth={1.5} /></span>
-          <div className="hero-card__title">I have a presentation</div>
+          <span className="hero-card__icon">
+            <Presentation size={28} strokeWidth={1.5} />
+          </span>
+          <div className="hero-card__title">Import slides</div>
           <div className="hero-card__desc">
-            Upload a PDF; we'll create one narratable scene per slide.
+            Upload a PDF and create one narratable scene per slide.
           </div>
         </button>
         <button
           className="hero-card hero-card--record"
-          aria-label="I have recordings"
+          aria-label="Import recordings"
           onClick={() => setModal('new')}
         >
-          <span className="hero-card__icon"><Video size={28} strokeWidth={1.5} /></span>
-          <div className="hero-card__title">I have recordings</div>
+          <span className="hero-card__icon">
+            <Video size={28} strokeWidth={1.5} />
+          </span>
+          <div className="hero-card__title">Import recordings</div>
           <div className="hero-card__desc">
-            Upload mp4(s); we'll script and narrate.
+            Add existing video clips, then write scripts and narration.
           </div>
         </button>
       </div>
 
       <section aria-label="Recent projects">
         <div className="section-header">
-          <span className="section-label">Recent</span>
+          <h2 className="section-title">Recent projects</h2>
         </div>
-        <ProjectList
-          onOpen={(p) => handleOpen(p.id)}
-          onOpenFolder={() => setModal('open')}
-        />
+        <ProjectList onOpen={(p) => handleOpen(p.id)} onOpenFolder={() => setModal('open')} />
       </section>
-
-      <BrandsSection />
 
       <NewProjectDialog
         open={modal === 'new'}

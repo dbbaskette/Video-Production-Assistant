@@ -1,5 +1,17 @@
 import { Link, NavLink, useLocation, useParams } from 'react-router-dom';
-import { FolderKanban, Clapperboard, Film, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import {
+  ArrowLeft,
+  Captions,
+  CheckCircle2,
+  Clapperboard,
+  FileText,
+  Film,
+  FolderKanban,
+  Mic2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Video,
+} from 'lucide-react';
 
 export function ProjectSidebar({
   projectName,
@@ -14,16 +26,16 @@ export function ProjectSidebar({
   const { pathname } = useLocation();
   const base = `/project/${projectId}`;
   const links = [
-    { label: 'Project', to: base, Icon: FolderKanban, end: true },
+    { label: 'Overview', to: base, Icon: FolderKanban, end: true },
     { label: 'Scenes', to: `${base}/storyboard`, Icon: Clapperboard },
-    { label: 'Review & export', to: `${base}/render`, Icon: Film },
+    { label: 'Script', to: `${base}/script`, Icon: FileText },
+    { label: 'Narration', to: `${base}/narration`, Icon: Mic2 },
+    { label: 'Render', to: `${base}/render`, Icon: Film },
+    { label: 'Review', to: `${base}/review`, Icon: CheckCircle2 },
   ];
   const tools = [
-    { label: 'Source recordings', route: 'recordings' },
-    { label: 'Full script', route: 'script' },
-    { label: 'Batch narration', route: 'narration' },
-    { label: 'Text overview', route: 'lower-thirds' },
-    { label: 'Automated quality checks', route: 'review' },
+    { label: 'Recordings', route: 'recordings', Icon: Video },
+    { label: 'On-screen text', route: 'lower-thirds', Icon: Captions },
   ];
   return (
     <nav
@@ -56,17 +68,16 @@ export function ProjectSidebar({
         className="workspace-navigation__tools"
         open={tools.some((tool) => pathname === `${base}/${tool.route}`) || undefined}
       >
-        <summary>Production tools</summary>
-        {tools.map((tool) => (
-          <NavLink key={tool.route} to={`${base}/${tool.route}`}>
-            {tool.label}
+        <summary title="More tools">More tools</summary>
+        {tools.map(({ label, route, Icon }) => (
+          <NavLink key={route} to={`${base}/${route}`} title={label}>
+            <Icon size={15} aria-hidden="true" />
+            <span>{label}</span>
           </NavLink>
         ))}
       </details>
       <footer>
-        <Link to="/brands">Brand library</Link>
-        <Link to="/voices">Voice library</Link>
-        <Link to="/">All projects</Link>
+        <Link to="/" title="All projects"><ArrowLeft size={15} aria-hidden="true" /><span>All projects</span></Link>
       </footer>
     </nav>
   );

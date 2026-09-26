@@ -26,6 +26,15 @@ function deps() {
     capInstaller: {
       start: vi.fn(async () => ({ installationId: '64d79770-ee07-4f70-b084-2115dc28e0d3', state: 'installing' as const })),
     },
+    tanzuBrandInstaller: {
+      getStatus: vi.fn(async () => ({
+        state: 'not-installed' as const,
+        installed: false,
+        message: 'Not installed',
+        updatedAt: new Date().toISOString(),
+      })),
+      start: vi.fn(async () => ({ installationId: '09e395ec-8b40-4b55-9622-d329398413a0', state: 'installing' as const })),
+    },
   };
 }
 
@@ -72,6 +81,27 @@ describe('Cap setup routes', () => {
     expect(conflict.statusCode).toBe(409);
     const failure = await app.inject({ method: 'POST', url: '/api/setup/cap/install', payload: { confirmed: true } });
     expect(failure.statusCode).toBe(500);
+  });
+});
+
+describe('Tanzu Brand setup routes', () => {
+  it('detects the package and requires explicit confirmation before installation', async () => {
+    const app = Fastify();
+    const injected = deps();
+    await registerSetupRoutes(app, injected);
+
+    const status = await app.inject({ method: 'GET', url: '/api/setup/tanzu-brand' });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ state: 'not-installed', installed: false });
+    expect(injected.tanzuBrandInstaller.getStatus).toHaveBeenCalledWith(false);
+
+    const invalid = await app.inject({ method: 'POST', url: '/api/setup/tanzu-brand/install', payload: { confirmed: false } });
+    expect(invalid.statusCode).toBe(400);
+    expect(injected.tanzuBrandInstaller.start).not.toHaveBeenCalled();
+
+    const accepted = await app.inject({ method: 'POST', url: '/api/setup/tanzu-brand/install', payload: { confirmed: true } });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toEqual({ installationId: '09e395ec-8b40-4b55-9622-d329398413a0', state: 'installing' });
   });
 });
 
