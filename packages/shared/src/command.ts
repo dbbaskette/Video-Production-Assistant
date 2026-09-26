@@ -7,6 +7,7 @@ import {
   ClipInstanceIdSchema,
   SceneCompositionSchema,
 } from './composition.js';
+import { SourceTranscriptSchema, VisualEffectSchema } from './visual-evidence.js';
 
 const AssignAssetCommandSchema = z.object({
   type: z.literal('scene.assign-asset'),
@@ -99,6 +100,25 @@ const SetAudioMixCommandSchema = z.object({
   settings: AudioMixSettingsSchema,
 }).strict();
 
+const SetVisualEffectsCommandSchema = z.object({
+  type: z.literal('visual.effects.set'),
+  sceneId: z.string().min(1),
+  effects: z.array(VisualEffectSchema).max(500),
+}).strict();
+
+const SetTranscriptCommandSchema = z.object({
+  type: z.literal('transcript.set'),
+  sceneId: z.string().min(1),
+  transcript: SourceTranscriptSchema,
+}).strict();
+
+const CorrectTranscriptWordCommandSchema = z.object({
+  type: z.literal('transcript.word.correct'),
+  sceneId: z.string().min(1),
+  wordId: z.string().regex(/^word_[A-Za-z0-9-]{6,80}$/),
+  text: z.string().trim().min(1).max(120),
+}).strict();
+
 export const ProjectCommandSchema = z.discriminatedUnion('type', [
   AssignAssetCommandSchema,
   PutSceneCommandSchema,
@@ -114,6 +134,9 @@ export const ProjectCommandSchema = z.discriminatedUnion('type', [
   ReorderClipsCommandSchema,
   DuplicateClipCommandSchema,
   SetAudioMixCommandSchema,
+  SetVisualEffectsCommandSchema,
+  SetTranscriptCommandSchema,
+  CorrectTranscriptWordCommandSchema,
 ]);
 export type ProjectCommand = z.infer<typeof ProjectCommandSchema>;
 

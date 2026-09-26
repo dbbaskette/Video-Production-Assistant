@@ -37,6 +37,7 @@ import {
 import { resolveRenderSceneDuration } from './scene-duration.js';
 import { resolveSafeProjectPath } from '../project/safe-path.js';
 import { materializeSceneComposition } from '../composition/materialize.js';
+import { applyCompositionForeground } from '../composition/foreground.js';
 
 export interface SingleSceneRenderOptions {
   audioMode?: 'replace' | 'mix';
@@ -168,7 +169,8 @@ export async function renderSingleScene(
     await saveStoryboard(projectPath, sb);
     scene = sb.scenes.find((s) => s.id === sceneId)!;
   }
-  const muxInputVideo = framePrep?.framedVideo ?? overlayPath;
+  const framedVideo = framePrep?.framedVideo ?? overlayPath;
+  const muxInputVideo = await applyCompositionForeground(projectPath, scene, framedVideo) ?? framedVideo;
 
   // 4. Produce narration.mp3 (joined from chunks if needed)
   const narrationRel = join(outDirRel, 'narration.mp3');
@@ -177,9 +179,10 @@ export async function renderSingleScene(
   // 5. Mux combined.mp4 — (framed or overlay) video + narration audio
   const combinedRel = join(outDirRel, 'combined.mp4');
   const combinedPath = join(projectPath, combinedRel);
-  const burnSubtitles = !!opts.burnSubtitles && !!scene.narration?.subtitles?.srt;
-  const srtPath = scene.narration?.subtitles?.srt
-    ? join(projectPath, scene.narration.subtitles.srt)
+  const subtitleRel = scene.narration?.subtitles?.srt ?? scene.transcript?.subtitles?.srt;
+  const burnSubtitles = !!opts.burnSubtitles && !!subtitleRel;
+  const srtPath = subtitleRel
+    ? join(projectPath, subtitleRel)
     : null;
 
   await muxOne({

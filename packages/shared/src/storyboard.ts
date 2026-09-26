@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { isSafeProjectRelativePath, PresentationSourceSchema } from './presentation.js';
 import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 import { SceneCompositionSchema } from './composition.js';
+import { EvidenceItemSchema, SourceTranscriptSchema, VisualEffectSchema } from './visual-evidence.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
@@ -173,6 +174,12 @@ export const SceneSchema = z.object({
   sources: z.array(SceneSourceSchema).max(20).optional(),
   /** Non-destructive clip sequence and mix settings. Sources remain immutable. */
   composition: SceneCompositionSchema.optional(),
+  /** Typed source-time visual effects; rendered non-destructively. */
+  visual_effects: z.array(VisualEffectSchema).max(500).optional(),
+  /** Correctable word-aligned source speech with immutable analysis provenance. */
+  transcript: SourceTranscriptSchema.optional(),
+  /** Cached source-time inspection artifacts. */
+  evidence: z.array(EvidenceItemSchema).max(1_000).optional(),
   presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),

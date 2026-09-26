@@ -36,6 +36,9 @@ import {
   type BrowserCaptureCreate,
   type BrowserCaptureChunkAck,
   type ProjectCommand,
+  type EvidenceItem,
+  type MappedTranscriptWord,
+  type SourceTranscript,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -850,6 +853,24 @@ export const compositionApi = {
       commands,
     });
     return { revision: response.result.revision };
+  },
+};
+
+export const sourceEvidenceApi = {
+  async get(projectId: string, sceneId: string): Promise<{ transcript: SourceTranscript | null; mappedWords: MappedTranscriptWord[]; evidence: EvidenceItem[] }> {
+    return request('GET', `/api/projects/${projectId}/scenes/${sceneId}/evidence`);
+  },
+  async transcribe(projectId: string, sceneId: string): Promise<{ transcript: SourceTranscript; mappedWords: MappedTranscriptWord[] }> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/evidence/transcribe`, undefined, { timeoutMs: 360_000 });
+  },
+  async correct(projectId: string, sceneId: string, wordId: string, text: string): Promise<{ transcript: SourceTranscript }> {
+    return request('PATCH', `/api/projects/${projectId}/scenes/${sceneId}/evidence/words/${wordId}`, { text });
+  },
+  async createArtifact(projectId: string, sceneId: string, input: { kind: 'frame' | 'contact-sheet' | 'excerpt'; startMs: number; endMs?: number; density?: number }): Promise<EvidenceItem> {
+    return request('POST', `/api/projects/${projectId}/scenes/${sceneId}/evidence/artifacts`, input, { timeoutMs: 120_000 });
+  },
+  artifactUrl(projectId: string, sceneId: string, evidenceId: string): string {
+    return `${BASE}/api/projects/${projectId}/scenes/${sceneId}/evidence/artifacts/${evidenceId}`;
   },
 };
 

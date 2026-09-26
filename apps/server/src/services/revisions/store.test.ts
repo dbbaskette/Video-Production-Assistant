@@ -179,7 +179,16 @@ describe('RevisionStore', () => {
     ]);
     expect(storyboard.scenes[0]!.composition!.clips[1]).toMatchObject({ source_in_ms: 500, source_out_ms: 3_500 });
 
-    await store.execute({ expectedRevision: 3, idempotencyKey: 'composition-restore-1', commands: [{ type: 'revision.restore', revision: 1 }] });
+    await store.execute({ expectedRevision: 3, idempotencyKey: 'visual-effect-0001', commands: [{ type: 'visual.effects.set', sceneId: 'scene-01', effects: [{ type: 'redaction', id: 'effect_redact-001', clip_instance_id: 'clip_left-00000001', source_asset_id: screenId, source_in_ms: 500, source_out_ms: 3_500, rect: { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, opacity: 1 }] }] });
+    await store.execute({ expectedRevision: 4, idempotencyKey: 'transcript-set-01', commands: [
+      { type: 'transcript.set', sceneId: 'scene-01', transcript: { version: 1, source_asset_id: screenId, source_sha256: 'a'.repeat(64), language: 'en', provider: 'gemini', model: 'gemini-test', settings_hash: 'c'.repeat(64), created_at: now, coverage: [{ start_ms: 0, end_ms: 10_000 }], words: [{ id: 'word_000001', text: 'wrong', start_ms: 600, end_ms: 900 }], passages: [{ id: 'passage_000001', start_ms: 600, end_ms: 900, text: 'wrong', word_ids: ['word_000001'] }] } },
+      { type: 'transcript.word.correct', sceneId: 'scene-01', wordId: 'word_000001', text: 'right' },
+    ] });
+    storyboard = loadYaml(await readFile(files.storyboard, 'utf8'), StoryboardSchema);
+    expect(storyboard.scenes[0]!.visual_effects?.[0]?.type).toBe('redaction');
+    expect(storyboard.scenes[0]!.transcript?.words[0]).toMatchObject({ text: 'right', original_text: 'wrong', start_ms: 600, end_ms: 900 });
+
+    await store.execute({ expectedRevision: 5, idempotencyKey: 'composition-restore-1', commands: [{ type: 'revision.restore', revision: 1 }] });
     storyboard = loadYaml(await readFile(files.storyboard, 'utf8'), StoryboardSchema);
     expect(storyboard.scenes[0]!.composition!.clips).toHaveLength(1);
   });
