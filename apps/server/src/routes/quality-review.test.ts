@@ -147,7 +147,7 @@ describe('quality review routes', () => {
     expect(failed.json()).toMatchObject({ code: 'model_unavailable', role: 'general' });
 
     const cached = await ctx.app.inject({ method: 'GET', url: `/api/projects/${projectId}/review` });
-    expect(cached.json()).toEqual(initial.json());
+    expect(cached.json()).toMatchObject({ ...initial.json(), stale: false, currentRevision: 0 });
   });
 
   it('bounds provider diagnostics and does not cache a failed review', async () => {

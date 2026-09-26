@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
-import { stat, mkdir } from 'node:fs/promises';
+import { copyFile, readFile, stat, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ProjectStore } from '../services/project/store.js';
@@ -8,7 +8,7 @@ import { renderFinalVideo, probeAudioParams, probeVideoSize, runFfmpeg, type Ren
 import { privateRenderDiagnostic, publicRenderFailure } from '../services/render/errors.js';
 import { buildTransitionClip } from '../services/render/transition-clip.js';
 import { jobQueue } from '../lib/job-queue.js';
-import { freezeProjectJobInput } from '../services/jobs/frozen-input.js';
+import { snapshotProjectJobInput } from '../services/jobs/frozen-input.js';
 import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 import { readBrand } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
@@ -16,7 +16,9 @@ import { loadStoryboard } from '../services/storyboard/index.js';
 import { effectiveMixSettings, SceneTransitionSchema } from '@vpa/shared';
 import { computeWorkflowStatus } from '../services/workflow-status/index.js';
 import { buildRenderFingerprint } from '../services/workflow-status/fingerprint.js';
-import { writeRenderManifest } from '../services/workflow-status/render-manifest.js';
+import { listRenderManifests, readRenderManifest, writeRenderManifest } from '../services/workflow-status/render-manifest.js';
+import { RevisionStore } from '../services/revisions/store.js';
+import { projectFiles } from '../services/project/paths.js';
 import { getQualityReview } from './quality-review.js';
 import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 import { createSubmittedJob, jobSubmissionFailure, readIdempotencyKey } from '../lib/job-submission.js';
@@ -27,6 +29,18 @@ interface Deps {
   workspaceRoot: string;
   registryFile: string;
   renderVideo?: typeof renderFinalVideo;
+  finalizeArtifact?: (inputPath: string, outputPath: string, quality: 'draft' | '1080p') => Promise<{ width: number; height: number }>;
+}
+
+async function finalizeArtifact(inputPath: string, outputPath: string, quality: 'draft' | '1080p') {
+  const target = quality === 'draft' ? { width: 1280, height: 720 } : { width: 1920, height: 1080 };
+  await runFfmpeg([
+    '-y', '-i', inputPath,
+    '-vf', `scale=${target.width}:${target.height}:force_original_aspect_ratio=decrease,pad=${target.width}:${target.height}:(ow-iw)/2:(oh-ih)/2,fps=30`,
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', quality === 'draft' ? '26' : '20',
+    '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
+  ]);
+  return target;
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -39,6 +53,7 @@ async function resolveProjectPath(store: ProjectStore, projectId: string): Promi
 export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
   const { store } = deps;
   const renderVideo = deps.renderVideo ?? renderFinalVideo;
+  const finalize = deps.finalizeArtifact ?? finalizeArtifact;
 
   // POST /api/projects/:id/render — start a render job. Returns the jobId
   // immediately; client subscribes to /api/jobs/:jobId/stream for progress.
@@ -55,6 +70,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       /** When false, ignore the brand's default_music_track on this render even
        *  if the project has no explicit music selected. */
       useBrandMusic?: boolean;
+      quality?: 'draft' | '1080p';
     };
     const opts: RenderOptions = {
       audioMode: body.audioMode === 'mix' ? 'mix' : 'replace',
@@ -196,7 +212,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }
     }
 
-    const frozenInput = await freezeProjectJobInput(projectPath, { ...body, musicScope });
+    const frozenInput = await snapshotProjectJobInput(projectPath, { ...body, musicScope });
     let submission;
     try {
       submission = await createSubmittedJob('render', {
@@ -206,11 +222,15 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }, readIdempotencyKey(req.headers));
     } catch (error) {
       const failure = jobSubmissionFailure(error);
+      await frozenInput.cleanup();
       if (failure) return reply.status(failure.status).send(failure.body);
       throw error;
     }
     const { job } = submission;
-    if (submission.reused) return { jobId: job.id, status: job.status, reused: true };
+    if (submission.reused) {
+      await frozenInput.cleanup();
+      return { jobId: job.id, status: job.status, reused: true };
+    }
     jobQueue.setStatus(job.id, 'running');
     jobQueue.emit(job.id, 'start', { projectId: id, opts });
 
@@ -221,7 +241,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
 
     void (async () => {
       try {
-        const result = await renderVideo(projectPath, opts, (event) => {
+        const result = await renderVideo(frozenInput.projectPath, opts, (event) => {
           jobQueue.emit(job.id, 'progress', event);
         });
         const manifestOptions = {
@@ -234,29 +254,50 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           musicScope,
           useBrandBumpers,
           useBrandMusic,
+          quality: body.quality ?? '1080p',
         };
-        const currentProject = await store.readProject(id);
-        const currentStoryboard = await loadStoryboard(projectPath);
-        const outputInfo = await stat(result.outputPath);
+        const artifactId = `render-${job.id}-r${frozenInput.inputRevision}`.replace(/[^A-Za-z0-9._-]/g, '-');
+        const artifactRel = join('renders', 'artifacts', `${artifactId}.mp4`);
+        const artifactPath = join(projectPath, artifactRel);
+        await mkdir(join(projectPath, 'renders', 'artifacts'), { recursive: true });
+        const target = await finalize(result.outputPath, artifactPath, body.quality ?? '1080p');
+        // Compatibility pointer for older clients. Prior outputs remain under
+        // their immutable artifact paths and are never overwritten.
+        await copyFile(artifactPath, join(projectPath, 'renders', 'final.mp4'));
+        const frozenProject = await new RevisionStore(frozenInput.projectPath).readRevision(frozenInput.inputRevision);
+        const outputInfo = await stat(artifactPath);
+        const assetManifest = await readFile(projectFiles(frozenInput.projectPath).assetManifest, 'utf8').then((raw) => JSON.parse(raw) as { assets?: Array<{ id: string; checksum: string }> }).catch(() => ({ assets: [] }));
         await writeRenderManifest(projectPath, {
+          artifactId,
+          jobId: job.id,
+          revision: frozenInput.inputRevision,
+          inputFingerprint: frozenInput.inputFingerprint,
+          sourceChecksums: Object.fromEntries((assetManifest.assets ?? []).map((asset) => [asset.id, asset.checksum])),
+          rendererVersion: 'vpa-renderer-2',
+          fonts: [],
           completedAt: new Date().toISOString(),
           output: {
-            path: 'renders/final.mp4',
+            path: artifactRel,
             sizeBytes: outputInfo.size,
             durationSec: result.durationSec,
             sceneCount: result.scenePaths.length,
+            width: target.width,
+            height: target.height,
+            fps: 30,
+            videoCodec: 'h264',
+            audioCodec: 'aac',
           },
           options: manifestOptions,
-          fingerprint: await buildRenderFingerprint(projectPath, currentProject, currentStoryboard, manifestOptions),
+          fingerprint: await buildRenderFingerprint(frozenInput.projectPath, frozenProject.project, frozenProject.storyboard, manifestOptions),
         });
         jobQueue.complete(job.id, {
           projectId: id,
-          outputPath: result.outputPath,
+          outputPath: artifactPath,
           durationSec: result.durationSec,
           sceneCount: result.scenePaths.length,
         }, [{
           kind: 'video',
-          path: 'renders/final.mp4',
+          path: artifactRel,
           revision: job.meta?.inputRevision,
           fingerprint: job.meta?.inputFingerprint,
         }]);
@@ -271,6 +312,8 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
           job.id,
           `${failure.code}: ${failure.error}${failure.hint ? ` — ${failure.hint}` : ''}`,
         );
+      } finally {
+        await frozenInput.cleanup();
       }
     })();
 
@@ -286,7 +329,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
   // header server-side.
   app.get('/api/projects/:id/render/video', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const query = (req.query ?? {}) as { download?: string; filename?: string };
+    const query = (req.query ?? {}) as { download?: string; filename?: string; artifact?: string };
     const asAttachment = query.download === '1' || query.download === 'true';
     let projectPath: string;
     try {
@@ -296,12 +339,15 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
     }
 
-    const filePath = join(projectPath, 'renders', 'final.mp4');
+    const manifests = query.artifact ? await listRenderManifests(projectPath) : [];
+    const requested = query.artifact ? manifests.find((item) => item.artifactId === query.artifact) : await readRenderManifest(projectPath);
+    const relativePath = requested?.output.path ?? 'renders/final.mp4';
+    const filePath = await resolveSafeProjectPath(projectPath, relativePath);
     let fileStat;
     try {
       fileStat = await stat(filePath);
     } catch {
-      return reply.status(404).send({ error: 'No rendered final.mp4 — render the project first', code: 'no_render' });
+      return reply.status(404).send({ error: 'No rendered artifact — render the project first', code: 'no_render' });
     }
 
     const total = fileStat.size;
@@ -463,6 +509,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
   // re-extracted only when the recording's mtime is newer than the cache.
   app.get('/api/projects/:id/scenes/:sceneId/thumbnail', async (req, reply) => {
     const { id, sceneId } = req.params as { id: string; sceneId: string };
+    const query = (req.query ?? {}) as { revision?: string };
 
     let projectPath: string;
     try {
@@ -472,7 +519,10 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
     }
 
-    const sb = await loadStoryboard(projectPath);
+    const requestedRevision = query.revision == null ? null : Number.parseInt(query.revision, 10);
+    const sb = requestedRevision != null && Number.isInteger(requestedRevision) && requestedRevision >= 0
+      ? (await new RevisionStore(projectPath).readRevision(requestedRevision)).storyboard
+      : await loadStoryboard(projectPath);
     if (!sb) return reply.status(404).send({ error: 'No storyboard found', code: 'no_storyboard' });
     const scene = sb.scenes.find((s) => s.id === sceneId);
     if (!scene) return reply.status(404).send({ error: 'Scene not found', code: 'scene_not_found' });
@@ -483,7 +533,7 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     const recPath = await resolveSafeProjectPath(projectPath, scene.recording.source);
     const cacheDir = join(projectPath, 'renders', '.thumbnails');
     await mkdir(cacheDir, { recursive: true });
-    const cacheFile = join(cacheDir, `${sceneId}.jpg`);
+    const cacheFile = join(cacheDir, `${sceneId}${requestedRevision == null ? '' : `-r${requestedRevision}`}.jpg`);
 
     // Re-extract only when the recording is newer than the cached thumb.
     let needsExtract = !existsSync(cacheFile);
@@ -535,10 +585,20 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       const e = err as { statusCode?: number; message?: string };
       return reply.status(e.statusCode ?? 500).send({ error: e.message, code: 'not_found' });
     }
-    const filePath = join(projectPath, 'renders', 'final.mp4');
     try {
-      const s = await stat(filePath);
-      return { exists: true, sizeBytes: s.size, modifiedAt: s.mtime.toISOString() };
+      const manifest = await readRenderManifest(projectPath);
+      if (!manifest) return { exists: false, artifacts: await listRenderManifests(projectPath) };
+      const s = await stat(await resolveSafeProjectPath(projectPath, manifest.output.path));
+      const currentRevision = await new RevisionStore(projectPath).currentRevision();
+      return {
+        exists: true,
+        sizeBytes: s.size,
+        modifiedAt: s.mtime.toISOString(),
+        manifest,
+        currentRevision,
+        stale: manifest.version === 1 ? true : manifest.revision !== currentRevision,
+        artifacts: await listRenderManifests(projectPath),
+      };
     } catch {
       return { exists: false };
     }

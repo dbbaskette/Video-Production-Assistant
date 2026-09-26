@@ -3,6 +3,7 @@ import { isSafeProjectRelativePath, PresentationSourceSchema } from './presentat
 import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 import { SceneCompositionSchema } from './composition.js';
 import { EvidenceItemSchema, SourceTranscriptSchema, VisualEffectSchema } from './visual-evidence.js';
+import { FeedbackNoteSchema } from './review-feedback.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
@@ -292,5 +293,6 @@ export const StoryboardSchema = z.object({
   project: StoryboardProjectSchema,
   defaults: StoryboardDefaultsSchema.optional(),
   scenes: z.array(SceneSchema),
+  feedback_notes: z.array(FeedbackNoteSchema).max(5_000).optional(),
 });
 export type Storyboard = z.infer<typeof StoryboardSchema>;

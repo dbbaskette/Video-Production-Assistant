@@ -19,3 +19,4 @@ export * from './command.js';
 export * from './composition.js';
 export * from './browser-capture.js';
 export * from './visual-evidence.js';
+export * from './review-feedback.js';
