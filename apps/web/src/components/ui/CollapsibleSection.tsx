@@ -23,7 +23,13 @@ interface Props {
   children: ReactNode;
 }
 
-export function CollapsibleSection({ title, subtitle, defaultOpen = true, anchorHash, children }: Props) {
+export function CollapsibleSection({
+  title,
+  subtitle,
+  defaultOpen = true,
+  anchorHash,
+  children,
+}: Props) {
   const [open, setOpen] = useState(defaultOpen);
   const location = useLocation();
 
@@ -39,54 +45,26 @@ export function CollapsibleSection({ title, subtitle, defaultOpen = true, anchor
   }, [anchorHash, location.hash, location.key]);
 
   return (
-    <section style={{ marginTop: 32 }}>
+    <section className="collapsible-section">
       <button
+        type="button"
+        className="collapsible-section__trigger"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        style={{
-          width: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 12,
-          padding: '8px 4px',
-          background: 'transparent',
-          border: 'none',
-          borderBottom: '1px solid var(--border)',
-          color: 'var(--fg)',
-          cursor: 'pointer',
-          marginBottom: 12,
-        }}
       >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="collapsible-section__title">
           <span
             aria-hidden
-            style={{
-              fontSize: 11,
-              color: 'var(--fg-muted)',
-              transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
-              transition: 'transform 120ms',
-              display: 'inline-block',
-              width: 10,
-            }}
+            className="collapsible-section__chevron"
+            style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}
           >
             ▶
           </span>
-          <span style={{
-            fontSize: 11,
-            color: 'var(--fg-muted)',
-            textTransform: 'uppercase',
-            letterSpacing: 1,
-            fontWeight: 600,
-          }}>
-            {title}
-          </span>
+          <span>{title}</span>
         </span>
-        {subtitle != null && (
-          <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{subtitle}</span>
-        )}
+        {subtitle != null && <span className="collapsible-section__subtitle">{subtitle}</span>}
       </button>
-      {open && <div>{children}</div>}
+      {open && <div className="collapsible-section__content">{children}</div>}
     </section>
   );
 }

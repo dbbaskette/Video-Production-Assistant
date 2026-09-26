@@ -86,12 +86,14 @@ function LogoUploadCard({
   slug,
   field,
   onUploaded,
+  readOnly = false,
 }: {
   label: string;
   currentPath: string | null | undefined;
   slug: string;
   field: 'primary' | 'mono';
   onUploaded: () => void;
+  readOnly?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -151,7 +153,7 @@ function LogoUploadCard({
           No logo
         </div>
       )}
-      <div style={{ marginTop: 14 }}>
+      {!readOnly && <div style={{ marginTop: 14 }}>
         <input
           ref={inputRef}
           type="file"
@@ -169,13 +171,13 @@ function LogoUploadCard({
             ? `Uploading…${progress?.fraction != null ? ` ${Math.round(progress.fraction * 100)}%` : ''}`
             : imgUrl ? 'Replace' : 'Upload'}
         </button>
-      </div>
+      </div>}
       {error && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{error}</p>}
     </div>
   );
 }
 
-function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: string; onRefresh: () => void }) {
+function AssetsPane({ data, slug, onRefresh, readOnly = false }: { data: BrandWithDoc; slug: string; onRefresh: () => void; readOnly?: boolean }) {
   const vpa = data.doc.frontMatter.vpa;
   const audio = vpa?.audio as
     | {
@@ -196,6 +198,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
             slug={slug}
             field="primary"
             onUploaded={onRefresh}
+            readOnly={readOnly}
           />
           <LogoUploadCard
             label="Mono Logo"
@@ -203,6 +206,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
             slug={slug}
             field="mono"
             onUploaded={onRefresh}
+            readOnly={readOnly}
           />
         </div>
         <p className="hint" style={{ marginTop: 14 }}>
@@ -230,6 +234,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
             field="bumper-intro"
             accept="video/mp4,video/quicktime,.mp4,.mov"
             onChange={onRefresh}
+            readOnly={readOnly}
           />
           <MediaUploadCard
             kind="video"
@@ -239,6 +244,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
             field="bumper-outro"
             accept="video/mp4,video/quicktime,.mp4,.mov"
             onChange={onRefresh}
+            readOnly={readOnly}
           />
         </div>
       </div>
@@ -261,6 +267,7 @@ function AssetsPane({ data, slug, onRefresh }: { data: BrandWithDoc; slug: strin
             field="default-music"
             accept="audio/mpeg,audio/wav,audio/mp4,.mp3,.wav,.m4a"
             onChange={onRefresh}
+            readOnly={readOnly}
           />
         </div>
       </div>
@@ -281,6 +288,7 @@ function MediaUploadCard({
   field,
   accept,
   onChange,
+  readOnly = false,
 }: {
   kind: 'video' | 'audio';
   label: string;
@@ -289,6 +297,7 @@ function MediaUploadCard({
   field: 'bumper-intro' | 'bumper-outro' | 'default-music' | 'sonic-logo';
   accept: string;
   onChange: () => void;
+  readOnly?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<'upload' | 'delete' | null>(null);
@@ -392,7 +401,7 @@ function MediaUploadCard({
           {filename}
         </p>
       )}
-      <div style={{ marginTop: 12, display: 'inline-flex', gap: 8 }}>
+      {!readOnly && <div style={{ marginTop: 12, display: 'inline-flex', gap: 8 }}>
         <input
           ref={inputRef}
           type="file"
@@ -427,7 +436,7 @@ function MediaUploadCard({
             {busy === 'delete' ? 'Removing…' : 'Remove'}
           </button>
         )}
-      </div>
+      </div>}
       {error && <p style={{ color: 'var(--danger)', fontSize: 12, marginTop: 6 }}>{error}</p>}
     </div>
   );
@@ -666,6 +675,8 @@ export default function BrandDetail() {
 
   const { registry: entry, doc } = data;
   const fm = doc.frontMatter;
+  const managedTanzu = slug === 'vmware-tanzu';
+  const tanzuSource = (fm as Record<string, unknown>).tanzuBrand as { brandVersion?: string; packageVersion?: string } | undefined;
   const unavailableFonts = validation.data?.fonts.filter((font) =>
     typeof document !== 'undefined' && document.fonts ? !document.fonts.check(`12px "${font}"`) : false,
   ) ?? [];
@@ -686,13 +697,14 @@ export default function BrandDetail() {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="15 18 9 12 15 6" />
         </svg>
-        All Brands
+        Brand
       </Link>
 
       {/* Header */}
       <div className="brand-detail__header">
         <h1 style={{ margin: 0 }}>{entry.name}</h1>
         <span className="brand-detail__meta">v{entry.version}</span>
+        {managedTanzu && <span className="brand-detail__meta">Managed by tanzu-brand {tanzuSource?.brandVersion ?? fm.version}</span>}
         {entry.forked_from && (
           <span className="brand-detail__meta">
             forked from <Link to={`/brands/${entry.forked_from}`}>{entry.forked_from}</Link>
@@ -720,23 +732,23 @@ export default function BrandDetail() {
             Download
           </button>
         </a>
-        <button
+        {!managedTanzu && <button
           type="button"
           disabled={regenerateMut.isPending}
           onClick={() => void handleRegenerate()}
         >
           {regenerateMut.isPending ? 'Regenerating...' : 'Regenerate'}
-        </button>
-        <button type="button" onClick={handleFork} disabled={forkMut.isPending}>
+        </button>}
+        {!managedTanzu && <button type="button" onClick={handleFork} disabled={forkMut.isPending}>
           {forkMut.isPending ? 'Forking...' : 'Fork'}
-        </button>
-        <button type="button" className="primary" onClick={() => { setDraft(fm); setDraftBody(doc.body); setEditing(true); }}>
+        </button>}
+        {!managedTanzu && <button type="button" className="primary" onClick={() => { setDraft(fm); setDraftBody(doc.body); setEditing(true); }}>
           Edit kit
-        </button>
+        </button>}
 
         <div style={{ flex: 1 }} />
 
-        <button
+        {!managedTanzu && <button
           type="button"
           className="btn--danger"
           onClick={handleDelete}
@@ -747,13 +759,20 @@ export default function BrandDetail() {
             : deleteConfirm
               ? 'Confirm Delete'
               : 'Delete'}
-        </button>
-        {deleteConfirm && (
+        </button>}
+        {!managedTanzu && deleteConfirm && (
           <button type="button" className="btn--ghost" onClick={() => setDeleteConfirm(false)}>
             Cancel
           </button>
         )}
       </div>
+
+      {managedTanzu && (
+        <section className="brand-managed-banner">
+          <strong>Canonical package</strong>
+          <p>This adapter is read-only in VPA. Update <code>tanzu-brand</code> and restart VPA to synchronize approved tokens and assets{tanzuSource?.packageVersion ? ` from package ${tanzuSource.packageVersion}` : ''}.</p>
+        </section>
+      )}
 
       {editing && draft && (
         <section className="card" style={{ padding: 18, marginBottom: 20 }} aria-label="Edit brand kit">
@@ -841,7 +860,7 @@ export default function BrandDetail() {
         </pre>
       )}
 
-      {tab === 'assets' && <AssetsPane data={data} slug={slug!} onRefresh={() => queryClient.invalidateQueries({ queryKey: ['brand', slug] })} />}
+      {tab === 'assets' && <AssetsPane data={data} slug={slug!} readOnly={managedTanzu} onRefresh={() => queryClient.invalidateQueries({ queryKey: ['brand', slug] })} />}
 
       {tab === 'usage' && <UsagePane slug={slug!} />}
 

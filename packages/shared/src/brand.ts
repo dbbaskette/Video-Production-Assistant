@@ -25,3 +25,20 @@ export const BrandWithDoc = z.object({
   doc: DesignMd,
 });
 export type BrandWithDoc = z.infer<typeof BrandWithDoc>;
+
+export const TanzuBrandSetupStateSchema = z.enum([
+  'not-installed', 'installing', 'ready', 'error',
+]);
+export type TanzuBrandSetupState = z.infer<typeof TanzuBrandSetupStateSchema>;
+
+export const TanzuBrandSetupStatusSchema = z.object({
+  state: TanzuBrandSetupStateSchema,
+  installed: z.boolean(),
+  brandVersion: z.string().optional(),
+  packageVersion: z.string().optional(),
+  sourceRoot: z.string().optional(),
+  installationId: z.string().uuid().optional(),
+  message: z.string().optional(),
+  updatedAt: z.string().datetime(),
+});
+export type TanzuBrandSetupStatus = z.infer<typeof TanzuBrandSetupStatusSchema>;

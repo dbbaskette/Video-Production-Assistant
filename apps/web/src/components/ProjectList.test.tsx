@@ -113,6 +113,7 @@ describe('ProjectList', () => {
     const archive = view.container.querySelector<HTMLButtonElement>('[aria-label="Archive Alpha"]')!;
     expect(open.contains(rename)).toBe(false);
     expect(open.contains(archive)).toBe(false);
+    expect(view.container.querySelector('[aria-label="Project actions for Alpha"]')).not.toBeNull();
 
     act(() => archive.click());
     await waitForUi(() => expect(api.archiveProject).toHaveBeenCalledWith(projects[1]!.id));

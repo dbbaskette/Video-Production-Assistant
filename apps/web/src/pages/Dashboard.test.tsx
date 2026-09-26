@@ -1,12 +1,10 @@
 import { act } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { brandsApi } from '../lib/api.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderComponent } from '../components/component-test-utils.js';
 import { Dashboard } from './Dashboard.js';
 
 vi.mock('../components/ProjectList.js', () => ({ ProjectList: () => <div /> }));
-vi.mock('../components/BrandCard.js', () => ({ BrandCard: () => <div /> }));
 vi.mock('../components/OpenFolderDialog.js', () => ({ OpenFolderDialog: () => null }));
 vi.mock('../components/NewProjectDialog.js', () => ({
   NewProjectDialog: ({ open, mode, onCreated }: {
@@ -26,9 +24,6 @@ function Location() {
 }
 
 describe('Dashboard presentation entry', () => {
-  beforeEach(() => {
-    vi.spyOn(brandsApi, 'list').mockResolvedValue({ brands: [], default_brand_id: null });
-  });
   afterEach(() => {
     vi.restoreAllMocks();
     document.body.innerHTML = '';
@@ -45,9 +40,9 @@ describe('Dashboard presentation entry', () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(view.container.textContent).toContain('I have a presentation');
-    expect(view.container.textContent).toContain("Upload a PDF; we'll create one narratable scene per slide.");
-    const hero = view.container.querySelector<HTMLButtonElement>('button[aria-label="I have a presentation"]')!;
+    expect(view.container.textContent).toContain('Import slides');
+    expect(view.container.textContent).toContain('Upload a PDF and create one narratable scene per slide.');
+    const hero = view.container.querySelector<HTMLButtonElement>('button[aria-label="Import slides"]')!;
     act(() => hero.click());
     const complete = [...view.container.querySelectorAll('button')]
       .find((candidate) => candidate.textContent === 'Complete presentation')!;

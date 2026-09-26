@@ -17,10 +17,12 @@ import {
   WorkflowStatusSchema,
   type WorkflowStatus,
   CapSetupStatusSchema,
+  TanzuBrandSetupStatusSchema,
   AgentRecordingPlanSchema,
   AgentRecordingSessionSchema,
   ModelRoutingResponseSchema,
   type CapSetupStatus,
+  type TanzuBrandSetupStatus,
   type AgentRecordingPlan,
   type AgentRecordingPlanUpdate,
   type AgentRecordingSession,
@@ -964,6 +966,19 @@ export const capSetupApi = {
   },
   async install(): Promise<{ installationId: string; state: 'installing' }> {
     return request('POST', '/api/setup/cap/install', { confirmed: true });
+  },
+};
+
+export const tanzuBrandSetupApi = {
+  queryKey: ['setup', 'tanzu-brand'] as const,
+  async status(): Promise<TanzuBrandSetupStatus> {
+    return TanzuBrandSetupStatusSchema.parse(await request('GET', '/api/setup/tanzu-brand'));
+  },
+  async check(): Promise<TanzuBrandSetupStatus> {
+    return TanzuBrandSetupStatusSchema.parse(await request('POST', '/api/setup/tanzu-brand/check'));
+  },
+  async install(): Promise<{ installationId: string; state: 'installing' }> {
+    return request('POST', '/api/setup/tanzu-brand/install', { confirmed: true });
   },
 };
 

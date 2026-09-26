@@ -36,9 +36,7 @@ export function ProjectWorkspace() {
   });
 
   if (isLoading) {
-    return (
-      <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading project…</div>
-    );
+    return <div style={{ padding: 40, color: 'var(--fg-muted)' }}>Loading project…</div>;
   }
 
   if (error) {
@@ -61,7 +59,7 @@ export function ProjectWorkspace() {
   return (
     <div
       className={`project-workspace${focusMode ? ' project-workspace--focused' : ''}`}
-      style={{ display: 'flex', height: 'calc(100vh - 52px)' }}
+      style={{ display: 'flex', height: 'calc(100vh - var(--nav-height))' }}
     >
       {!focusMode && (
         <ProjectSidebar
@@ -84,13 +82,15 @@ export function ProjectWorkspace() {
         </div>
         <div style={{ flex: 1 }}>
           <Outlet
-            context={{
-              project,
-              projectNavCollapsed,
-              setProjectNavCollapsed,
-              focusMode,
-              setFocusMode,
-            } satisfies WorkspaceOutletContext}
+            context={
+              {
+                project,
+                projectNavCollapsed,
+                setProjectNavCollapsed,
+                focusMode,
+                setFocusMode,
+              } satisfies WorkspaceOutletContext
+            }
           />
         </div>
       </main>

@@ -23,6 +23,7 @@ import { forkBrand } from '../services/brand/fork.js';
 import { setDefault } from '../services/brand/registry.js';
 import { extractTokens } from '../services/brand-generation/extract-tokens.js';
 import { loadPrompt } from '../services/llm/prompts.js';
+import { TANZU_BRAND_SLUG } from '../services/brand/tanzu-brand-source.js';
 
 export interface BrandRouteOptions {
   paths: BrandPaths;
@@ -498,6 +499,9 @@ export async function registerBrandRoutes(
 
       // Mode 2: update document
       if ('front_matter' in body && 'body' in body) {
+        if (slug === TANZU_BRAND_SLUG) {
+          return reply.code(409).send({ error: 'This brand is managed by the Tanzu Brand package.', code: 'managed_brand' });
+        }
         const parsed = DesignMdFrontMatter.safeParse(body.front_matter);
         if (!parsed.success) {
           return reply.code(400).send({
@@ -528,6 +532,9 @@ export async function registerBrandRoutes(
     '/api/brands/:slug/regenerate',
     async (req, reply) => {
       const { slug } = req.params;
+      if (slug === TANZU_BRAND_SLUG) {
+        return reply.code(409).send({ error: 'This brand is managed by the Tanzu Brand package.', code: 'managed_brand' });
+      }
       let current;
       try {
         current = await readBrand(paths, registryFile, slug);
@@ -674,6 +681,10 @@ export async function registerBrandRoutes(
     async (req, reply) => {
       const { slug } = req.params;
 
+      if (slug === TANZU_BRAND_SLUG) {
+        return reply.code(409).send({ error: 'This brand is managed by the Tanzu Brand package.', code: 'managed_brand' });
+      }
+
       // Verify brand exists
       let current;
       try {
@@ -801,6 +812,9 @@ export async function registerBrandRoutes(
     '/api/brands/:slug/assets',
     async (req, reply) => {
       const { slug } = req.params;
+      if (slug === TANZU_BRAND_SLUG) {
+        return reply.code(409).send({ error: 'This brand is managed by the Tanzu Brand package.', code: 'managed_brand' });
+      }
       const field = req.query.field;
       const FIELD_TO_PATH: Record<string, ['logo' | 'audio', string]> = {
         primary: ['logo', 'primary'],
@@ -865,6 +879,9 @@ export async function registerBrandRoutes(
     '/api/brands/:slug',
     async (req, reply) => {
       const { slug } = req.params;
+      if (slug === TANZU_BRAND_SLUG) {
+        return reply.code(409).send({ error: 'This brand is managed by the Tanzu Brand package.', code: 'managed_brand' });
+      }
       const force = req.query.force === 'true';
 
       // Verify brand exists before deletion

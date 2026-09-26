@@ -50,8 +50,10 @@ export function ProjectOverview() {
   return (
     <div className="project-overview">
       <h1 style={{ margin: 0, fontSize: 24 }}>{project.name}</h1>
-      <ProjectMediaSummary projectId={project.id} />
-      <ProjectActionCard projectId={project.id} onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))} />
+      <div className="project-overview__summary">
+        <ProjectActionCard projectId={project.id} onViewIssues={() => window.dispatchEvent(new Event('vpa:open-project-issues'))} />
+        <ProjectMediaSummary projectId={project.id} />
+      </div>
       {storyboard?.project.objective && <section className="project-brief"><h2>Video brief</h2><p>{storyboard.project.objective}</p><Link to={`/project/${project.id}/ideation`}>Refine the brief</Link></section>}
       <CollapsibleSection title="Project settings" defaultOpen={false} subtitle="Model overrides, folder and source export" anchorHash="project-ai-models-title,export">
       <p className="hint">Project folder: {project.path}</p>
@@ -390,6 +392,12 @@ function RenderSection({
 
       {workflowQuery.data && <RenderPreflight projectId={projectId} status={workflowQuery.data} />}
 
+      <details className="render-disclosure render-disclosure--settings">
+        <summary>
+          <span>Customize render</span>
+          <small>Narration, captions, brand assets, and frame style</small>
+        </summary>
+        <div className="render-disclosure__content">
       {/* Options */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 13 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -532,6 +540,8 @@ function RenderSection({
           Could not load frame templates.
         </p>
       )}
+        </div>
+      </details>
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <RenderCapabilities state={capabilities} />
@@ -894,22 +904,8 @@ export function ProjectMusicAndRender({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [musicEnabled, setMusicEnabled] = useState(true);
   const [musicVolumeDb, setMusicVolumeDb] = useState(-20);
-  // Order: BackgroundMusic (with the mix-into-render controls embedded
-  // as its footer) → RenderSection. Previously the mix controls floated
-  // between the two cards with `marginTop: -16` overlapping into the
-  // gap, which made the volume slider look like it belonged to neither
-  // card. Now it's clearly part of the music card it actually controls.
   return (
     <>
-      <BackgroundMusicSection
-        projectId={projectId}
-        selectedTrackId={selectedTrackId}
-        onSelect={setSelectedTrackId}
-        musicEnabled={musicEnabled}
-        onEnabledChange={setMusicEnabled}
-        musicVolumeDb={musicVolumeDb}
-        onVolumeChange={setMusicVolumeDb}
-      />
       <RenderSection
         projectId={projectId}
         projectName={projectName}
@@ -919,6 +915,23 @@ export function ProjectMusicAndRender({
         musicVolumeDb={musicVolumeDb}
         selectedVariantId={selectedVariantId}
       />
+      <details className="render-disclosure render-disclosure--section">
+        <summary>
+          <span>Background music</span>
+          <small>{selectedTrackId ? '1 track selected' : 'Optional'}</small>
+        </summary>
+        <div className="render-disclosure__content">
+          <BackgroundMusicSection
+            projectId={projectId}
+            selectedTrackId={selectedTrackId}
+            onSelect={setSelectedTrackId}
+            musicEnabled={musicEnabled}
+            onEnabledChange={setMusicEnabled}
+            musicVolumeDb={musicVolumeDb}
+            onVolumeChange={setMusicVolumeDb}
+          />
+        </div>
+      </details>
     </>
   );
 }

@@ -61,6 +61,7 @@ import { existsSync } from 'node:fs';
 import { CapLocator } from './services/cap/locator.js';
 import { ManagedCapRuntime, createCapProcess } from './services/cap/runtime.js';
 import { CapInstaller } from './services/cap/installer.js';
+import { TanzuBrandInstaller } from './services/brand/tanzu-brand-installer.js';
 import { createMacOSDesktopPlatform } from './services/desktop-driver/macos.js';
 import { DesktopDriverSessionManager } from './services/desktop-driver/session.js';
 import { registerAgentDesktopRoutes } from './routes/agent-desktop.js';
@@ -174,7 +175,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   const bPaths = brandPaths(config.vpaHome, config.vpaHome);
 
-  // ── Seed built-in brands on first launch ────────────────────
+  // ── Synchronize the installed Tanzu Brand package ───────────
   await seedBrands(bPaths, bPaths.registryFile);
 
   // ── Model registry (persisted in ~/.vpa/models.json) ──────────────
@@ -242,6 +243,10 @@ export async function buildServer(options: BuildServerOptions = {}) {
     vpaHome: config.vpaHome,
     locator: capLocator,
     onState: (status) => capRuntime.setInstallationStatus(status),
+  });
+  const tanzuBrandInstaller = new TanzuBrandInstaller({
+    paths: bPaths,
+    registryFile: bPaths.registryFile,
   });
   const desktopDriver = new DesktopDriverSessionManager({
     platform: createMacOSDesktopPlatform(),
@@ -355,6 +360,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
       vpaHome: config.vpaHome,
       capRuntime,
       capInstaller,
+      tanzuBrandInstaller,
     }),
   );
   await app.register(async (instance) =>
@@ -462,6 +468,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     store,
     capRuntime,
     capInstaller,
+    tanzuBrandInstaller,
     desktopDriver,
     codexRunner,
     agentRecordingCoordinator,

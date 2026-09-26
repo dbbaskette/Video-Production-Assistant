@@ -3,7 +3,6 @@ import { NavBar } from './components/NavBar.js';
 import { CommandPalette } from './components/ui/CommandPalette.js';
 import { JobTray } from './components/JobTray.js';
 import { Dashboard } from './pages/Dashboard.js';
-import BrandNew from './pages/BrandNew.js';
 import BrandDetail from './pages/BrandDetail.js';
 import { BrandsList } from './pages/BrandsList.js';
 import { VoicesList } from './pages/VoicesList.js';
@@ -37,7 +36,7 @@ export function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/brands" element={<BrandsList />} />
-        <Route path="/brands/new" element={<BrandNew />} />
+        <Route path="/brands/new" element={<Navigate to="/brands" replace />} />
         <Route path="/brands/:slug" element={<BrandDetail />} />
         <Route path="/voices" element={<VoicesList />} />
         <Route path="/voices/tts" element={<VoicesTts />} />

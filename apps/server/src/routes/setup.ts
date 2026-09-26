@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { clearSetupHealthCache, runSetupHealth } from '../services/setup/probes.js';
 import type { TtsService } from '../services/tts/index.js';
 import type { ModelRouter } from '../services/llm/model-router.js';
-import { CapSetupStatusSchema } from '@vpa/shared';
+import { CapSetupStatusSchema, TanzuBrandSetupStatusSchema } from '@vpa/shared';
 import { z } from 'zod';
 import type { CapRuntime } from '../services/cap/runtime.js';
 import type { CapInstaller } from '../services/cap/installer.js';
+import type { TanzuBrandInstaller } from '../services/brand/tanzu-brand-installer.js';
 
 interface Deps {
   tts: TtsService;
@@ -13,6 +14,7 @@ interface Deps {
   vpaHome: string;
   capRuntime: Pick<CapRuntime, 'getStatus'>;
   capInstaller: Pick<CapInstaller, 'start'>;
+  tanzuBrandInstaller: Pick<TanzuBrandInstaller, 'getStatus' | 'start'>;
 }
 
 export async function registerSetupRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
@@ -44,6 +46,29 @@ export async function registerSetupRoutes(app: FastifyInstance, deps: Deps): Pro
       }
       req.log.error(error);
       return reply.code(500).send({ error: error instanceof Error ? error.message : 'Could not start Cap installation' });
+    }
+  });
+
+  app.get('/api/setup/tanzu-brand', async () => {
+    return TanzuBrandSetupStatusSchema.parse(await deps.tanzuBrandInstaller.getStatus(false));
+  });
+
+  app.post('/api/setup/tanzu-brand/check', async () => {
+    return TanzuBrandSetupStatusSchema.parse(await deps.tanzuBrandInstaller.getStatus(true));
+  });
+
+  app.post('/api/setup/tanzu-brand/install', async (req, reply) => {
+    const parsed = z.object({ confirmed: z.literal(true) }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Tanzu Brand installation requires confirmed: true' });
+    try {
+      const job = await deps.tanzuBrandInstaller.start(parsed.data);
+      return reply.code(202).send(job);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'INSTALL_IN_PROGRESS') {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : 'Tanzu Brand installation is already in progress' });
+      }
+      req.log.error(error);
+      return reply.code(500).send({ error: error instanceof Error ? error.message : 'Could not start Tanzu Brand installation' });
     }
   });
 }

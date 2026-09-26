@@ -41,30 +41,42 @@ export function RenderPage() {
   const hasAnyRecording = recordedCount > 0;
 
   return (
-    <div style={{ padding: '40px 48px', maxWidth: 900 }}>
+    <div className="render-page">
       <h1 style={{ margin: 0, fontSize: 24 }}>Render</h1>
       <p style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: 13 }}>
         {!hasStoryboard
           ? 'Build a storyboard first — render combines every scene\'s recording into the final video.'
           : !hasAnyRecording
             ? 'Upload at least one recording before rendering.'
-            : `Mix background music, pick what to include, and produce the final ${project.name}.mp4.`}
+            : `Review readiness, adjust optional settings, and export ${project.name}.mp4.`}
       </p>
 
       {hasStoryboard && hasAnyRecording ? (
-        <div style={{ marginTop: 24 }}>
-          {/* Scene strip — horizontal thumbnails so the user can confirm
-              ordering + transitions at a glance before kicking off a
-              multi-minute render. Sits above the render controls because
-              it's review-context, not an action. */}
-          <SceneStrip projectId={project.id} storyboard={storyboard!} />
-          <VariantsPanel projectId={project.id} storyboard={storyboard!} selectedVariantId={selectedVariantId} onSelect={setSelectedVariantId} />
+        <div className="render-page__content">
           <ProjectMusicAndRender
             projectId={project.id}
             projectName={project.name}
             hasStoryboard={hasStoryboard}
             selectedVariantId={selectedVariantId}
           />
+          <details className="render-disclosure render-disclosure--section">
+            <summary>
+              <span>Output format</span>
+              <small>{selectedVariantId ? 'Custom variant selected' : 'Base 16:9 video'}</small>
+            </summary>
+            <div className="render-disclosure__content">
+              <VariantsPanel projectId={project.id} storyboard={storyboard!} selectedVariantId={selectedVariantId} onSelect={setSelectedVariantId} />
+            </div>
+          </details>
+          <details className="render-disclosure render-disclosure--section">
+            <summary>
+              <span>Scene order</span>
+              <small>{sceneCount} scene{sceneCount === 1 ? '' : 's'}</small>
+            </summary>
+            <div className="render-disclosure__content">
+              <SceneStrip projectId={project.id} storyboard={storyboard!} />
+            </div>
+          </details>
         </div>
       ) : (
         <div

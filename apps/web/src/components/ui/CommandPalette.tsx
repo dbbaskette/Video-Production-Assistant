@@ -50,8 +50,7 @@ function fuzzyScore(label: string, query: string): number {
 
 const FIXED_PAGES: PaletteItem[] = [
   { id: 'page:dashboard', label: 'Dashboard', to: '/', group: 'Pages' },
-  { id: 'page:brands', label: 'Brands', to: '/brands', group: 'Pages' },
-  { id: 'page:brand-new', label: 'New brand', to: '/brands/new', group: 'Pages' },
+  { id: 'page:brands', label: 'Tanzu Brand', to: '/brands', group: 'Pages' },
   { id: 'page:voices', label: 'Voice clones', to: '/voices', group: 'Pages' },
   { id: 'page:voice-new', label: 'New voice', to: '/voices/new', group: 'Pages' },
   { id: 'page:setup', label: 'Setup health', to: '/setup', group: 'Pages' },

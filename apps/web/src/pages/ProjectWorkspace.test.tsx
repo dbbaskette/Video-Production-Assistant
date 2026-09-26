@@ -78,9 +78,11 @@ describe('ProjectWorkspace navigation layout', () => {
 
     act(() => buttonByLabel(view.container, 'Collapse project navigation')!.click());
     expect(buttonByLabel(view.container, 'Expand project navigation')).not.toBeNull();
-    for (const label of ['Project', 'Scenes', 'Review & export', 'Source recordings', 'Full script', 'Batch narration', 'Text overview', 'Automated quality checks', 'Brand library', 'All projects']) {
+    for (const label of ['Overview', 'Scenes', 'Script', 'Narration', 'Render', 'Review', 'Recordings', 'On-screen text', 'All projects']) {
       expect([...view.container.querySelectorAll('a')].some(a => a.textContent === label), label).toBe(true);
     }
+    expect(view.container.textContent).not.toContain('Brand library');
+    expect(view.container.textContent).not.toContain('Voice library');
     expect(JSON.parse(localStorage.getItem(WORKSPACE_PREFERENCE_KEY)!)).toEqual({
       projectNavCollapsed: true,
     });
