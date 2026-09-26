@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
@@ -10,6 +10,7 @@ import { ModelRoutingError, type ModelRouter } from '../services/llm/model-route
 import { registerIdeationRoutes } from './ideation.js';
 import { addText } from '../services/project-source-docs/index.js';
 import { REFERENCE_BUDGET_CHARS } from '../services/project-source-docs/context.js';
+import { saveStoryboard } from '../services/storyboard/index.js';
 
 async function buildTestServer(opts: { writer?: LlmClient; general?: LlmClient } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'vpa-id-routes-'));
@@ -164,6 +165,28 @@ describe('ideation routes', () => {
     expect(body.messages[0].role).toBe('user');
     expect(body.messages[1].role).toBe('assistant');
     expect(body.proposedScenes.length).toBeGreaterThan(0);
+    ctx.ideationManager.delete(projectId);
+    const restored = await ctx.app.inject({ method: 'GET', url: `/api/projects/${projectId}/ideation` });
+    expect(restored.json().messages).toHaveLength(2);
+  });
+
+  it('edits a proposal directly and preserves source-backed scenes on acceptance', async () => {
+    await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/ideation/message`, payload: { content: 'Demo MCP setup' } });
+    const project = await ctx.store.readProject(projectId);
+    await mkdir(path.join(project.path, 'recordings'), { recursive: true });
+    await writeFile(path.join(project.path, 'recordings', 'keep.mp4'), 'source');
+    await saveStoryboard(project.path, { schema_version: 1, project: { id: project.id, name: project.name, created: project.created }, scenes: [{ id: 'source-scene', name: 'Recorded', description: 'Keep me', type: 'desktop', recording: { source: 'recordings/keep.mp4', duration_sec: 2 } }, { id: 'old-draft', name: 'Old draft', description: 'Replace me', type: 'desktop' }] });
+    const state = (await ctx.app.inject({ method: 'GET', url: `/api/projects/${projectId}/ideation` })).json();
+    const first = state.proposedScenes[0];
+    expect((await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${projectId}/ideation/proposal`, payload: { type: 'update', sceneId: first.id, patch: { name: 'Edited directly' } } })).statusCode).toBe(200);
+    const added = { id: 'scene-manual', name: 'Manual scene', description: 'Added without chat', type: 'browser' };
+    await ctx.app.inject({ method: 'PATCH', url: `/api/projects/${projectId}/ideation/proposal`, payload: { type: 'add', scene: added, index: 0 } });
+    const preview = (await ctx.app.inject({ method: 'GET', url: `/api/projects/${projectId}/ideation/accept-preview` })).json();
+    expect(preview).toMatchObject({ mode: 'replace', preserved: ['source-scene'], removed: ['old-draft'] });
+    const accepted = (await ctx.app.inject({ method: 'POST', url: `/api/projects/${projectId}/ideation/accept` })).json();
+    expect(accepted.scenes.map((scene: { id: string }) => scene.id)).toContain('source-scene');
+    expect(accepted.scenes.map((scene: { id: string }) => scene.id)).not.toContain('old-draft');
+    expect(accepted.acceptance.revision).toBeGreaterThan(0);
   });
 
   it('POST accept writes storyboard.yaml and returns it', async () => {

@@ -2,6 +2,7 @@ import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import {
   ProjectSchema,
+  DEFAULT_PRODUCTION_BRIEF,
   ProjectTrackerSchema,
   type Project,
   type ModelTaskRole,
@@ -25,6 +26,7 @@ export interface CreateProjectInput {
   objective?: string;
   audience?: string;
   brand?: { id: string; applied_version: number } | null;
+  production_brief?: Project['production_brief'];
 }
 
 export class ProjectStore {
@@ -83,6 +85,7 @@ export class ProjectStore {
       created: new Date().toISOString(),
       objective: input.objective,
       audience: input.audience,
+      production_brief: input.production_brief ?? DEFAULT_PRODUCTION_BRIEF,
       brand: input.brand ?? null,
     });
 
@@ -94,6 +97,7 @@ export class ProjectStore {
       name: project.name,
       path: project.path,
       lastOpened: project.created,
+      archived: false,
     };
     await this.writeTracker({ version: 1, projects: [...tracker.projects, entry] });
 
@@ -120,6 +124,7 @@ export class ProjectStore {
       name: project.name,
       path: projectRoot,
       lastOpened: new Date().toISOString(),
+      archived: tracker.projects[existingIndex]?.archived ?? false,
     };
     const updated =
       existingIndex >= 0
@@ -141,6 +146,27 @@ export class ProjectStore {
       p.id === id ? { ...p, lastOpened: new Date().toISOString() } : p,
     );
     await this.writeTracker({ version: 1, projects: next });
+  }
+
+  async rename(id: string, name: string): Promise<Project> {
+    const tracker = await this.readTracker();
+    const entry = tracker.projects.find((project) => project.id === id);
+    if (!entry) throw new Error(`Project not found: ${id}`);
+    const files = projectFiles(entry.path);
+    const current = loadYaml(await readFile(files.metadata, 'utf8'), ProjectSchema);
+    const updated = ProjectSchema.parse({ ...current, name });
+    await this.persist(files.metadata, dumpYaml(updated));
+    await this.writeTracker({ version: 1, projects: tracker.projects.map((project) => project.id === id ? { ...project, name } : project) });
+    return updated;
+  }
+
+  async setArchived(id: string, archived: boolean): Promise<ProjectTrackerEntry> {
+    const tracker = await this.readTracker();
+    const entry = tracker.projects.find((project) => project.id === id);
+    if (!entry) throw new Error(`Project not found: ${id}`);
+    const updated = { ...entry, archived };
+    await this.writeTracker({ version: 1, projects: tracker.projects.map((project) => project.id === id ? updated : project) });
+    return updated;
   }
 
   /** Read full project metadata (project.yaml) by id. */

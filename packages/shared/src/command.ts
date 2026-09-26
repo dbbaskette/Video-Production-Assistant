@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
 import { SceneSchema } from './storyboard.js';
+import { ProductionBriefSchema } from './project.js';
 import {
   AudioMixRoleSchema,
   AudioMixSettingsSchema,
@@ -42,8 +43,10 @@ const ReorderScenesCommandSchema = z.object({
 const PatchProjectCommandSchema = z.object({
   type: z.literal('project.patch'),
   patch: z.object({
+    name: z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/).optional(),
     objective: z.string().optional(),
     audience: z.string().optional(),
+    production_brief: ProductionBriefSchema.optional(),
   }).strict(),
 }).strict();
 

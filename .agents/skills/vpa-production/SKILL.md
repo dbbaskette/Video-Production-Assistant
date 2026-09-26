@@ -1,6 +1,6 @@
 ---
 name: vpa-production
-description: Use VPA from Codex for narration discovery, standalone voice artifacts, project-wide narration, project inspection, and narration job status.
+description: Use VPA from Codex for narration discovery, standalone voice artifacts, project-wide narration, project inspection, bounded draft recipes, and job status.
 ---
 
 # Use VPA production services
@@ -17,6 +17,7 @@ npm run vpa -- narration engines list --json
 npm run vpa -- narration voices list --engine ENGINE_ID --json
 npm run vpa -- narration profiles list --json
 npm run vpa -- narration options describe --engine ENGINE_ID --json
+npm run vpa -- production recipes list --json
 ```
 
 Use the IDs and bounds returned by discovery. Prefer a profile the user names. Otherwise, make the engine and voice explicit from the advertised choices. Never silently substitute a provider, voice, speed, or expressiveness setting after an error.
@@ -50,6 +51,24 @@ For a previously returned job ID:
 npm run vpa -- jobs show JOB_ID --json
 npm run vpa -- jobs wait JOB_ID --json
 ```
+
+## Playable draft recipes
+
+Inspect before running. The inspection reads the real storyboard and source media and returns blockers and exact recipe effects. Do not run a blocked recipe or represent an inspection/plan as a produced draft.
+
+```bash
+npm run vpa -- production inspect PROJECT_ID clean-walkthrough --json
+npm run vpa -- production inspect PROJECT_ID feature-demo --json
+npm run vpa -- production inspect PROJECT_ID revise-this-draft --json
+```
+
+Run only the reviewed recipe and wait for the underlying render job. Success requires terminal `completed` state and a video artifact in the job result.
+
+```bash
+npm run vpa -- production run PROJECT_ID RECIPE --wait --json
+```
+
+`clean-walkthrough` preserves sources and includes prepared narration and overlays. `feature-demo` requires screen sources and preserves source audio. `revise-this-draft` requires at least one resolved visual-feedback note and renders that revision. Recipe runs create a restorable draft revision; they never delete source media.
 
 ## Boundaries
 

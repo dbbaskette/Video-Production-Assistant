@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import {
   CreateProjectRequestSchema,
   ImportProjectRequestSchema,
@@ -6,6 +7,8 @@ import {
   ModelTaskRoleSchema,
   type ListProjectsResponse,
   type ProjectResponse,
+  ProductionBriefSchema,
+  ProjectSchema,
 } from '@vpa/shared';
 import { ProjectStore } from '../services/project/store.js';
 import type { ServerConfig } from '../config.js';
@@ -15,6 +18,7 @@ import {
   ModelRoutingCoordinatorError,
   type ModelRoutingCoordinator,
 } from '../services/llm/model-routing-coordinator.js';
+import { RevisionStore } from '../services/revisions/store.js';
 
 interface Deps {
   store: ProjectStore;
@@ -117,6 +121,43 @@ export async function projectsRoutes(app: FastifyInstance, deps: Deps): Promise<
       const msg = err instanceof Error ? err.message : String(err);
       return reply.status(404).send({ error: msg, code: 'not_found' });
     }
+  });
+
+  app.put('/api/projects/:id/brief', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = ProductionBriefSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Production brief is invalid.', code: 'invalid_request', details: parsed.error.flatten() });
+    try {
+      const project = await store.readProject(id);
+      const revisions = new RevisionStore(project.path);
+      const result = await revisions.execute({ expectedRevision: await revisions.currentRevision(), idempotencyKey: `brief-${randomUUID()}`, targetState: 'accepted', commands: [{ type: 'project.patch', patch: { production_brief: parsed.data, objective: parsed.data.purpose, audience: parsed.data.audience } }] });
+      return { project: await store.readProject(id), result };
+    } catch (error) {
+      return reply.status(404).send({ error: error instanceof Error ? error.message : 'Project not found.', code: 'not_found' });
+    }
+  });
+
+  app.put('/api/projects/:id/name', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const name = (req.body as { name?: unknown } | undefined)?.name;
+    const parsed = ProjectSchema.shape.name.safeParse(name);
+    if (!parsed.success) return reply.status(400).send({ error: 'Project name is invalid.', code: 'invalid_request' });
+    try {
+      const project = await store.readProject(id);
+      const revisions = new RevisionStore(project.path);
+      await revisions.execute({ expectedRevision: await revisions.currentRevision(), idempotencyKey: `rename-${randomUUID()}`, targetState: 'accepted', commands: [{ type: 'project.patch', patch: { name: parsed.data } }] });
+      return await store.rename(id, parsed.data);
+    } catch (error) { return reply.status(404).send({ error: error instanceof Error ? error.message : 'Project not found.', code: 'not_found' }); }
+  });
+
+  app.post('/api/projects/:id/archive', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try { return { project: await store.setArchived(id, true) }; } catch { return reply.status(404).send({ error: 'Project not found.', code: 'not_found' }); }
+  });
+
+  app.post('/api/projects/:id/reopen', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try { const project = await store.setArchived(id, false); await store.touch(id); return { project }; } catch { return reply.status(404).send({ error: 'Project not found.', code: 'not_found' }); }
   });
 
   app.get('/api/projects/:id/model-routing', async (req, reply) => {

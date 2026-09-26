@@ -55,11 +55,26 @@ describe('VPA CLI', () => {
       'narration project',
       'projects list',
       'projects show',
+      'production recipes list',
+      'production inspect',
+      'production run',
       'jobs show',
       'jobs wait',
     ]) {
       expect(HELP).toContain(command);
     }
+  });
+
+  it('runs a production recipe and waits for its actual render job', async () => {
+    let reads = 0;
+    const json = vi.fn(async (method: string, path: string) => {
+      if (method === 'POST' && path.endsWith('/production/recipes/clean-walkthrough/run')) return { jobId: 'job-render', status: 'running' };
+      if (path === '/api/jobs/job-render') { reads += 1; return { id: 'job-render', type: 'render', status: reads > 1 ? 'completed' : 'running', artifacts: reads > 1 ? [{ kind: 'video', path: 'renders/artifacts/draft.mp4' }] : undefined }; }
+      throw new Error(`Unexpected ${method} ${path}`);
+    }) as HttpClient['json'];
+    const h = harness(clientWith(json));
+    expect(await runCli(['production', 'run', 'project-1', 'clean-walkthrough', '--wait', '--interval-ms', '1', '--json'], h.dependencies)).toBe(0);
+    expect(JSON.parse(h.stdout[0]!)).toMatchObject({ status: 'completed', artifacts: [{ kind: 'video' }] });
   });
 
   it('emits engine discovery as one JSON document', async () => {

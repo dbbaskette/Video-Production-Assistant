@@ -63,6 +63,9 @@ Usage:
   vpa narration project PROJECT_ID (--profile ID | --engine ID --voice ID) [--speed N] [--expressiveness LEVEL] [--overwrite] [--wait] [--json]
   vpa projects list [--json]
   vpa projects show PROJECT_ID [--json]
+  vpa production recipes list [--json]
+  vpa production inspect PROJECT_ID RECIPE [--json]
+  vpa production run PROJECT_ID RECIPE [--wait] [--interval-ms N] [--timeout-ms N] [--json]
   vpa jobs show JOB_ID [--json]
   vpa jobs wait JOB_ID [--interval-ms N] [--timeout-ms N] [--json]
 
@@ -332,6 +335,30 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
         `/api/projects/${encodeURIComponent(positionals[2]!)}`,
       );
       emit('object', project);
+      return 0;
+    }
+    if (command === 'production recipes list') {
+      assertOptions(options, ['json']);
+      emit('object', await client.json('GET', '/api/production/recipes'));
+      return 0;
+    }
+    if (positionals[0] === 'production' && positionals[1] === 'inspect' && positionals.length === 4) {
+      assertOptions(options, ['json']);
+      emit('object', await client.json('GET', `/api/projects/${encodeURIComponent(positionals[2]!)}/production/recipes/${encodeURIComponent(positionals[3]!)}/inspect`));
+      return 0;
+    }
+    if (positionals[0] === 'production' && positionals[1] === 'run' && positionals.length === 4) {
+      assertOptions(options, ['wait', 'interval-ms', 'timeout-ms', 'json']);
+      const started = await client.json<{ jobId: string; status: string }>('POST', `/api/projects/${encodeURIComponent(positionals[2]!)}/production/recipes/${encodeURIComponent(positionals[3]!)}/run`, {});
+      if (options.wait) {
+        const intervalMs = numberOption(options, 'interval-ms', 1_000)!;
+        const timeoutMs = numberOption(options, 'timeout-ms', 600_000)!;
+        if (intervalMs < 1 || timeoutMs < 1) invalid('Wait intervals and timeouts must be positive');
+        const job = await waitForJob(client, started.jobId, intervalMs, timeoutMs, sleep);
+        emit('job', job);
+        return job.status === 'completed' ? 0 : 1;
+      }
+      emit('started', started);
       return 0;
     }
     if (positionals[0] === 'narration' && positionals[1] === 'create' && positionals.length === 2) {

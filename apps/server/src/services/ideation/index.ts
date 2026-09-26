@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import type { Scene } from '@vpa/shared';
+import { SceneSchema, type ProposalOperation, type Scene } from '@vpa/shared';
 import type { LlmClient } from '../llm/index.js';
 import { loadPrompt } from '../llm/prompts.js';
 
@@ -60,8 +60,33 @@ export class IdeationSession {
   messages: IdeationMessage[] = [];
   proposedScenes: Scene[] = [];
 
-  constructor(projectId: string) {
+  constructor(projectId: string, initial?: Partial<IdeationState>) {
     this.projectId = projectId;
+    this.messages = (initial?.messages ?? []).map((message) => ({ ...message, ...(message.scenes ? { scenes: message.scenes.map((scene) => ({ ...scene })) } : {}) }));
+    this.proposedScenes = (initial?.proposedScenes ?? []).map((scene) => ({ ...scene }));
+  }
+
+  applyProposalOperation(operation: ProposalOperation): void {
+    if (operation.type === 'add') {
+      if (this.proposedScenes.some((scene) => scene.id === operation.scene.id)) throw new Error('Scene ID is already in use.');
+      const index = Math.min(operation.index ?? this.proposedScenes.length, this.proposedScenes.length);
+      this.proposedScenes = [...this.proposedScenes.slice(0, index), SceneSchema.parse(operation.scene), ...this.proposedScenes.slice(index)];
+      return;
+    }
+    if (operation.type === 'update') {
+      if (!this.proposedScenes.some((scene) => scene.id === operation.sceneId)) throw new Error('Proposed scene was not found.');
+      this.proposedScenes = this.proposedScenes.map((scene) => scene.id === operation.sceneId ? SceneSchema.parse({ ...scene, ...operation.patch }) : scene);
+      return;
+    }
+    if (operation.type === 'delete') {
+      if (!this.proposedScenes.some((scene) => scene.id === operation.sceneId)) throw new Error('Proposed scene was not found.');
+      this.proposedScenes = this.proposedScenes.filter((scene) => scene.id !== operation.sceneId);
+      return;
+    }
+    const current = new Set(this.proposedScenes.map((scene) => scene.id));
+    if (operation.sceneIds.length !== current.size || new Set(operation.sceneIds).size !== current.size || operation.sceneIds.some((id) => !current.has(id))) throw new Error('Reorder must contain every proposed scene exactly once.');
+    const byId = new Map(this.proposedScenes.map((scene) => [scene.id, scene]));
+    this.proposedScenes = operation.sceneIds.map((id) => byId.get(id)!);
   }
 
   async sendMessage(
@@ -142,15 +167,16 @@ export class IdeationSession {
 }
 
 /**
- * Manages ideation sessions per project. Sessions are in-memory only.
+ * Caches ideation sessions per project. Route handlers hydrate and persist the
+ * session so a server restart does not discard the user's conversation or plan.
  */
 export class IdeationManager {
   private sessions = new Map<string, IdeationSession>();
 
-  getOrCreate(projectId: string): IdeationSession {
+  getOrCreate(projectId: string, initial?: Partial<IdeationState>): IdeationSession {
     let session = this.sessions.get(projectId);
     if (!session) {
-      session = new IdeationSession(projectId);
+      session = new IdeationSession(projectId, initial);
       this.sessions.set(projectId, session);
     }
     return session;
@@ -158,6 +184,10 @@ export class IdeationManager {
 
   get(projectId: string): IdeationSession | undefined {
     return this.sessions.get(projectId);
+  }
+
+  set(session: IdeationSession): void {
+    this.sessions.set(session.projectId, session);
   }
 
   delete(projectId: string): void {

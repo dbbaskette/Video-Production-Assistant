@@ -7,6 +7,7 @@ export const CreateProjectRequestSchema = z.object({
   parentDir: z.string().optional(),
   objective: z.string().optional(),
   audience: z.string().optional(),
+  production_brief: ProjectSchema.shape.production_brief.optional(),
   brand: z.object({
     id: z.string(),
     applied_version: z.number().int().positive(),
