@@ -1,11 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Expressiveness } from '@vpa/shared';
 import type { TtsService } from '../services/tts/index.js';
 import { listAdvertisedTtsEngines } from '../services/tts/catalog.js';
 import { getProfile } from '../services/voice-profile/index.js';
+import { InvalidIdempotencyKeyError, readIdempotencyKey } from '../lib/job-submission.js';
 
 interface Deps {
   vpaHome: string;
@@ -26,6 +28,17 @@ interface ScratchClip {
   durationSec: number;
   format: 'mp3' | 'wav';
   bytes: number;
+  idempotencyKey?: string;
+  inputFingerprint?: string;
+}
+
+type PublicScratchClip = Omit<ScratchClip, 'idempotencyKey' | 'inputFingerprint'>;
+
+function publicClip(clip: ScratchClip): PublicScratchClip {
+  const copy: ScratchClip = { ...clip };
+  delete copy.idempotencyKey;
+  delete copy.inputFingerprint;
+  return copy;
 }
 
 function scratchDir(vpaHome: string): string {
@@ -82,10 +95,19 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
   await mkdir(dir, { recursive: true });
 
   // GET /api/tts/scratch — list recent scratch clips, newest first
-  app.get('/api/tts/scratch', async () => listClips(dir));
+  app.get('/api/tts/scratch', async () => (await listClips(dir)).map(publicClip));
 
   // POST /api/tts/scratch — synthesize text and persist to disk
   app.post('/api/tts/scratch', async (req, reply) => {
+    let idempotencyKey: string | undefined;
+    try {
+      idempotencyKey = readIdempotencyKey(req.headers);
+    } catch (error) {
+      if (error instanceof InvalidIdempotencyKeyError) {
+        return reply.status(400).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
     const body = (req.body ?? {}) as {
       engine?: string;
       voice?: string;
@@ -121,6 +143,34 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
     }
     if (!text) {
       return reply.status(400).send({ error: 'text must not be empty', code: 'invalid_request' });
+    }
+    const inputFingerprint = createHash('sha256').update(JSON.stringify({
+      engine,
+      voice,
+      text,
+      speed,
+      expressiveness: body.expressiveness ?? null,
+      profile: profileId || null,
+    })).digest('hex');
+    if (idempotencyKey) {
+      const prior = (await listClips(dir)).find((clip) => clip.idempotencyKey === idempotencyKey);
+      if (prior) {
+        if (prior.inputFingerprint !== inputFingerprint) {
+          return reply.status(409).send({
+            error: 'This idempotency key was already used for different narration inputs.',
+            code: 'idempotency_conflict',
+          });
+        }
+        const existingPath = join(dir, `${prior.id}.${prior.format}`);
+        const existingStat = await stat(existingPath).catch(() => null);
+        if (!existingStat || existingStat.size <= 0) {
+          return reply.status(409).send({
+            error: 'The prior narration artifact is unavailable and was not regenerated.',
+            code: 'artifact_unavailable',
+          });
+        }
+        return { ...publicClip(prior), audioUrl: `/api/tts/scratch/${prior.id}/audio`, reused: true };
+      }
     }
     if (!provider || !capabilities) {
       return reply.status(400).send({
@@ -187,11 +237,12 @@ export async function registerTtsScratchRoutes(app: FastifyInstance, deps: Deps)
       durationSec: result.durationSec,
       format,
       bytes: result.audio.length,
+      ...(idempotencyKey ? { idempotencyKey, inputFingerprint } : {}),
     };
     await writeFile(audioPath, result.audio);
     await writeFile(sidecarPath, JSON.stringify(clip, null, 2), 'utf-8');
     void pruneOldest(dir, MAX_CLIPS_KEPT).catch(() => undefined);
-    return { ...clip, audioUrl: `/api/tts/scratch/${id}/audio` };
+    return { ...publicClip(clip), audioUrl: `/api/tts/scratch/${id}/audio` };
   });
 
   // GET /api/tts/scratch/:id/audio — stream the audio file

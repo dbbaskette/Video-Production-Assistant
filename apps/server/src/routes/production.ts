@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { AssetManifestSchema, ProductionRecipeSchema, type ProductionRecipeInspection } from '@vpa/shared';
@@ -7,6 +7,8 @@ import { loadStoryboard } from '../services/storyboard/index.js';
 import { RevisionStore } from '../services/revisions/store.js';
 import { resolveSafeProjectPath } from '../services/project/safe-path.js';
 import { projectFiles } from '../services/project/paths.js';
+import { jobQueue } from '../lib/job-queue.js';
+import { InvalidIdempotencyKeyError, readIdempotencyKey } from '../lib/job-submission.js';
 
 const effects = {
   'clean-walkthrough': ['Preserve scene order and sources', 'Include narration and approved overlays', 'Render a 1080p review draft'],
@@ -58,6 +60,31 @@ export async function registerProductionRoutes(app: FastifyInstance, deps: { sto
     const { id, recipe: raw } = request.params as { id: string; recipe: string };
     const recipe = ProductionRecipeSchema.safeParse(raw);
     if (!recipe.success) return reply.status(404).send({ error: 'Production recipe was not found.', code: 'not_found' });
+    let requestedIdempotencyKey: string | undefined;
+    try {
+      requestedIdempotencyKey = readIdempotencyKey(request.headers);
+    } catch (error) {
+      if (error instanceof InvalidIdempotencyKeyError) return reply.status(400).send({ error: error.message, code: error.code });
+      throw error;
+    }
+    const requestIdentity = requestedIdempotencyKey ?? randomUUID();
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ projectId: id, recipe: recipe.data, requestIdentity }))
+      .digest('hex');
+    const commandKey = `recipe-${fingerprint}`;
+    const renderKey = `recipe-render-${fingerprint}`;
+    if (requestedIdempotencyKey) {
+      const existing = jobQueue.findByIdempotencyKey(renderKey);
+      if (existing) {
+        return reply.status(202).send({
+          recipe: recipe.data,
+          revision: existing.meta?.inputRevision,
+          jobId: existing.id,
+          status: existing.status,
+          reused: true,
+        });
+      }
+    }
     let inspected: Awaited<ReturnType<typeof inspect>>;
     try {
       inspected = await inspect(deps.store, id, recipe.data);
@@ -68,8 +95,18 @@ export async function registerProductionRoutes(app: FastifyInstance, deps: { sto
     if (!inspection.supported) return reply.status(409).send({ error: 'The recipe cannot run with the current project sources.', code: 'recipe_blocked', inspection });
     const storyboard = (await loadStoryboard(projectPath))!;
     const revisions = new RevisionStore(projectPath);
-    const result = await revisions.execute({ expectedRevision: inspection.revision, idempotencyKey: `recipe-${recipe.data}-${randomUUID()}`, targetState: 'draft', commands: storyboard.scenes.map((scene) => ({ type: 'scene.put' as const, scene })) });
-    const render = await app.inject({ method: 'POST', url: `/api/projects/${encodeURIComponent(id)}/render`, payload: recipe.data === 'feature-demo' ? { includeNarration: false, includeLowerThirds: true, quality: '1080p' } : { includeNarration: true, includeLowerThirds: true, quality: '1080p' }, headers: { 'idempotency-key': `recipe-render-${randomUUID()}` } });
+    const priorCommand = (await revisions.listRevisions()).find((record) => record.idempotencyKey === commandKey);
+    if (priorCommand && priorCommand.revision !== inspection.revision) {
+      return reply.status(409).send({
+        error: 'The project changed after this production request was first applied.',
+        code: 'stale_revision',
+        currentRevision: inspection.revision,
+      });
+    }
+    const result = priorCommand
+      ? { revision: priorCommand.revision }
+      : await revisions.execute({ expectedRevision: inspection.revision, idempotencyKey: commandKey, targetState: 'draft', commands: storyboard.scenes.map((scene) => ({ type: 'scene.put' as const, scene })) });
+    const render = await app.inject({ method: 'POST', url: `/api/projects/${encodeURIComponent(id)}/render`, payload: recipe.data === 'feature-demo' ? { includeNarration: false, includeLowerThirds: true, quality: '1080p' } : { includeNarration: true, includeLowerThirds: true, quality: '1080p' }, headers: { 'idempotency-key': renderKey } });
     const renderResult = render.json() as { jobId?: string; status?: string; error?: string; code?: string };
     if (render.statusCode >= 400) return reply.status(render.statusCode).send({ error: renderResult.error ?? 'Draft render could not start.', code: renderResult.code ?? 'render_failed', inspection });
     return reply.status(202).send({ recipe: recipe.data, revision: result.revision, inspection, ...renderResult });
