@@ -15,12 +15,12 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
+import { useModalFocus } from './useModalFocus.js';
 
 // ── Public API ───────────────────────────────────────────────────────
 
@@ -163,7 +163,7 @@ function ToastTray({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
-        zIndex: 1000,
+        zIndex: 'var(--layer-toast)',
         pointerEvents: 'none',
       }}
     >
@@ -237,23 +237,20 @@ function DialogShell({
   onClose: (result: boolean | string | null) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [value, setValue] = useState(
     state.kind === 'prompt' ? (state.input.defaultValue ?? '') : '',
   );
   const [error, setError] = useState<string | null>(null);
 
-  // Focus the right element on mount + handle Escape
-  useEffect(() => {
-    const t = window.setTimeout(() => inputRef.current?.focus(), 30);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose(state.kind === 'confirm' ? false : null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.clearTimeout(t);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [onClose, state.kind]);
+  useModalFocus({
+    open: true,
+    dialogRef,
+    initialFocusRef: state.kind === 'prompt' ? inputRef : confirmRef,
+    escapeDisabled: false,
+    onEscape: () => onClose(state.kind === 'confirm' ? false : null),
+  });
 
   const handleConfirm = () => {
     if (state.kind === 'prompt') {
@@ -277,9 +274,6 @@ function DialogShell({
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={input.title}
       onClick={() => onClose(isPrompt ? null : false)}
       style={{
         position: 'fixed',
@@ -288,10 +282,15 @@ function DialogShell({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 1100,
+        zIndex: 'var(--layer-confirm)',
       }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ui-dialog-title"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--bg)',
@@ -302,7 +301,7 @@ function DialogShell({
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.6)',
         }}
       >
-        <h2 style={{ margin: 0, fontSize: 18 }}>{input.title}</h2>
+        <h2 id="ui-dialog-title" style={{ margin: 0, fontSize: 18 }}>{input.title}</h2>
         {input.body && (
           <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '8px 0 16px', whiteSpace: 'pre-wrap' }}>
             {input.body}
@@ -351,7 +350,7 @@ function DialogShell({
             {input.cancelLabel ?? 'Cancel'}
           </button>
           <button
-            ref={!isPrompt ? (inputRef as unknown as React.RefObject<HTMLButtonElement>) : undefined}
+            ref={!isPrompt ? confirmRef : undefined}
             onClick={handleConfirm}
             className={destructive ? 'btn--danger' : 'primary'}
             style={{ padding: '8px 16px', fontSize: 13 }}

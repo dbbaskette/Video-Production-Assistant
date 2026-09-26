@@ -2,9 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { brandsApi } from '../lib/api.js';
 import { BrandCard } from '../components/BrandCard.js';
+import { LoadError, LoadingState } from '../components/ui/AsyncState.js';
 
 export function BrandsList() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['brands'],
     queryFn: () => brandsApi.list(),
   });
@@ -23,8 +24,8 @@ export function BrandsList() {
         </Link>
       </header>
 
-      {isLoading && <p className="hint">Loading brands...</p>}
-      {error && <p style={{ color: 'var(--danger)' }}>Failed to load brands.</p>}
+      {isLoading && <LoadingState label="Loading brands" detail="Reading your reusable production identities." />}
+      {error && <LoadError title="Brands could not be loaded" detail="No brand data was changed." onRetry={() => { void refetch(); }} retrying={isFetching} />}
 
       {data && (
         data.brands.length === 0 ? (

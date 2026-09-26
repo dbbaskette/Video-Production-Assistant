@@ -7,6 +7,7 @@ import {
   type VisualEffect,
 } from '@vpa/shared';
 import { assetsApi, compositionApi, recordingsApi, sceneRenderApi, sourceEvidenceApi } from '../lib/api.js';
+import { useUi } from './ui/UiProvider.js';
 
 function id(prefix: 'effect'): string { return `${prefix}_${crypto.randomUUID()}`; }
 function overlaps(a: VisualEffect, b: VisualEffect): boolean {
@@ -26,18 +27,38 @@ export function VisualEvidenceEditor({ projectId, scenes }: { projectId: string;
   const [search, setSearch] = useState('');
   const [exactPreview, setExactPreview] = useState<{ sceneId: string; url: string } | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const leavingRef = useRef(false);
+  const confirmingNavigationRef = useRef(false);
   const queryClient = useQueryClient();
+  const ui = useUi();
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty.size) event.preventDefault(); };
+    const warn = (event: BeforeUnloadEvent) => { if (dirty.size && !leavingRef.current) event.preventDefault(); };
     const links = (event: MouseEvent) => {
-      if (!dirty.size || !(event.target instanceof Element) || !event.target.closest('a[href]')) return;
-      if (!window.confirm('You have unsaved visual changes. Leave without saving?')) event.preventDefault();
+      if (!dirty.size || !(event.target instanceof Element)) return;
+      const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
+      if (!anchor || anchor.target === '_blank' || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (confirmingNavigationRef.current) return;
+      confirmingNavigationRef.current = true;
+      void ui.confirm({
+        title: 'Discard unsaved visual changes?',
+        body: 'Your visual edits have not been saved. Leave this page and discard them?',
+        confirmLabel: 'Leave page',
+        destructive: true,
+      }).then((confirmed) => {
+        if (!confirmed) return;
+        leavingRef.current = true;
+        window.location.assign(anchor.href);
+      }).finally(() => {
+        confirmingNavigationRef.current = false;
+      });
     };
     window.addEventListener('beforeunload', warn);
     document.addEventListener('click', links, true);
     return () => { window.removeEventListener('beforeunload', warn); document.removeEventListener('click', links, true); };
-  }, [dirty]);
+  }, [dirty, ui]);
 
   const revision = useQuery({ queryKey: ['revision', projectId], queryFn: () => assetsApi.currentRevision(projectId), enabled: !!scene });
   const assets = useQuery({ queryKey: ['assets', projectId], queryFn: () => assetsApi.list(projectId), enabled: !!scene });

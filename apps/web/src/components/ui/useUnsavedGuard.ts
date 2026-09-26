@@ -17,12 +17,13 @@
  * exactly equivalent to calling `onClose` directly. This keeps the
  * dialog snappy when there's nothing to lose.
  *
- * The confirmation uses window.confirm — small, synchronous, no extra
- * modal-on-modal complexity. If we ever want a richer in-app prompt we
- * can swap the implementation here without touching call sites.
+ * Confirmation is presented by the shared in-app dialog layer so it follows
+ * the same theme, stacking, focus-trap, and keyboard behavior as other VPA
+ * recovery prompts.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
+import { useUi } from './UiProvider.js';
 
 interface Options {
   hasUnsavedChanges: boolean;
@@ -37,13 +38,25 @@ export function useUnsavedGuard({
   message = 'Discard unsaved changes?',
   onConfirmDiscard,
 }: Options): () => void {
+  const ui = useUi();
+  const confirmingRef = useRef(false);
+
   return useCallback(() => {
     if (!hasUnsavedChanges) {
       onConfirmDiscard();
       return;
     }
-    if (window.confirm(message)) {
-      onConfirmDiscard();
-    }
-  }, [hasUnsavedChanges, message, onConfirmDiscard]);
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
+    void ui.confirm({
+      title: 'Discard unsaved changes?',
+      body: message,
+      confirmLabel: 'Discard',
+      destructive: true,
+    }).then((confirmed) => {
+      if (confirmed) onConfirmDiscard();
+    }).finally(() => {
+      confirmingRef.current = false;
+    });
+  }, [hasUnsavedChanges, message, onConfirmDiscard, ui]);
 }

@@ -142,7 +142,7 @@ export function JobTray() {
         border: '1px solid var(--border)',
         borderRadius: 8,
         boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
-        zIndex: 60,
+        zIndex: 'var(--layer-jobs)',
         overflow: 'hidden',
       }}
     >

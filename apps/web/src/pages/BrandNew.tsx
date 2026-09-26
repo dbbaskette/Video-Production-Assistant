@@ -49,26 +49,26 @@ function PipelineProgress({
   const timeStr = mins > 0 ? `${mins}m ${secs.toString().padStart(2, '0')}s` : `${secs}s`;
 
   return (
-    <div className="pipeline">
+    <div className="brand-generation-progress">
       {steps.map((step, i) => {
         const status = getStatus(i);
         return (
-          <div key={step.id} className="pipeline__step">
+          <div key={step.id} className="brand-generation-progress__step">
             <div
-              className={`pipeline__icon pipeline__icon--${status}`}
+              className={`brand-generation-progress__icon brand-generation-progress__icon--${status}`}
               aria-label={status}
             >
               {status === 'done' ? '✓' : ''}
             </div>
-            <div className="pipeline__body">
+            <div className="brand-generation-progress__body">
               <div
-                className={`pipeline__label${status === 'pending' ? ' pipeline__label--pending' : ''}`}
+                className={`brand-generation-progress__label${status === 'pending' ? ' brand-generation-progress__label--pending' : ''}`}
               >
                 {step.label}
               </div>
               {step.detail && status !== 'pending' && (
                 <div
-                  className={`pipeline__detail${status === 'active' ? ' pipeline__detail--active' : ''}`}
+                  className={`brand-generation-progress__detail${status === 'active' ? ' brand-generation-progress__detail--active' : ''}`}
                 >
                   {step.detail}
                 </div>
@@ -77,7 +77,7 @@ function PipelineProgress({
           </div>
         );
       })}
-      <div className="pipeline__elapsed">
+      <div className="brand-generation-progress__elapsed">
         Elapsed: <span>{timeStr}</span>
       </div>
     </div>

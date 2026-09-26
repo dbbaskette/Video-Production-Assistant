@@ -58,6 +58,18 @@
   --radius-lg: 14px;
   --transition: 150ms ease;
 
+  /* Shared layout and overlay contracts. Feature components should use
+     these instead of inventing local viewport offsets or z-index values. */
+  --nav-height: 56px;
+  --layer-local: 20;
+  --layer-nav: 100;
+  --layer-popover: 200;
+  --layer-jobs: 600;
+  --layer-palette: 900;
+  --layer-modal: 1000;
+  --layer-confirm: 1100;
+  --layer-toast: 1200;
+
   /* Type system: Inter for UI, Newsreader for editorial headings,
      JetBrains Mono for code chips. */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
@@ -150,7 +162,7 @@ body {
 .navbar {
   position: sticky;
   top: 0;
-  z-index: 100;
+  z-index: var(--layer-nav);
   background: linear-gradient(180deg, var(--titlebar-grad-top), var(--titlebar-grad-bot));
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -166,7 +178,7 @@ body {
   align-items: center;
   gap: 12px;
   padding: 0 24px;
-  height: 56px;
+  height: var(--nav-height);
 }
 
 .navbar__brand {
@@ -923,6 +935,28 @@ a:hover { text-decoration: underline; }
   line-height: 1.5;
 }
 
+/* Async state rails preserve the surrounding page geometry and always leave
+   the user with a concrete recovery action. */
+.async-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg-muted);
+}
+.async-state > svg { flex: 0 0 auto; }
+.async-state > div { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.async-state strong { color: var(--fg); font-size: 13px; }
+.async-state span { font-size: 12px; line-height: 1.4; }
+.async-state button { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.async-state--error { border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: var(--danger-bg); }
+.async-state--error > svg { color: var(--danger); }
+.async-state--loading > svg { color: var(--accent); }
+
 /* ── Inline <code> chip ────────────────────────────────
    Default styling so emotive-tag mentions in helper text (e.g.
    "Use [warm], [confident]") render as visually-distinct chips
@@ -945,33 +979,33 @@ pre code {
   font-size: 1em;
 }
 
-.pipeline { max-width: 480px; margin: 32px auto 0; }
-.pipeline__step {
+.brand-generation-progress { max-width: 480px; margin: 32px auto 0; }
+.brand-generation-progress__step {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 14px 0; position: relative;
 }
-.pipeline__step + .pipeline__step { border-top: 1px solid var(--border); }
+.brand-generation-progress__step + .brand-generation-progress__step { border-top: 1px solid var(--border); }
 
-.pipeline__icon {
+.brand-generation-progress__icon {
   width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 700; line-height: 1;
 }
-.pipeline__icon--done { background: var(--accent); color: #fff; }
-.pipeline__icon--active {
+.brand-generation-progress__icon--done { background: var(--accent); color: #fff; }
+.brand-generation-progress__icon--active {
   border: 2.5px solid var(--accent); border-top-color: transparent;
   animation: spin 0.8s linear infinite;
 }
-.pipeline__icon--pending { background: var(--bg-elev2); color: var(--fg-dim); border: 1px solid var(--border); }
+.brand-generation-progress__icon--pending { background: var(--bg-elev2); color: var(--fg-dim); border: 1px solid var(--border); }
 
-.pipeline__body { flex: 1; min-width: 0; }
-.pipeline__label { font-weight: 600; font-size: 14px; color: var(--fg); }
-.pipeline__label--pending { color: var(--fg-dim); }
-.pipeline__detail { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
-.pipeline__detail--active { color: var(--accent); animation: pulse-glow 2s ease-in-out infinite; }
+.brand-generation-progress__body { flex: 1; min-width: 0; }
+.brand-generation-progress__label { font-weight: 600; font-size: 14px; color: var(--fg); }
+.brand-generation-progress__label--pending { color: var(--fg-dim); }
+.brand-generation-progress__detail { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+.brand-generation-progress__detail--active { color: var(--accent); animation: pulse-glow 2s ease-in-out infinite; }
 
-.pipeline__elapsed { text-align: center; margin-top: 20px; font-size: 13px; color: var(--fg-dim); }
-.pipeline__elapsed span { font-variant-numeric: tabular-nums; }
+.brand-generation-progress__elapsed { text-align: center; margin-top: 20px; font-size: 13px; color: var(--fg-dim); }
+.brand-generation-progress__elapsed span { font-variant-numeric: tabular-nums; }
 
 /* ── Review form ─────────────────────────────────────── */
 
@@ -1177,6 +1211,18 @@ pre code {
     0 24px 64px rgba(15, 17, 26, 0.22),
     0 0 0 0.5px var(--border);
 }
+.cmdk-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 11px;
+}
+.cmdk-recovery button { flex: 0 0 auto; padding: 4px 8px; font-size: 10px; }
 [data-theme="dark"] .cmdk-panel {
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
@@ -1198,7 +1244,7 @@ pre code {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  z-index: var(--layer-modal);
 }
 [data-theme="dark"] .dialog-overlay { background: rgba(0, 0, 0, 0.65); }
 
@@ -1577,7 +1623,7 @@ pre code {
 .scene-context-bar {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--layer-local);
   display: grid;
   grid-template-columns: auto minmax(140px, 1fr) auto;
   align-items: center;
@@ -1798,7 +1844,7 @@ pre code {
      scrollable project header and phase strip. */
   .project-workspace {
     flex-direction: column;
-    height: calc(100dvh - 56px) !important;
+    height: calc(100dvh - var(--nav-height)) !important;
     min-height: 0;
   }
   .project-workspace__main {
@@ -1872,7 +1918,13 @@ pre code {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .presentation-progress__track span { transition: none; }
+  html { scroll-behavior: auto !important; }
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }
 
 /* ── Pipeline (Direction B — pipeline as the brand) ────
@@ -2254,7 +2306,7 @@ pre code {
 .agent-recording-entry span { color: var(--fg-muted); font-size: 11px; }
 .agent-recording-entry button, .agent-recording-actions button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 
-.agent-recording-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 24px; background: rgba(5, 8, 14, .58); }
+.agent-recording-backdrop { position: fixed; inset: 0; z-index: var(--layer-modal); display: grid; place-items: center; padding: 24px; background: rgba(5, 8, 14, .58); }
 .agent-recording-dialog { position: relative; width: min(840px, calc(100vw - 32px)); max-height: min(880px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-elev); box-shadow: 0 24px 80px rgba(0, 0, 0, .35); }
 .agent-recording-dialog > header, .agent-recording-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--panel-grad-top), var(--panel-grad-bot)); }
 .agent-recording-dialog > header span, .agent-recording-section-heading > div > span { color: var(--accent-2); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; }

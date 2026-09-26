@@ -107,7 +107,7 @@ export function CreateProgressModal({
   return (
     <div
       className="dialog-overlay"
-      style={{ zIndex: 1100 }}
+      style={{ zIndex: 'var(--layer-modal)' }}
       onClick={(e) => e.stopPropagation()}
     >
       <div

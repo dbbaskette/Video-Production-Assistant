@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../lib/api.js';
 import { useUnsavedGuard } from './ui/useUnsavedGuard.js';
+import { useModalFocus } from './ui/useModalFocus.js';
 
 interface Props {
   open: boolean;
@@ -12,6 +13,8 @@ interface Props {
 export function OpenFolderDialog({ open, onClose, onImported }: Props) {
   const queryClient = useQueryClient();
   const [path, setPath] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const importMutation = useMutation({
     mutationFn: () => api.importProject({ path }),
@@ -29,6 +32,13 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
     message: 'Discard the path you typed?',
     onConfirmDiscard: onClose,
   });
+  useModalFocus({
+    open,
+    dialogRef,
+    initialFocusRef: inputRef,
+    escapeDisabled: importMutation.isPending,
+    onEscape: guardedClose,
+  });
 
   if (!open) return null;
   const error = importMutation.error;
@@ -38,12 +48,10 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
   return (
     <div
       className="dialog-overlay"
-      role="dialog"
-      aria-modal="true"
       onClick={guardedClose}
     >
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h2>Open existing project</h2>
+      <div ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby="open-folder-title" tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+        <h2 id="open-folder-title">Open existing project</h2>
         <p style={{ fontSize: 13, color: 'var(--fg-muted)', margin: '0 0 16px' }}>
           Open a project previously created by VPA. Choose its top-level project folder, which contains the project and its media. To start from loose videos or a PDF, create a new project instead.
         </p>
@@ -51,10 +59,10 @@ export function OpenFolderDialog({ open, onClose, onImported }: Props) {
         <div className="dialog__field">
           <label className="dialog__label">Project folder path</label>
           <input
+            ref={inputRef}
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder="/Users/me/Movies/VPA/my-demo"
-            autoFocus
             style={{ width: '100%' }}
           />
         </div>
