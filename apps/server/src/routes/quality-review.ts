@@ -5,6 +5,10 @@ import { loadStoryboard } from '../services/storyboard/index.js';
 import { runQualityReview } from '../services/quality-review/index.js';
 import type { ReviewResult } from '../services/quality-review/index.js';
 import { buildReviewFingerprint } from '../services/workflow-status/fingerprint.js';
+import { mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { atomicWriteFile } from '../lib/fs-atomic.js';
+import { RevisionStore } from '../services/revisions/store.js';
 
 interface Deps {
   store: ProjectStore;
@@ -13,10 +17,19 @@ interface Deps {
 }
 
 // In-memory cache of last review result per project (clears on server restart)
-const reviewCache = new Map<string, ReviewResult>();
+type StoredReview = ReviewResult & { inputRevision: number; stale?: boolean; currentRevision?: number };
+const reviewCache = new Map<string, StoredReview>();
 
 export function getQualityReview(projectId: string): ReviewResult | null {
   return reviewCache.get(projectId) ?? null;
+}
+
+function reviewPath(projectPath: string): string {
+  return join(projectPath, '.vpa', 'reviews', 'current.json');
+}
+
+async function readStoredReview(projectPath: string): Promise<StoredReview | null> {
+  try { return JSON.parse(await readFile(reviewPath(projectPath), 'utf8')) as StoredReview; } catch { return null; }
 }
 
 async function resolveProjectPath(store: ProjectStore, projectId: string): Promise<string> {
@@ -52,8 +65,11 @@ export async function registerQualityReviewRoutes(
       const result = {
         ...(await runQualityReview(sb, general.client, workspaceRoot, projectPath)),
         inputFingerprint: buildReviewFingerprint(sb),
+        inputRevision: await new RevisionStore(projectPath).currentRevision(),
       };
       reviewCache.set(id, result);
+      await mkdir(join(projectPath, '.vpa', 'reviews'), { recursive: true });
+      await atomicWriteFile(reviewPath(projectPath), JSON.stringify(result, null, 2));
       return result;
     } catch (error) {
       if (error instanceof ModelRoutingError) {
@@ -72,17 +88,23 @@ export async function registerQualityReviewRoutes(
   });
 
   // GET /api/projects/:id/review — get last review result
-  app.get('/api/projects/:id/review', async (req, reply) => {
+  app.get('/api/projects/:id/review', async (req, _reply) => {
     const { id } = req.params as { id: string };
 
     // Verify project exists
-    await resolveProjectPath(store, id);
+    const projectPath = await resolveProjectPath(store, id);
 
-    const cached = reviewCache.get(id);
+    const cached = reviewCache.get(id) ?? await readStoredReview(projectPath);
     if (!cached) {
       return { items: [], summary: { total: 0, info: 0, warn: 0, issue: 0 }, status: null, reviewedAt: null };
     }
-
-    return cached;
+    reviewCache.set(id, cached);
+    const storyboard = await loadStoryboard(projectPath);
+    const currentRevision = await new RevisionStore(projectPath).currentRevision();
+    return {
+      ...cached,
+      currentRevision,
+      stale: cached.inputRevision !== currentRevision || cached.inputFingerprint !== buildReviewFingerprint(storyboard),
+    };
   });
 }

@@ -39,6 +39,8 @@ import {
   type EvidenceItem,
   type MappedTranscriptWord,
   type SourceTranscript,
+  type FeedbackNote,
+  type ProjectRevision,
 } from '@vpa/shared';
 
 export const BASE = import.meta.env.VITE_VPA_API_BASE ?? 'http://localhost:3000';
@@ -1058,6 +1060,10 @@ export interface ReviewResult {
   summary: { total: number; info: number; warn: number; issue: number };
   status: 'ok' | 'warnings' | 'issues' | null;
   reviewedAt: string | null;
+  inputRevision?: number;
+  currentRevision?: number;
+  inputFingerprint?: string;
+  stale?: boolean;
 }
 
 export const qualityReviewApi = {
@@ -1543,6 +1549,21 @@ export interface RenderStatus {
   exists: boolean;
   sizeBytes?: number;
   modifiedAt?: string;
+  currentRevision?: number;
+  stale?: boolean;
+  manifest?: RenderManifest;
+  artifacts?: RenderManifest[];
+}
+
+export interface RenderManifest {
+  version: 2;
+  artifactId: string;
+  jobId: string;
+  revision: number;
+  inputFingerprint: string;
+  completedAt: string;
+  output: { path: string; sizeBytes: number; durationSec: number; sceneCount: number; width?: number; height?: number; fps?: number; videoCodec?: string; audioCodec?: string };
+  options: unknown;
 }
 
 export interface RenderStartResult {
@@ -1571,6 +1592,7 @@ export interface RenderOptions {
   /** When false, ignore the brand's default_music_track even when no project
    *  music is selected. Default true. */
   useBrandMusic?: boolean;
+  quality?: 'draft' | '1080p';
 }
 
 export interface MusicTrack {
@@ -1623,17 +1645,23 @@ export const renderApi = {
   async status(projectId: string): Promise<RenderStatus> {
     return request('GET', `/api/projects/${projectId}/render/status`);
   },
-  videoUrl(projectId: string): string {
-    return `${BASE}/api/projects/${projectId}/render/video`;
+  videoUrl(projectId: string, artifactId?: string): string {
+    const query = artifactId ? `?artifact=${encodeURIComponent(artifactId)}` : '';
+    return `${BASE}/api/projects/${projectId}/render/video${query}`;
+  },
+  thumbnailUrl(projectId: string, sceneId: string, revision?: number): string {
+    const query = revision == null ? '' : `?revision=${revision}`;
+    return `${BASE}/api/projects/${projectId}/scenes/${encodeURIComponent(sceneId)}/thumbnail${query}`;
   },
   /**
    * URL that forces a download via `Content-Disposition: attachment`. The
    * plain `download` HTML attribute is ignored across origins (web on :5173,
    * API on :3000) so we have to set the header server-side via `?download=1`.
    */
-  downloadUrl(projectId: string, filename?: string): string {
+  downloadUrl(projectId: string, filename?: string, artifactId?: string): string {
     const params = new URLSearchParams({ download: '1' });
     if (filename) params.set('filename', filename);
+    if (artifactId) params.set('artifact', artifactId);
     return `${BASE}/api/projects/${projectId}/render/video?${params.toString()}`;
   },
   /** Subscribe to SSE events for a render job. Returns a close function. */
@@ -1652,6 +1680,27 @@ export const renderApi = {
     es.addEventListener('error', handler);
     es.addEventListener('message', handler);
     return () => es.close();
+  },
+};
+
+export const feedbackApi = {
+  async list(projectId: string): Promise<{ revision: number; notes: FeedbackNote[] }> {
+    return request('GET', `/api/projects/${projectId}/feedback`);
+  },
+  async add(projectId: string, input: { sceneId: string; clipInstanceId: string; sourceAssetId: string; sourceInMs: number; sourceOutMs: number; rect?: { x: number; y: number; width: number; height: number }; text: string }): Promise<{ note: FeedbackNote }> {
+    return request('POST', `/api/projects/${projectId}/feedback`, input);
+  },
+  async action(projectId: string, noteId: string, action: 'claim' | 'resolve' | 'fail', body: Record<string, unknown> = {}): Promise<unknown> {
+    return request('POST', `/api/projects/${projectId}/feedback/${encodeURIComponent(noteId)}/${action}`, body);
+  },
+};
+
+export const revisionsApi = {
+  async list(projectId: string): Promise<{ currentRevision: number; acceptedRevision: number; revisions: ProjectRevision[]; details: Array<{ revision: number; sceneCount: number; durationSec: number; firstSceneId: string | null; summary: string }> }> {
+    return request('GET', `/api/projects/${projectId}/revisions`);
+  },
+  async restore(projectId: string, expectedRevision: number, revision: number): Promise<{ result: { revision: number } }> {
+    return request('POST', `/api/projects/${projectId}/commands`, { expectedRevision, idempotencyKey: crypto.randomUUID(), targetState: 'accepted', commands: [{ type: 'revision.restore', revision }] });
   },
 };
 

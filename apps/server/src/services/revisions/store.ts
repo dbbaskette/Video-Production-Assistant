@@ -35,6 +35,19 @@ interface IdempotencyRecord {
   result: ProjectCommandResult;
 }
 
+function reconcileFeedback(storyboard: Storyboard | null): Storyboard | null {
+  if (!storyboard?.feedback_notes?.length) return storyboard;
+  const clips = new Map(storyboard.scenes.flatMap((scene) => (scene.composition?.clips ?? []).map((clip) => [`${scene.id}\0${clip.id}\0${clip.source_asset_id}`, clip] as const)));
+  return StoryboardSchema.parse({
+    ...storyboard,
+    feedback_notes: storyboard.feedback_notes.map((note) => {
+      const clip = clips.get(`${note.scene_id}\0${note.clip_instance_id}\0${note.source_asset_id}`);
+      const anchored = clip && note.source_in_ms >= clip.source_in_ms && note.source_out_ms <= clip.source_out_ms;
+      return anchored ? note : { ...note, status: 'reanchor-required', claimed_by: undefined, claimed_at: undefined };
+    }),
+  });
+}
+
 export interface RevisionState {
   version: 1;
   currentRevision: number;
@@ -227,6 +240,11 @@ export class RevisionStore {
 
   async listRevisions(): Promise<ProjectRevision[]> {
     return (await this.readState()).revisions.map((revision) => ProjectRevisionSchema.parse(revision));
+  }
+
+  async readRevision(revision: number): Promise<{ project: Project; storyboard: Storyboard | null }> {
+    const snapshot = await this.loadSnapshot(revision);
+    return { project: snapshot.project, storyboard: snapshot.storyboard };
   }
 
   private async loadSnapshot(revision: number): Promise<RevisionSnapshot> {
@@ -457,6 +475,24 @@ export class RevisionStore {
         ...storyboard,
         scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, transcript } : candidate),
       });
+    } else if (command.type === 'feedback.add') {
+      if (storyboard.feedback_notes?.some((note) => note.id === command.note.id)) throw new RevisionError('invalid_command', 'Feedback note ID is already in use.');
+      const scene = storyboard.scenes.find((candidate) => candidate.id === command.note.scene_id);
+      const clip = scene?.composition?.clips.find((candidate) => candidate.id === command.note.clip_instance_id);
+      if (!clip || clip.source_asset_id !== command.note.source_asset_id || command.note.source_in_ms < clip.source_in_ms || command.note.source_out_ms > clip.source_out_ms) throw new RevisionError('invalid_command', 'Feedback must anchor to an existing clip source interval.');
+      storyboard = StoryboardSchema.parse({ ...storyboard, feedback_notes: [...(storyboard.feedback_notes ?? []), command.note] });
+    } else if (command.type === 'feedback.claim' || command.type === 'feedback.resolve' || command.type === 'feedback.fail') {
+      const notes = storyboard.feedback_notes ?? [];
+      const note = notes.find((candidate) => candidate.id === command.noteId);
+      if (!note) throw new RevisionError('invalid_command', 'Feedback note does not exist.');
+      if (command.type === 'feedback.claim' && !['pending', 'failed'].includes(note.status)) throw new RevisionError('invalid_command', 'Only pending or failed feedback can be claimed.');
+      if (command.type === 'feedback.resolve' && note.status !== 'claimed') throw new RevisionError('invalid_command', 'Claim feedback before resolving it.');
+      const updated = command.type === 'feedback.claim'
+        ? { ...note, status: 'claimed' as const, claimed_by: command.actor, claimed_at: command.claimedAt, failure: undefined }
+        : command.type === 'feedback.resolve'
+          ? { ...note, status: 'resolved' as const, resolving_revision: command.resolvingRevision, resolution: command.resolution, failure: undefined }
+          : { ...note, status: 'failed' as const, failure: command.failure };
+      storyboard = StoryboardSchema.parse({ ...storyboard, feedback_notes: notes.map((candidate) => candidate.id === note.id ? updated : candidate) });
     } else if (command.type === 'scene.put') {
       const index = storyboard.scenes.findIndex((scene) => scene.id === command.scene.id);
       if (index < 0) throw new RevisionError('invalid_command', 'The selected scene does not exist.');
@@ -583,6 +619,7 @@ export class RevisionStore {
       if (!restore) {
         for (const command of batch.commands) next = this.applyCommand(command, next, assets);
       }
+      next.storyboard = reconcileFeedback(next.storyboard);
       this.validateAssetReferences(next.storyboard, assets);
 
       const revision = state.currentRevision + 1;
