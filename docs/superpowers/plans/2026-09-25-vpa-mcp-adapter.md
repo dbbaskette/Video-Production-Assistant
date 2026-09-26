@@ -12,7 +12,7 @@
 - [x] 3
 - [x] 4
 - [x] 5
-- [ ] 6
+- [x] 6
 
 ## Verification ownership
 
