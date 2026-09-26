@@ -42,6 +42,12 @@
 ## Progress
 
 - [x] Brand kits merged (#28)
-- [x] Evidence-driven editing implemented (#9, #22; merge tracked in PR)
-- [x] Output variants implemented (#104; merge tracked in PR)
-- [ ] Integrated verification complete and roadmap closed (#88)
+- [x] Evidence-driven editing merged (#9, #22; PR #130)
+- [x] Output variants merged (#104; PR #131)
+- [x] Integrated verification complete and roadmap ready to close (#88)
+
+Integrated `main` evidence on 2026-09-26: shared 59 tests, CLI 11, MCP 6,
+server 1,218 passed with one intentional skip, and web 273 passed. Root
+typecheck and the production build also passed. Changed source files pass
+ESLint; the repository-wide lint command still traverses archived local
+worktrees and reports their pre-existing violations.
