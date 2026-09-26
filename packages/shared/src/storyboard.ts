@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isSafeProjectRelativePath, PresentationSourceSchema } from './presentation.js';
 import { AssetIdSchema, AssetSourceRoleSchema } from './asset.js';
+import { SceneCompositionSchema } from './composition.js';
 
 export const RecordingSchema = z.object({
   source: z.string(),
@@ -170,6 +171,8 @@ export const SceneSchema = z.object({
   recording: RecordingSchema.optional(),
   /** Independent immutable media tracks sharing the scene timing origin. */
   sources: z.array(SceneSourceSchema).max(20).optional(),
+  /** Non-destructive clip sequence and mix settings. Sources remain immutable. */
+  composition: SceneCompositionSchema.optional(),
   presentation_source: PresentationSourceSchema.optional(),
   narration: NarrationSchema.optional(),
   lower_thirds: z.array(LowerThirdSchema).optional(),

@@ -28,6 +28,8 @@ import { RecordingUpload } from '../components/RecordingUpload.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import type { Asset, ProjectTrackerEntry, Scene } from '@vpa/shared';
 import { recordingsDurationLabel } from '../lib/scene-duration.js';
+import { BrowserCapturePanel } from '../components/BrowserCapturePanel.js';
+import { CompositionEditor } from '../components/CompositionEditor.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -108,6 +110,8 @@ export function RecordingsPage() {
       </p>
 
       <SourceTray projectId={projectId!} scenes={scenes} />
+      <BrowserCapturePanel projectId={projectId!} scenes={scenes} />
+      <CompositionEditor projectId={projectId!} scenes={scenes} />
 
       {/* ── PHASE: fresh — no storyboard yet ──────────────────────── */}
       {phase === 'fresh' && (

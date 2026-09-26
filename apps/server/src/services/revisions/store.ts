@@ -15,6 +15,8 @@ import {
   type ProjectCommandResult,
   type ProjectRevision,
   type Storyboard,
+  normalizeCompositionTimeline,
+  SceneCompositionSchema,
 } from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { dumpYaml, loadYaml } from '../../lib/yaml.js';
@@ -268,6 +270,22 @@ export class RevisionStore {
     }
     if (!storyboard) throw new RevisionError('invalid_command', 'The project does not have a storyboard.');
 
+    const sceneIndexFor = (sceneId: string): number => {
+      const index = storyboard!.scenes.findIndex((scene) => scene.id === sceneId);
+      if (index < 0) throw new RevisionError('invalid_command', 'The selected scene does not exist.');
+      return index;
+    };
+    const updateComposition = (sceneId: string, update: (composition: NonNullable<Storyboard['scenes'][number]['composition']>) => NonNullable<Storyboard['scenes'][number]['composition']>): void => {
+      const index = sceneIndexFor(sceneId);
+      const scene = storyboard!.scenes[index]!;
+      if (!scene.composition) throw new RevisionError('invalid_command', 'Initialize the scene composition before editing clips.');
+      const composition = SceneCompositionSchema.parse(update(scene.composition));
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard!.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, composition, overlay_render: undefined, frame_render: undefined } : candidate),
+      });
+    };
+
     if (command.type === 'scene.assign-asset') {
       const asset = assets.assets.find((candidate) => candidate.id === command.assetId);
       if (!asset) throw new RevisionError('invalid_command', 'The selected asset does not exist.');
@@ -298,6 +316,71 @@ export class RevisionStore {
         ...storyboard,
         scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? nextScene : candidate),
       });
+    } else if (command.type === 'composition.set') {
+      const index = sceneIndexFor(command.sceneId);
+      const scene = storyboard.scenes[index]!;
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index
+          ? { ...scene, composition: command.composition, overlay_render: undefined, frame_render: undefined }
+          : candidate),
+      });
+    } else if (command.type === 'clip.trim') {
+      if (command.sourceOutMs <= command.sourceInMs) throw new RevisionError('invalid_command', 'Clip out must be after clip in.');
+      updateComposition(command.sceneId, (composition) => {
+        if (!composition.clips.some((clip) => clip.id === command.clipId)) throw new RevisionError('invalid_command', 'The selected clip does not exist.');
+        const clips = composition.clips.map((clip) => clip.id === command.clipId
+          ? { ...clip, source_in_ms: command.sourceInMs, source_out_ms: command.sourceOutMs }
+          : clip);
+        return { ...composition, clips: normalizeCompositionTimeline(clips) };
+      });
+    } else if (command.type === 'clip.split') {
+      updateComposition(command.sceneId, (composition) => {
+        if (command.leftClipId === command.rightClipId || composition.clips.some((clip) => clip.id === command.leftClipId || clip.id === command.rightClipId)) {
+          throw new RevisionError('invalid_command', 'Split clip IDs must be new and unique.');
+        }
+        const index = composition.clips.findIndex((clip) => clip.id === command.clipId);
+        if (index < 0) throw new RevisionError('invalid_command', 'The selected clip does not exist.');
+        const clip = composition.clips[index]!;
+        if (command.splitSourceMs <= clip.source_in_ms || command.splitSourceMs >= clip.source_out_ms) {
+          throw new RevisionError('invalid_command', 'Split point must be inside the clip bounds.');
+        }
+        const clips = [...composition.clips];
+        clips.splice(index, 1,
+          { ...clip, id: command.leftClipId, source_out_ms: command.splitSourceMs },
+          { ...clip, id: command.rightClipId, source_in_ms: command.splitSourceMs },
+        );
+        return { ...composition, clips: normalizeCompositionTimeline(clips) };
+      });
+    } else if (command.type === 'clip.delete') {
+      updateComposition(command.sceneId, (composition) => {
+        if (composition.clips.length === 1) throw new RevisionError('invalid_command', 'A composition must keep at least one clip.');
+        if (!composition.clips.some((clip) => clip.id === command.clipId)) throw new RevisionError('invalid_command', 'The selected clip does not exist.');
+        return { ...composition, clips: normalizeCompositionTimeline(composition.clips.filter((clip) => clip.id !== command.clipId)) };
+      });
+    } else if (command.type === 'clip.reorder') {
+      updateComposition(command.sceneId, (composition) => {
+        if (new Set(command.clipIds).size !== command.clipIds.length) throw new RevisionError('invalid_command', 'Clip reorder contains duplicate IDs.');
+        const byId = new Map(composition.clips.map((clip) => [clip.id, clip]));
+        if (command.clipIds.length !== composition.clips.length || command.clipIds.some((id) => !byId.has(id))) {
+          throw new RevisionError('invalid_command', 'Clip reorder must contain every clip exactly once.');
+        }
+        return { ...composition, clips: normalizeCompositionTimeline(command.clipIds.map((id) => byId.get(id)!)) };
+      });
+    } else if (command.type === 'clip.duplicate') {
+      updateComposition(command.sceneId, (composition) => {
+        if (composition.clips.some((clip) => clip.id === command.newClipId)) throw new RevisionError('invalid_command', 'The new clip ID is already in use.');
+        const index = composition.clips.findIndex((clip) => clip.id === command.clipId);
+        if (index < 0) throw new RevisionError('invalid_command', 'The selected clip does not exist.');
+        const clips = [...composition.clips];
+        clips.splice(index + 1, 0, { ...composition.clips[index]!, id: command.newClipId });
+        return { ...composition, clips: normalizeCompositionTimeline(clips) };
+      });
+    } else if (command.type === 'audio.mix.set') {
+      updateComposition(command.sceneId, (composition) => ({
+        ...composition,
+        audio_mix: { ...composition.audio_mix, [command.role]: command.settings },
+      }));
     } else if (command.type === 'scene.put') {
       const index = storyboard.scenes.findIndex((scene) => scene.id === command.scene.id);
       if (index < 0) throw new RevisionError('invalid_command', 'The selected scene does not exist.');
@@ -346,6 +429,34 @@ export class RevisionStore {
       for (const source of scene.sources ?? []) {
         if (!byId.has(source.asset_id)) {
           throw new RevisionError('invalid_command', 'A scene contains an invalid source reference.');
+        }
+      }
+      for (const clip of scene.composition?.clips ?? []) {
+        const primary = byId.get(clip.source_asset_id);
+        if (!primary || !['video', 'image'].includes(primary.media_kind)) {
+          throw new RevisionError('invalid_command', 'A clip contains an invalid visual asset reference.');
+        }
+        if ((clip.source_role === 'image') !== (primary.media_kind === 'image')) {
+          throw new RevisionError('invalid_command', 'A clip visual role does not match its asset type.');
+        }
+        if (primary.duration_sec !== undefined && clip.source_out_ms > Math.round(primary.duration_sec * 1_000)) {
+          throw new RevisionError('invalid_command', 'A clip extends beyond its source duration.');
+        }
+        for (const track of clip.linked_tracks) {
+          const asset = byId.get(track.asset_id);
+          if (!asset) throw new RevisionError('invalid_command', 'A clip contains an invalid linked asset reference.');
+          if (['microphone', 'system-audio', 'narration', 'music'].includes(track.role) && asset.media_kind !== 'audio') {
+            throw new RevisionError('invalid_command', 'An audio track must reference an audio asset.');
+          }
+          const linkedSourceEndMs = Math.max(1, clip.source_out_ms - track.source_offset_ms);
+          if (asset.duration_sec !== undefined && linkedSourceEndMs > Math.round(asset.duration_sec * 1_000)) {
+            throw new RevisionError('invalid_command', 'A linked track extends beyond its source duration.');
+          }
+        }
+      }
+      for (const anchor of scene.composition?.anchors ?? []) {
+        if (!byId.has(anchor.source_asset_id)) {
+          throw new RevisionError('invalid_command', 'A composition anchor references an unavailable source asset.');
         }
       }
       for (const lowerThird of scene.lower_thirds ?? []) {

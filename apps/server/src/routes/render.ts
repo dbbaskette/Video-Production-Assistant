@@ -13,7 +13,7 @@ import { resolveTrackAudioPath, readMusicTrack } from './music.js';
 import { readBrand } from '../services/brand/store.js';
 import { brandPaths } from '../services/brand/paths.js';
 import { loadStoryboard } from '../services/storyboard/index.js';
-import { SceneTransitionSchema } from '@vpa/shared';
+import { effectiveMixSettings, SceneTransitionSchema } from '@vpa/shared';
 import { computeWorkflowStatus } from '../services/workflow-status/index.js';
 import { buildRenderFingerprint } from '../services/workflow-status/fingerprint.js';
 import { writeRenderManifest } from '../services/workflow-status/render-manifest.js';
@@ -159,12 +159,16 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
     const hasBumper = !!(bumperIntroPath || bumperOutroPath);
     const musicScope: 'full' | 'bumpers' =
       body.musicScope === 'bumpers' && hasBumper ? 'bumpers' : 'full';
+    const compositionWithMusic = storyboard?.scenes
+      .find((scene) => scene.composition?.audio_mix.music)?.composition;
+    const musicMix = compositionWithMusic ? effectiveMixSettings(compositionWithMusic, 'music') : null;
+    const musicVolumeDb = typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : musicMix?.gain_db ?? -20;
 
     // Resolve the music track. Precedence:
     //   1. Project-level track explicitly picked in the Render UI (musicTrackId).
     //   2. Brand-level default_music_track if the project hasn't chosen one.
     //   3. No background music.
-    if (body.musicTrackId) {
+    if (body.musicTrackId && !musicMix?.mute) {
       const track = await readMusicTrack(projectPath, body.musicTrackId);
       if (!track) {
         return reply.status(400).send({
@@ -174,16 +178,20 @@ export async function registerRenderRoutes(app: FastifyInstance, deps: Deps): Pr
       }
       opts.music = {
         audioPath: resolveTrackAudioPath(projectPath, track),
-        volumeDb: typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : -20,
+        volumeDb: musicVolumeDb,
         scope: musicScope,
+        fadeInMs: musicMix?.fade_in_ms,
+        fadeOutMs: musicMix?.fade_out_ms,
       };
-    } else if (useBrandMusic) {
+    } else if (useBrandMusic && !musicMix?.mute) {
       const brandMusic = resolveBrandAsset(brandAudio?.default_music_track);
       if (brandMusic) {
         opts.music = {
           audioPath: brandMusic,
-          volumeDb: typeof body.musicVolumeDb === 'number' ? body.musicVolumeDb : -20,
+          volumeDb: musicVolumeDb,
           scope: musicScope,
+          fadeInMs: musicMix?.fade_in_ms,
+          fadeOutMs: musicMix?.fade_out_ms,
         };
       }
     }

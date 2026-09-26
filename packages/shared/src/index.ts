@@ -16,3 +16,5 @@ export * from './narration-chunks.js';
 export * from './pause-parser.js';
 export * from './asset.js';
 export * from './command.js';
+export * from './composition.js';
+export * from './browser-capture.js';

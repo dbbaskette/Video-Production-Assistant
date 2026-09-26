@@ -36,6 +36,17 @@ describe('AssetStore', () => {
     expect(await readFile(path.join(root, first.source))).toEqual(await readFile(source));
   });
 
+  it('does not deduplicate identical bytes across incompatible media kinds', async () => {
+    const { root, source } = await fixture();
+    const store = new AssetStore(root, { probe: vi.fn().mockResolvedValue(metadata) });
+    await store.importFile(source, { originalName: 'screen.mp4', mediaKind: 'video' });
+    await expect(store.importFile(source, {
+      originalName: 'microphone.mp4',
+      mediaKind: 'audio',
+      validatedMediaMetadata: { duration_sec: 12 },
+    })).rejects.toMatchObject({ code: 'malformed_media' });
+  });
+
   it('never publishes a manifest entry when persistence fails', async () => {
     const { root, source } = await fixture();
     const store = new AssetStore(root, {

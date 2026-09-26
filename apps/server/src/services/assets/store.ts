@@ -48,6 +48,10 @@ export interface ImportAssetOptions {
   legacySource?: string;
   /** Trusted metadata from an immediately preceding ffprobe in an existing ingest flow. */
   validatedVideoMetadata?: VideoMetadata;
+  /** Trusted metadata from server-side validation of a browser capture. */
+  validatedMediaMetadata?: { duration_sec: number; width?: number; height?: number };
+  mediaKind?: AssetMediaKind;
+  mimeType?: string;
 }
 
 export interface AssetStoreOptions {
@@ -136,16 +140,18 @@ export class AssetStore {
     const extension = path.extname(options.originalName).toLowerCase() as keyof typeof supported;
     const support = supported[extension];
     if (!support) throw new AssetImportError('unsupported_media', 'Supported files are MP4, WebM, PNG, JPEG, MP3, and WAV.');
+    const mediaKind = options.mediaKind ?? support.kind;
+    const mimeType = options.mimeType ?? support.mime;
 
     const info = await stat(sourcePath);
     if (!info.isFile()) throw new AssetImportError('malformed_media', 'The selected source is not a file.');
     if (info.size > ASSET_MAX_BYTES) throw new AssetImportError('file_too_large', 'Files must be 2 GiB or smaller.');
-    if (!(support.kind === 'video' && options.validatedVideoMetadata) && !validHeader(extension, await readHeader(sourcePath))) {
+    if (!(mediaKind === 'video' && options.validatedVideoMetadata) && !validHeader(extension, await readHeader(sourcePath))) {
       throw new AssetImportError('malformed_media', 'The file contents do not match the selected media type.');
     }
 
     let metadata: VideoMetadata | undefined;
-    if (support.kind === 'video') {
+    if (mediaKind === 'video') {
       try {
         metadata = options.validatedVideoMetadata ?? await this.probe(sourcePath);
       } catch {
@@ -159,7 +165,15 @@ export class AssetStore {
     const checksum = await sha256(sourcePath);
     const manifest = await this.load();
     const existing = manifest.assets.find((asset) => asset.checksum === checksum);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.media_kind !== mediaKind) {
+        throw new AssetImportError(
+          'malformed_media',
+          `These bytes are already registered as ${existing.media_kind} and cannot also be imported as ${mediaKind}.`,
+        );
+      }
+      return existing;
+    }
 
     const files = projectFiles(this.projectRoot);
     await mkdir(files.assetOriginalsDir, { recursive: true });
@@ -181,13 +195,13 @@ export class AssetStore {
       original_name: path.basename(options.originalName),
       source: relativeSource,
       origin: 'source',
-      media_kind: support.kind as AssetMediaKind,
-      mime_type: support.mime,
+      media_kind: mediaKind,
+      mime_type: mimeType,
       size_bytes: info.size,
       imported_at: now,
-      duration_sec: metadata?.duration_sec,
-      width: metadata?.width,
-      height: metadata?.height,
+      duration_sec: metadata?.duration_sec ?? options.validatedMediaMetadata?.duration_sec,
+      width: metadata?.width ?? options.validatedMediaMetadata?.width,
+      height: metadata?.height ?? options.validatedMediaMetadata?.height,
       timing_origin_ms: options.timingOriginMs ?? 0,
       capture_session_id: options.captureSessionId,
       source_role: options.sourceRole,
@@ -196,7 +210,7 @@ export class AssetStore {
         status: 'ready',
         attempts: 1,
         updated_at: now,
-        ...(support.kind === 'image' ? { thumbnail: relativeSource } : { proxy: relativeSource }),
+        ...(mediaKind === 'image' ? { thumbnail: relativeSource } : { proxy: relativeSource }),
       },
     });
     await this.persist(files.assetManifest, JSON.stringify(AssetManifestSchema.parse({

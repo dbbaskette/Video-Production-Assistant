@@ -1,9 +1,10 @@
 import type { Scene } from './storyboard.js';
+import { compositionDurationMs } from './composition.js';
 
 export interface EffectiveSceneDuration {
   targetSec: number | undefined;
   flexible: boolean;
-  source: 'narration' | 'slide-hold' | 'recording' | 'unavailable';
+  source: 'narration' | 'slide-hold' | 'composition' | 'recording' | 'unavailable';
 }
 
 function positiveFinite(value: unknown): value is number {
@@ -43,6 +44,11 @@ export function resolvePlannedSceneDuration(scene: Scene): EffectiveSceneDuratio
       flexible: true,
       source: 'slide-hold',
     };
+  }
+
+  if (scene.composition) {
+    const duration = compositionDurationMs(scene.composition) / 1_000;
+    if (positiveFinite(duration)) return { targetSec: duration, flexible: false, source: 'composition' };
   }
 
   const recordingDuration = scene.recording?.duration_sec;

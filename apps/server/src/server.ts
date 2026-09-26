@@ -8,6 +8,7 @@ import { registerJobRoutes } from './routes/jobs.js';
 import { jobQueue } from './lib/job-queue.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerCommandRoutes } from './routes/commands.js';
+import { registerBrowserCaptureRoutes } from './routes/browser-capture.js';
 import { registerBrandRoutes } from './routes/brands.js';
 import { registerStoryboardRoutes } from './routes/storyboard.js';
 import { registerIdeationRoutes } from './routes/ideation.js';
@@ -275,6 +276,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
   await registerJobRoutes(app);
   await app.register(async (instance) => registerCommandRoutes(instance, { store }));
   await app.register(async (instance) => registerAssetRoutes(instance, { store }));
+  await app.register(async (instance) => registerBrowserCaptureRoutes(instance, { store }));
   await registerBrandRoutes(app, {
     paths: bPaths,
     registryFile: bPaths.registryFile,
@@ -401,7 +403,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     app.log.error({ err: error }, 'Agent recording reconciliation failed; continuing startup');
   }
 
-  let presentationProjects = [];
+  const presentationProjects = [];
   try {
     const tracker = await store.readTracker();
     for (const entry of tracker.projects) {

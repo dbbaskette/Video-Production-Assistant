@@ -1,12 +1,12 @@
 import type { Scene } from '@vpa/shared';
-import { isFlexiblePresentationScene } from '@vpa/shared';
+import { compositionDurationMs, isFlexiblePresentationScene } from '@vpa/shared';
 
 export { isFlexiblePresentationScene } from '@vpa/shared';
 
 export interface SceneDurationResolution {
   targetSec: number;
   flexible: boolean;
-  source: 'narration' | 'slide-hold' | 'recording';
+  source: 'narration' | 'slide-hold' | 'composition' | 'recording';
 }
 
 export class RenderError extends Error {
@@ -46,6 +46,11 @@ export function resolveRenderSceneDuration(
       flexible: true,
       source: 'slide-hold',
     };
+  }
+
+  if (scene.composition) {
+    const duration = compositionDurationMs(scene.composition) / 1_000;
+    if (positiveFinite(duration)) return { targetSec: duration, flexible: false, source: 'composition' };
   }
 
   if (positiveFinite(scene.recording?.duration_sec)) {
