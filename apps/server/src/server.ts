@@ -9,6 +9,7 @@ import { jobQueue } from './lib/job-queue.js';
 import { registerAssetRoutes } from './routes/assets.js';
 import { registerCommandRoutes } from './routes/commands.js';
 import { registerBrowserCaptureRoutes } from './routes/browser-capture.js';
+import { registerSourceEvidenceRoutes } from './routes/source-evidence.js';
 import { registerBrandRoutes } from './routes/brands.js';
 import { registerStoryboardRoutes } from './routes/storyboard.js';
 import { registerIdeationRoutes } from './routes/ideation.js';
@@ -80,6 +81,7 @@ import {
   PresentationImportService,
 } from './services/presentation/import-service.js';
 import { SlideUnderstandingService } from './services/presentation/slide-understanding.js';
+import { SourceEvidenceService } from './services/source-evidence/index.js';
 import { PresentationNarrationDrafter } from './services/presentation/narration-drafter.js';
 
 const execFileAsync = promisify(execFile);
@@ -108,6 +110,7 @@ export interface BuildServerOptions {
   recordingProbe?: typeof probeVideo;
   presentationService?: PresentationImportService;
   presentationNarrationDrafter?: PresentationNarrationDrafter;
+  sourceEvidence?: SourceEvidenceService;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -277,6 +280,11 @@ export async function buildServer(options: BuildServerOptions = {}) {
   await app.register(async (instance) => registerCommandRoutes(instance, { store }));
   await app.register(async (instance) => registerAssetRoutes(instance, { store }));
   await app.register(async (instance) => registerBrowserCaptureRoutes(instance, { store }));
+  await app.register(async (instance) => registerSourceEvidenceRoutes(instance, {
+    store,
+    router: modelRouter,
+    evidence: options.sourceEvidence ?? new SourceEvidenceService(),
+  }));
   await registerBrandRoutes(app, {
     paths: bPaths,
     registryFile: bPaths.registryFile,

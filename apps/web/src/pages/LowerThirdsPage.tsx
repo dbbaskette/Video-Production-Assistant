@@ -16,6 +16,7 @@ import { storyboardApi } from '../lib/api.js';
 import { STATUS_COLOR } from '../lib/palette.js';
 import type { ProjectTrackerEntry, Scene } from '@vpa/shared';
 import { LastSavedBadge } from '../components/ui/LastSavedBadge.js';
+import { VisualEvidenceEditor } from '../components/VisualEvidenceEditor.js';
 
 interface WorkspaceContext {
   project: ProjectTrackerEntry;
@@ -42,9 +43,9 @@ export function LowerThirdsPage() {
   const totalLts = scenes.reduce((sum, s) => sum + (s.lower_thirds?.length ?? 0), 0);
 
   return (
-    <div style={{ padding: '40px 48px', maxWidth: 900 }}>
+    <div style={{ padding: '40px 48px', maxWidth: 1200 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h1 style={{ margin: 0, fontSize: 24 }}>Lower Thirds</h1>
+        <h1 style={{ margin: 0, fontSize: 24 }}>Visuals & Evidence</h1>
         <LastSavedBadge />
       </div>
       <p style={{ color: 'var(--fg-muted)', marginTop: 4, fontSize: 13 }}>
@@ -58,6 +59,7 @@ export function LowerThirdsPage() {
       {hasStoryboard && (
         <div style={{ marginTop: 24 }}>
           <SceneList scenes={scenes} projectId={projectId!} />
+          <VisualEvidenceEditor projectId={projectId!} scenes={scenes} />
 
           {withLts.length === 0 && (
             <p

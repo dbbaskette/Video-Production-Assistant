@@ -68,6 +68,10 @@ async function collectSceneFiles(
       files.push(scene.narration.subtitles.vtt);
     }
   }
+  if (scene.transcript?.subtitles?.srt) {
+    const absPath = await resolveSafeProjectPath(projectRoot, scene.transcript.subtitles.srt);
+    if (await fileExists(absPath) && !files.includes(scene.transcript.subtitles.srt)) files.push(scene.transcript.subtitles.srt);
+  }
 
   // Overlay render
   if (scene.overlay_render) {

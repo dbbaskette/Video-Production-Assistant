@@ -63,14 +63,12 @@ describe('CompositionEditor', () => {
     act(() => [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Clip editor'))!.click());
     await waitFor(() => expect(view.client.getQueryData(['revision', 'p1'])).toBe(4));
     act(() => [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'Duplicate')!.click());
-    await flushPromises();
-    expect(compositionApi.execute).toHaveBeenCalledWith('p1', 4, [expect.objectContaining({ type: 'clip.duplicate', clipId: 'clip_original-0001' })]);
+    await waitFor(() => expect(compositionApi.execute).toHaveBeenCalledWith('p1', 4, [expect.objectContaining({ type: 'clip.duplicate', clipId: 'clip_original-0001' })]));
     vi.mocked(compositionApi.execute).mockClear();
     const gain = view.container.querySelector('input[aria-label="Microphone gain"]') as HTMLInputElement;
     const mixRow = gain.closest('div')!;
     act(() => [...mixRow.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click());
-    await flushPromises();
-    expect(compositionApi.execute).toHaveBeenCalledWith('p1', 4, [{ type: 'audio.mix.set', sceneId: 'scene-01', role: 'microphone', settings: { gain_db: 0, mute: false, fade_in_ms: 0, fade_out_ms: 0 } }]);
+    await waitFor(() => expect(compositionApi.execute).toHaveBeenCalledWith('p1', 4, [{ type: 'audio.mix.set', sceneId: 'scene-01', role: 'microphone', settings: { gain_db: 0, mute: false, fade_in_ms: 0, fade_out_ms: 0 } }]));
     view.unmount();
   });
 

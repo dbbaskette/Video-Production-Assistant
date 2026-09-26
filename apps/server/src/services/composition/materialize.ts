@@ -12,6 +12,7 @@ import {
   type Asset,
   type AudioMixRole,
   type Scene,
+  type VisualEffect,
 } from '@vpa/shared';
 import { projectFiles } from '../project/paths.js';
 import { resolveSafeProjectPath } from '../project/safe-path.js';
@@ -56,6 +57,14 @@ function mixRoleForTrack(role: string): AudioMixRole {
   return 'original';
 }
 
+function effectWindow(effect: VisualEffect, clipInMs: number): string {
+  return `enable='between(t,${((effect.source_in_ms - clipInMs) / 1_000).toFixed(3)},${((effect.source_out_ms - clipInMs) / 1_000).toFixed(3)})'`;
+}
+
+function escapeText(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'").replaceAll(':', '\\:').replaceAll('%', '\\%');
+}
+
 /**
  * Materialize one scene's immutable clip sequence into a derived MP4. The
  * returned file is the common input for preview/export stages; source bytes
@@ -71,7 +80,7 @@ export async function materializeSceneComposition(
   const manifest = AssetManifestSchema.parse(JSON.parse(await readFile(projectFiles(projectRoot).assetManifest, 'utf8')));
   const assets = new Map(manifest.assets.map((asset) => [asset.id, asset]));
   const durationSec = compositionDurationMs(composition) / 1_000;
-  const fingerprint = createHash('sha256').update(JSON.stringify({ composition, checksums: composition.clips.flatMap((clip) => [assets.get(clip.source_asset_id)?.checksum, ...clip.linked_tracks.map((track) => assets.get(track.asset_id)?.checksum)]) })).digest('hex').slice(0, 20);
+  const fingerprint = createHash('sha256').update(JSON.stringify({ composition, visual_effects: scene.visual_effects ?? [], checksums: composition.clips.flatMap((clip) => [assets.get(clip.source_asset_id)?.checksum, ...clip.linked_tracks.map((track) => assets.get(track.asset_id)?.checksum)]) })).digest('hex').slice(0, 20);
   const outputDir = path.join(projectRoot, 'renders', '.composition');
   const outputPath = path.join(outputDir, `${scene.id}-${fingerprint}.mp4`);
 
@@ -103,18 +112,39 @@ export async function materializeSceneComposition(
       filters.push(`[${primaryIndex}:v]trim=start=${(clip.source_in_ms / 1_000).toFixed(3)}:end=${(clip.source_out_ms / 1_000).toFixed(3)},setpts=PTS-STARTPTS[${base}]`);
     }
 
-    const cameraTrack = clip.linked_tracks.find((track) => track.role === 'camera' && assets.get(track.asset_id)?.media_kind === 'video');
-    if (cameraTrack) {
-      const camera = assets.get(cameraTrack.asset_id)!;
-      const cameraIndex = await addInput(camera);
-      const sourceStartMs = Math.max(0, clip.source_in_ms - cameraTrack.source_offset_ms);
-      const sourceEndMs = Math.max(sourceStartMs + 1, clip.source_out_ms - cameraTrack.source_offset_ms);
-      const delaySec = Math.max(0, cameraTrack.source_offset_ms - clip.source_in_ms) / 1_000;
-      filters.push(`[${cameraIndex}:v]trim=start=${(sourceStartMs / 1_000).toFixed(3)}:end=${(sourceEndMs / 1_000).toFixed(3)},setpts=PTS-STARTPTS+${delaySec.toFixed(3)}/TB,scale=iw*0.25:ih*0.25[cam${clipIndex}]`);
-      filters.push(`[${base}][cam${clipIndex}]overlay=W-w-24:H-h-24:eof_action=pass:shortest=0[vclip${clipIndex}]`);
-    } else {
-      filters.push(`[${base}]null[vclip${clipIndex}]`);
+    const clipEffects = (scene.visual_effects ?? []).filter((effect) => effect.clip_instance_id === clip.id && effect.source_asset_id === clip.source_asset_id);
+    let currentVideo = base;
+    let visualStep = 0;
+    const apply = (filter: string): void => {
+      const next = `ve${clipIndex}_${visualStep++}`;
+      filters.push(`[${currentVideo}]${filter}[${next}]`);
+      currentVideo = next;
+    };
+
+    // Fixed source-space order: opaque redaction, annotations, zoom, background.
+    for (const effect of clipEffects.filter((item) => item.type === 'redaction')) {
+      apply(`drawbox=x=iw*${effect.rect.x}:y=ih*${effect.rect.y}:w=iw*${effect.rect.width}:h=ih*${effect.rect.height}:color=black@1:t=fill:${effectWindow(effect, clip.source_in_ms)}`);
     }
+    for (const effect of clipEffects) {
+      if (effect.type === 'highlight') apply(`drawbox=x=iw*${effect.rect.x}:y=ih*${effect.rect.y}:w=iw*${effect.rect.width}:h=ih*${effect.rect.height}:color=${effect.color}@${effect.opacity}:t=fill:${effectWindow(effect, clip.source_in_ms)}`);
+      else if (effect.type === 'arrow') apply(`drawbox=x=iw*${effect.rect.x}:y=ih*${effect.rect.y}:w=iw*${effect.rect.width}:h=max(3\\,ih*0.006):color=${effect.color}@1:t=fill:${effectWindow(effect, clip.source_in_ms)}`);
+      else if (effect.type === 'text') apply(`drawtext=text='${escapeText(effect.text)}':x=iw*${effect.rect.x}:y=ih*${effect.rect.y}:fontsize=max(18\\,ih*0.04):fontcolor=${effect.color}:box=1:boxcolor=black@0.55:boxborderw=8:${effectWindow(effect, clip.source_in_ms)}`);
+    }
+    for (const effect of clipEffects.filter((item) => item.type === 'zoom')) {
+      if (effect.type !== 'zoom') continue;
+      const zoomIndex = await addInput(primary, clipDuration);
+      const zoomLabel = `zoom${clipIndex}_${visualStep}`;
+      const next = `ve${clipIndex}_${visualStep++}`;
+      const start = clip.source_in_ms / 1_000;
+      filters.push(`[${zoomIndex}:v]trim=start=${start.toFixed(3)}:end=${(clip.source_out_ms / 1_000).toFixed(3)},setpts=PTS-STARTPTS,crop=iw*${effect.rect.width}:ih*${effect.rect.height}:iw*${effect.rect.x}:ih*${effect.rect.y},scale=iw/${effect.rect.width}:ih/${effect.rect.height}[${zoomLabel}]`);
+      filters.push(`[${currentVideo}][${zoomLabel}]overlay=0:0:${effectWindow(effect, clip.source_in_ms)}[${next}]`);
+      currentVideo = next;
+    }
+    for (const effect of clipEffects.filter((item) => item.type === 'background')) {
+      if (effect.type === 'background') apply(`drawbox=x=iw*${effect.rect.x}:y=ih*${effect.rect.y}:w=iw*${effect.rect.width}:h=ih*${effect.rect.height}:color=${effect.color}@1:t=fill:${effectWindow(effect, clip.source_in_ms)}`);
+    }
+
+    filters.push(`[${currentVideo}]null[vclip${clipIndex}]`);
     videoLabels.push(`[vclip${clipIndex}]`);
 
     const originalSettings = effectiveMixSettings(composition, 'original');

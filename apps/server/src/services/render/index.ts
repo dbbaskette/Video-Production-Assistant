@@ -24,6 +24,7 @@ import { buildMusicFilterComplex, type MusicScope } from './music-filter.js';
 import { ensureSilenceClip } from './silence.js';
 import { RenderError, resolveRenderSceneDuration } from './scene-duration.js';
 import { materializeSceneComposition } from '../composition/materialize.js';
+import { applyCompositionForeground } from '../composition/foreground.js';
 
 export { RenderError };
 
@@ -682,7 +683,8 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
     workspaceRoot,
     deps: frameDeps,
   });
-  const videoSrc = framePrep?.framedVideo ?? upstreamVideo;
+  const framedVideo = framePrep?.framedVideo ?? upstreamVideo;
+  const videoSrc = await applyCompositionForeground(projectPath, scene, framedVideo) ?? framedVideo;
   const updatedStoryboard = framePrep?.updatedStoryboard ?? storyboard;
 
   const narrationSettings = scene.composition ? effectiveMixSettings(scene.composition, 'narration') : null;
@@ -724,8 +726,9 @@ async function muxScene(opts: MuxOpts): Promise<MuxResult> {
   // -filter_complex when either is needed; otherwise we keep -c copy on
   // the video for the fast path.
   const vFilters: string[] = [];
-  if (burnSubtitles && scene.narration?.subtitles?.srt) {
-    const srt = join(projectPath, scene.narration.subtitles.srt);
+  const subtitleRel = scene.narration?.subtitles?.srt ?? scene.transcript?.subtitles?.srt;
+  if (burnSubtitles && subtitleRel) {
+    const srt = join(projectPath, subtitleRel);
     if (existsSync(srt)) {
       vFilters.push(`subtitles=${escapeForFilter(srt)}`);
     }

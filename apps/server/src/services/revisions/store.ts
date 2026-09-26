@@ -17,6 +17,7 @@ import {
   type Storyboard,
   normalizeCompositionTimeline,
   SceneCompositionSchema,
+  type VisualEffect,
 } from '@vpa/shared';
 import { atomicWriteFile } from '../../lib/fs-atomic.js';
 import { dumpYaml, loadYaml } from '../../lib/yaml.js';
@@ -275,14 +276,18 @@ export class RevisionStore {
       if (index < 0) throw new RevisionError('invalid_command', 'The selected scene does not exist.');
       return index;
     };
-    const updateComposition = (sceneId: string, update: (composition: NonNullable<Storyboard['scenes'][number]['composition']>) => NonNullable<Storyboard['scenes'][number]['composition']>): void => {
+    const updateComposition = (
+      sceneId: string,
+      update: (composition: NonNullable<Storyboard['scenes'][number]['composition']>) => NonNullable<Storyboard['scenes'][number]['composition']>,
+      updateEffects: (effects: VisualEffect[]) => VisualEffect[] = (effects) => effects,
+    ): void => {
       const index = sceneIndexFor(sceneId);
       const scene = storyboard!.scenes[index]!;
       if (!scene.composition) throw new RevisionError('invalid_command', 'Initialize the scene composition before editing clips.');
       const composition = SceneCompositionSchema.parse(update(scene.composition));
       storyboard = StoryboardSchema.parse({
         ...storyboard,
-        scenes: storyboard!.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, composition, overlay_render: undefined, frame_render: undefined } : candidate),
+        scenes: storyboard!.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, composition, visual_effects: updateEffects(scene.visual_effects ?? []), overlay_render: undefined, frame_render: undefined } : candidate),
       });
     };
 
@@ -309,6 +314,7 @@ export class RevisionStore {
           source_role: command.role,
           timing_origin_ms: command.timingOriginMs,
         } } : {}),
+        ...(command.role === 'screen' ? { composition: undefined, visual_effects: undefined, transcript: undefined, evidence: undefined } : {}),
         overlay_render: undefined,
         frame_render: undefined,
       };
@@ -333,7 +339,12 @@ export class RevisionStore {
           ? { ...clip, source_in_ms: command.sourceInMs, source_out_ms: command.sourceOutMs }
           : clip);
         return { ...composition, clips: normalizeCompositionTimeline(clips) };
-      });
+      }, (effects) => effects.flatMap((effect) => {
+        if (effect.clip_instance_id !== command.clipId) return [effect];
+        const source_in_ms = Math.max(effect.source_in_ms, command.sourceInMs);
+        const source_out_ms = Math.min(effect.source_out_ms, command.sourceOutMs);
+        return source_out_ms > source_in_ms ? [{ ...effect, source_in_ms, source_out_ms }] : [];
+      }));
     } else if (command.type === 'clip.split') {
       updateComposition(command.sceneId, (composition) => {
         if (command.leftClipId === command.rightClipId || composition.clips.some((clip) => clip.id === command.leftClipId || clip.id === command.rightClipId)) {
@@ -351,13 +362,19 @@ export class RevisionStore {
           { ...clip, id: command.rightClipId, source_in_ms: command.splitSourceMs },
         );
         return { ...composition, clips: normalizeCompositionTimeline(clips) };
-      });
+      }, (effects) => effects.flatMap((effect) => {
+        if (effect.clip_instance_id !== command.clipId) return [effect];
+        return [
+          ...(effect.source_in_ms < command.splitSourceMs ? [{ ...effect, id: `effect_${createHash('sha256').update(`${effect.id}:${command.leftClipId}`).digest('hex').slice(0, 16)}`, clip_instance_id: command.leftClipId, source_out_ms: Math.min(effect.source_out_ms, command.splitSourceMs) }] : []),
+          ...(effect.source_out_ms > command.splitSourceMs ? [{ ...effect, id: `effect_${createHash('sha256').update(`${effect.id}:${command.rightClipId}`).digest('hex').slice(0, 16)}`, clip_instance_id: command.rightClipId, source_in_ms: Math.max(effect.source_in_ms, command.splitSourceMs) }] : []),
+        ];
+      }));
     } else if (command.type === 'clip.delete') {
       updateComposition(command.sceneId, (composition) => {
         if (composition.clips.length === 1) throw new RevisionError('invalid_command', 'A composition must keep at least one clip.');
         if (!composition.clips.some((clip) => clip.id === command.clipId)) throw new RevisionError('invalid_command', 'The selected clip does not exist.');
         return { ...composition, clips: normalizeCompositionTimeline(composition.clips.filter((clip) => clip.id !== command.clipId)) };
-      });
+      }, (effects) => effects.filter((effect) => effect.clip_instance_id !== command.clipId));
     } else if (command.type === 'clip.reorder') {
       updateComposition(command.sceneId, (composition) => {
         if (new Set(command.clipIds).size !== command.clipIds.length) throw new RevisionError('invalid_command', 'Clip reorder contains duplicate IDs.');
@@ -375,12 +392,71 @@ export class RevisionStore {
         const clips = [...composition.clips];
         clips.splice(index + 1, 0, { ...composition.clips[index]!, id: command.newClipId });
         return { ...composition, clips: normalizeCompositionTimeline(clips) };
-      });
+      }, (effects) => [
+        ...effects,
+        ...effects.filter((effect) => effect.clip_instance_id === command.clipId).map((effect) => ({
+          ...effect,
+          id: `effect_${createHash('sha256').update(`${effect.id}:${command.newClipId}`).digest('hex').slice(0, 16)}`,
+          clip_instance_id: command.newClipId,
+        })),
+      ]);
     } else if (command.type === 'audio.mix.set') {
       updateComposition(command.sceneId, (composition) => ({
         ...composition,
         audio_mix: { ...composition.audio_mix, [command.role]: command.settings },
       }));
+    } else if (command.type === 'visual.effects.set') {
+      const index = sceneIndexFor(command.sceneId);
+      const scene = storyboard.scenes[index]!;
+      if (!scene.composition) throw new RevisionError('invalid_command', 'Initialize the scene composition before adding visual effects.');
+      const clipById = new Map(scene.composition.clips.map((clip) => [clip.id, clip]));
+      const ids = new Set<string>();
+      for (const effect of command.effects) {
+        if (ids.has(effect.id)) throw new RevisionError('invalid_command', 'Visual effect IDs must be unique.');
+        ids.add(effect.id);
+        const clip = clipById.get(effect.clip_instance_id);
+        if (!clip || clip.source_asset_id !== effect.source_asset_id) throw new RevisionError('invalid_command', 'A visual effect must reference its clip source.');
+        if (effect.source_in_ms < clip.source_in_ms || effect.source_out_ms > clip.source_out_ms) throw new RevisionError('invalid_command', 'A visual effect must stay inside its clip source interval.');
+        if (effect.type === 'logo') {
+          const logo = assets.assets.find((asset) => asset.id === effect.asset_id);
+          if (!logo || logo.media_kind !== 'image') throw new RevisionError('invalid_command', 'A logo effect requires an immutable image asset.');
+        }
+      }
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index
+          ? { ...scene, visual_effects: command.effects, overlay_render: undefined, frame_render: undefined }
+          : candidate),
+      });
+    } else if (command.type === 'transcript.set') {
+      const index = sceneIndexFor(command.sceneId);
+      const scene = storyboard.scenes[index]!;
+      const source = assets.assets.find((asset) => asset.id === command.transcript.source_asset_id);
+      if (!source || source.checksum !== command.transcript.source_sha256) throw new RevisionError('invalid_command', 'Transcript provenance does not match an immutable source asset.');
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, transcript: command.transcript } : candidate),
+      });
+    } else if (command.type === 'transcript.word.correct') {
+      const index = sceneIndexFor(command.sceneId);
+      const scene = storyboard.scenes[index]!;
+      if (!scene.transcript) throw new RevisionError('invalid_command', 'This scene has no source transcript.');
+      if (!scene.transcript.words.some((word) => word.id === command.wordId)) throw new RevisionError('invalid_command', 'The selected transcript word does not exist.');
+      const transcript = {
+        ...scene.transcript,
+        words: scene.transcript.words.map((word) => word.id === command.wordId
+          ? { ...word, original_text: word.original_text ?? word.text, text: command.text }
+          : word),
+      };
+      const wordById = new Map(transcript.words.map((word) => [word.id, word]));
+      transcript.passages = transcript.passages.map((passage) => ({
+        ...passage,
+        text: passage.word_ids.map((wordId) => wordById.get(wordId)?.text).filter(Boolean).join(' '),
+      }));
+      storyboard = StoryboardSchema.parse({
+        ...storyboard,
+        scenes: storyboard.scenes.map((candidate, sceneIndex) => sceneIndex === index ? { ...scene, transcript } : candidate),
+      });
     } else if (command.type === 'scene.put') {
       const index = storyboard.scenes.findIndex((scene) => scene.id === command.scene.id);
       if (index < 0) throw new RevisionError('invalid_command', 'The selected scene does not exist.');
@@ -458,6 +534,20 @@ export class RevisionStore {
         if (!byId.has(anchor.source_asset_id)) {
           throw new RevisionError('invalid_command', 'A composition anchor references an unavailable source asset.');
         }
+      }
+      const clipById = new Map((scene.composition?.clips ?? []).map((clip) => [clip.id, clip]));
+      for (const effect of scene.visual_effects ?? []) {
+        const clip = clipById.get(effect.clip_instance_id);
+        if (!clip || clip.source_asset_id !== effect.source_asset_id || effect.source_in_ms < clip.source_in_ms || effect.source_out_ms > clip.source_out_ms) {
+          throw new RevisionError('invalid_command', 'A visual effect no longer matches its clip source interval.');
+        }
+        if (effect.type === 'logo' && assets.assets.find((asset) => asset.id === effect.asset_id)?.media_kind !== 'image') {
+          throw new RevisionError('invalid_command', 'A logo effect requires an immutable image asset.');
+        }
+      }
+      if (scene.transcript) {
+        const source = byId.get(scene.transcript.source_asset_id);
+        if (!source || source.checksum !== scene.transcript.source_sha256) throw new RevisionError('invalid_command', 'Transcript provenance no longer matches an immutable source asset.');
       }
       for (const lowerThird of scene.lower_thirds ?? []) {
         if (scene.recording?.duration_sec !== undefined && lowerThird.out_sec > scene.recording.duration_sec) {
