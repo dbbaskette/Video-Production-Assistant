@@ -7,15 +7,16 @@ import { NewProjectDialog } from '../components/NewProjectDialog.js';
 import { OpenFolderDialog } from '../components/OpenFolderDialog.js';
 import { brandsApi } from '../lib/api.js';
 import { BrandCard } from '../components/BrandCard.js';
+import { LoadError, LoadingState } from '../components/ui/AsyncState.js';
 
 function BrandsSection() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['brands'],
     queryFn: () => brandsApi.list(),
   });
 
-  if (isLoading) return <section><p className="hint">Loading brands...</p></section>;
-  if (error) return <section><p style={{ color: 'var(--danger)' }}>Failed to load brands.</p></section>;
+  if (isLoading) return <section aria-label="Brands" style={{ marginTop: 36 }}><LoadingState label="Loading brands" /></section>;
+  if (error) return <section aria-label="Brands" style={{ marginTop: 36 }}><LoadError title="Brands could not be loaded" detail="Your projects are still available." onRetry={() => { void refetch(); }} retrying={isFetching} /></section>;
 
   const list = data!.brands;
   return (

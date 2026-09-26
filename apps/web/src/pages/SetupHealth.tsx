@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { setupApi, type SetupProbe } from '../lib/api.js';
+import { LoadError, LoadingState } from '../components/ui/AsyncState.js';
 
 export function SetupHealth() {
   const qc = useQueryClient();
@@ -16,6 +17,7 @@ export function SetupHealth() {
   });
 
   const data = healthQuery.data;
+  const latestProbe = data?.probes.reduce((latest, probe) => Math.max(latest, probe.ranAt), 0) ?? 0;
 
   return (
     <main className="page" style={{ maxWidth: 880 }}>
@@ -35,13 +37,12 @@ export function SetupHealth() {
         >
           {refreshMutation.isPending ? 'Probing…' : '↻ Re-check'}
         </button>
-        {data && <Summary health={data} />}
+        {data && <Summary health={data} checkedAt={latestProbe} />}
       </div>
 
-      {healthQuery.isLoading && <p className="hint">Probing…</p>}
-      {(healthQuery.error || refreshMutation.error) && (
-        <p style={{ color: 'var(--danger)' }}>Could not check setup. Use Re-check to retry.</p>
-      )}
+      {healthQuery.isLoading && <LoadingState label="Checking setup" detail="Probing local tools and configured providers." />}
+      {healthQuery.error && !data && <LoadError title="Setup could not be checked" detail="No health result is available yet." onRetry={() => { void healthQuery.refetch(); }} retrying={healthQuery.isFetching} />}
+      {refreshMutation.error && data && <LoadError title="Refresh failed" detail={`Showing the last successful result from ${formatCheckedAt(latestProbe)}.`} onRetry={() => refreshMutation.mutate()} retrying={refreshMutation.isPending} />}
 
       {data && <ProbeList probes={data.probes} />}
     </main>
@@ -58,17 +59,30 @@ function ProbeList({ probes }: { probes: SetupProbe[] }) {
   </div>;
 }
 
-function Summary({ health }: { health: { probes: SetupProbe[]; allOk: boolean; allClean: boolean } }) {
+function Summary({ health, checkedAt }: { health: { probes: SetupProbe[]; allOk: boolean; allClean: boolean }; checkedAt: number }) {
   const failed = health.probes.filter((p) => p.status === 'fail').length;
   const warned = health.probes.filter((p) => p.status === 'warn').length;
   const okCount = health.probes.filter((p) => p.status === 'ok').length;
   return (
-    <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+    <div style={{ fontSize: 12, color: 'var(--fg-muted)' }} aria-label={`Setup status checked ${formatCheckedAt(checkedAt)}`}>
       <span style={{ color: '#9bc572' }}>● {okCount} ok</span>
       {warned > 0 && <span style={{ marginLeft: 12, color: '#f4a83a' }}>● {warned} warn</span>}
       {failed > 0 && <span style={{ marginLeft: 12, color: 'var(--danger)' }}>● {failed} fail</span>}
+      {checkedAt > 0 && <time dateTime={new Date(checkedAt).toISOString()} title={new Date(checkedAt).toLocaleString()} style={{ marginLeft: 12 }}>Checked {formatAge(checkedAt)}</time>}
     </div>
   );
+}
+
+export function formatAge(timestamp: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - timestamp) / 1_000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
+}
+
+function formatCheckedAt(timestamp: number): string {
+  return timestamp > 0 ? new Date(timestamp).toLocaleString() : 'an unknown time';
 }
 
 function ProbeRow({ probe }: { probe: SetupProbe }) {

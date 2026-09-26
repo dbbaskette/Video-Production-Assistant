@@ -90,7 +90,10 @@ const presentationScene = (id: string, presentationId = PRESENTATION_ID) => ({
 
 vi.mock('./ScenePage.js', () => ({ ScenePage: ({ sceneId }: { sceneId: string }) => <div>Scene {sceneId}</div> }));
 const confirmMock = vi.hoisted(() => vi.fn());
-vi.mock('../components/ui/UiProvider.js', () => ({ useUi: () => ({ confirm: confirmMock }) }));
+vi.mock('../components/ui/UiProvider.js', () => ({
+  UiProvider: ({ children }: { children: React.ReactNode }) => children,
+  useUi: () => ({ confirm: confirmMock }),
+}));
 const previewMock = vi.hoisted(() => vi.fn());
 vi.mock('../lib/presentation-preview.js', () => ({
   PresentationPreviewError: class extends Error {},

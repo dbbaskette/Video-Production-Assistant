@@ -10,6 +10,7 @@ import { RecordingsPage } from '../pages/RecordingsPage.js';
 // UiProvider hook so the test controls the dialog's answer.
 const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock('../components/ui/UiProvider.js', () => ({
+  UiProvider: ({ children }: { children: React.ReactNode }) => children,
   useUi: () => ({ confirm: confirmMock }),
 }));
 

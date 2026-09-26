@@ -1,12 +1,15 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { voiceCloneApi, type VoiceClone } from '../lib/api.js';
+import { LoadError, LoadingState } from '../components/ui/AsyncState.js';
+import { useModalFocus } from '../components/ui/useModalFocus.js';
+import { useUnsavedGuard } from '../components/ui/useUnsavedGuard.js';
 
 export function VoicesList() {
   const [showImport, setShowImport] = useState(false);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: ['voice-clones'],
     queryFn: () => voiceCloneApi.list(),
   });
@@ -44,8 +47,8 @@ export function VoicesList() {
       {showImport && <ImportXaiDialog onClose={() => setShowImport(false)} />}
 
 
-      {isLoading && <p className="hint">Loading voices…</p>}
-      {error && <p style={{ color: 'var(--danger)' }}>Failed to load voices.</p>}
+      {isLoading && <LoadingState label="Loading voices" detail="Checking local recordings and provider links." />}
+      {error && <LoadError title="Voices could not be loaded" detail="No voice data was changed." onRetry={() => { void refetch(); }} retrying={isFetching} />}
 
       {data && (
         data.length === 0 ? (
@@ -114,6 +117,8 @@ function ImportXaiDialog({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [voiceId, setVoiceId] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const importMutation = useMutation({
     mutationFn: async () => {
@@ -131,25 +136,42 @@ function ImportXaiDialog({ onClose }: { onClose: () => void }) {
     },
     onError: (err) => setError(err instanceof Error ? err.message : 'Import failed'),
   });
+  const guardedClose = useUnsavedGuard({
+    hasUnsavedChanges: name.trim().length > 0 || voiceId.trim().length > 0,
+    message: 'Discard the xAI voice details you entered?',
+    onConfirmDiscard: onClose,
+  });
+  useModalFocus({
+    open: true,
+    dialogRef,
+    initialFocusRef: nameRef,
+    escapeDisabled: importMutation.isPending,
+    onEscape: guardedClose,
+  });
 
   return (
     <div
       className="dialog-overlay"
-      style={{ zIndex: 50 }}
-      onClick={onClose}
+      onClick={guardedClose}
     >
       <div
+        ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
         className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-xai-title"
+        tabIndex={-1}
         style={{ width: 'min(480px, 90vw)' }}
       >
-        <h2 style={{ margin: 0, fontSize: 18 }}>Import xAI voice</h2>
+        <h2 id="import-xai-title" style={{ margin: 0, fontSize: 18 }}>Import xAI voice</h2>
         <p style={{ color: 'var(--fg-muted)', fontSize: 13, margin: '6px 0 16px' }}>
           Paste a voice_id from your xAI console. We'll create a voice in your library that points at it (no audio file).
         </p>
         <label style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12 }}>
           Display name <span style={{ color: 'var(--danger)' }}>*</span>
           <input
+            ref={nameRef}
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. My xAI Voice"
@@ -167,7 +189,7 @@ function ImportXaiDialog({ onClose }: { onClose: () => void }) {
         </label>
         {error && <p style={{ color: 'var(--danger)', fontSize: 12, margin: '0 0 12px' }}>{error}</p>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', fontSize: 13 }}>Cancel</button>
+          <button onClick={guardedClose} disabled={importMutation.isPending} style={{ padding: '8px 16px', fontSize: 13 }}>Cancel</button>
           <button
             onClick={() => importMutation.mutate()}
             disabled={importMutation.isPending || !name.trim() || !voiceId.trim()}

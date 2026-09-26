@@ -158,7 +158,6 @@ describe('NewProjectDialog presentation mode', () => {
   it('guards a selected deck from accidental close and recovers from create failure without uploading', async () => {
     const create = vi.spyOn(api, 'createProject').mockRejectedValue(new Error('Project could not be created'));
     const upload = vi.spyOn(presentationsApi, 'upload');
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     const onClose = vi.fn();
     const view = renderComponent(
       <NewProjectDialog open mode="presentation" onCreated={vi.fn()} onClose={onClose} />,
@@ -167,7 +166,9 @@ describe('NewProjectDialog presentation mode', () => {
     chooseFile(view.container.querySelector('input[type="file"]')!, new File(['pdf'], 'deck.pdf'));
     await flushPromises();
     act(() => button(view.container, 'Cancel').click());
-    expect(confirm).toHaveBeenCalledOnce();
+    expect(view.container.textContent).toContain('Discard unsaved changes?');
+    expect(view.container.textContent).toContain('Discard this project setup?');
+    act(() => button(view.container, 'Cancel').click());
     expect(onClose).not.toHaveBeenCalled();
 
     act(() => button(view.container, 'Create & import presentation').click());
@@ -233,7 +234,6 @@ describe('NewProjectDialog presentation mode', () => {
   it('confirmed discard uses project-aware copy and clears the next session', async () => {
     vi.spyOn(api, 'createProject').mockResolvedValue(project);
     vi.spyOn(presentationsApi, 'upload').mockRejectedValue(new Error('upload failed'));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const onClose = vi.fn();
     const props = { mode: 'presentation' as const, onCreated: vi.fn(), onClose };
     const view = renderComponent(<NewProjectDialog {...props} open />);
@@ -244,7 +244,9 @@ describe('NewProjectDialog presentation mode', () => {
     await flushPromises();
     act(() => button(view.container, 'Cancel').click());
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/empty project.*remain/i));
+    expect(view.container.textContent).toMatch(/empty project.*remain/i);
+    act(() => button(view.container, 'Discard').click());
+    await flushPromises();
     expect(onClose).toHaveBeenCalledOnce();
     view.rerender(<NewProjectDialog {...props} open={false} />);
     view.rerender(<NewProjectDialog {...props} open />);

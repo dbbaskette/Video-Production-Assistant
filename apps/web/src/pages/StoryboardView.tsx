@@ -288,7 +288,7 @@ export function StoryboardView() {
       className={`storyboard-layout${focusMode ? ' storyboard-layout--focused' : ''}`}
       style={{
         height: '100%',
-        minHeight: 'calc(100vh - 56px)', // navbar + breathing room
+        minHeight: 'calc(100vh - var(--nav-height))',
       }}
     >
       {!focusMode && (

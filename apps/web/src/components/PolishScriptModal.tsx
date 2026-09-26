@@ -65,7 +65,7 @@ export function PolishScriptModal({
         position: 'fixed', inset: 0,
         background: 'rgba(0,0,0,0.55)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 1000, padding: 32,
+        zIndex: 'var(--layer-modal)', padding: 32,
       }}
     >
       <div

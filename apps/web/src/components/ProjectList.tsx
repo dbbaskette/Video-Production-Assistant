@@ -17,6 +17,7 @@ import {
   type ProjectSort,
 } from '../lib/project-list-view.js';
 import { useUi } from './ui/UiProvider.js';
+import { LoadError, LoadingState } from './ui/AsyncState.js';
 
 interface Props {
   onOpen: (project: ProjectTrackerEntry) => void;
@@ -67,14 +68,10 @@ export function ProjectList({ onOpen, onOpenFolder }: Props) {
   };
 
   if (query.isLoading) {
-    return <p style={{ color: 'var(--fg-muted)' }}>Loading projects…</p>;
+    return <LoadingState label="Loading projects" detail="Checking recent project locations." />;
   }
   if (query.isError) {
-    return (
-      <p style={{ color: 'var(--danger)' }}>
-        Failed to load projects: {query.error instanceof Error ? query.error.message : 'unknown'}
-      </p>
-    );
+    return <LoadError title="Projects could not be loaded" detail={query.error instanceof Error ? query.error.message : 'The recent-project list is unavailable.'} onRetry={() => { void query.refetch(); }} retrying={query.isFetching} />;
   }
 
   return (

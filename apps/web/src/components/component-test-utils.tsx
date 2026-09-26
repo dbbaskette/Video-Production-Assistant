@@ -1,6 +1,7 @@
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { UiProvider } from './ui/UiProvider.js';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
@@ -12,7 +13,11 @@ export function renderComponent(node: ReactNode, client = testQueryClient()) {
 
   const render = (next: ReactNode) => {
     act(() => {
-      root.render(<QueryClientProvider client={client}>{next}</QueryClientProvider>);
+      root.render(
+        <QueryClientProvider client={client}>
+          <UiProvider>{next}</UiProvider>
+        </QueryClientProvider>,
+      );
     });
   };
 

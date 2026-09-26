@@ -42,7 +42,6 @@ export function TightenScriptModal({ projectId, sceneId, sceneName, onClose, onA
   });
 
   // Kick off the tighten request the first time the modal opens.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { tightenMutation.mutate(); }, []);
 
   const data = tightenMutation.data;
@@ -54,7 +53,7 @@ export function TightenScriptModal({ projectId, sceneId, sceneName, onClose, onA
         position: 'fixed', inset: 0,
         background: 'rgba(0,0,0,0.55)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 1000, padding: 32,
+        zIndex: 'var(--layer-modal)', padding: 32,
       }}
     >
       <div

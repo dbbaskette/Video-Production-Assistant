@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api, brandsApi, storyboardApi, voiceCloneApi } from '../../lib/api.js';
+import { useModalFocus } from './useModalFocus.js';
 
 interface PaletteItem {
   id: string;
@@ -63,7 +64,16 @@ export function CommandPalette() {
   const [activeIndex, setActiveIndex] = useState(0);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  useModalFocus({
+    open,
+    dialogRef: panelRef,
+    initialFocusRef: inputRef,
+    escapeDisabled: false,
+    onEscape: () => setOpen(false),
+  });
 
   // Bind Cmd+K / Ctrl+K to toggle the palette
   useEffect(() => {
@@ -187,6 +197,16 @@ export function CommandPalette() {
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, 25);
   }, [items, query]);
+  const activeOptionId = filtered[activeIndex]
+    ? `cmdk-option-${filtered[activeIndex]!.item.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+    : undefined;
+  const catalogError = projectsQuery.isError || brandsQuery.isError || voicesQuery.isError || storyboardQuery.isError;
+  const retryCatalogs = () => {
+    if (projectsQuery.isError) void projectsQuery.refetch();
+    if (brandsQuery.isError) void brandsQuery.refetch();
+    if (voicesQuery.isError) void voicesQuery.refetch();
+    if (storyboardQuery.isError) void storyboardQuery.refetch();
+  };
 
   // Keep activeIndex in bounds when filtering changes
   useEffect(() => {
@@ -237,10 +257,12 @@ export function CommandPalette() {
         alignItems: 'flex-start',
         justifyContent: 'center',
         paddingTop: '15vh',
-        zIndex: 1200,
+        zIndex: 'var(--layer-palette)',
       }}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         className="cmdk-panel"
         style={{
@@ -259,6 +281,12 @@ export function CommandPalette() {
             setActiveIndex(0);
           }}
           onKeyDown={onKeyDown}
+          role="combobox"
+          aria-label="Search commands"
+          aria-controls="command-palette-results"
+          aria-expanded="true"
+          aria-autocomplete="list"
+          aria-activedescendant={activeOptionId}
           placeholder="Jump to project, scene, brand, voice, or page…"
           style={{
             border: 'none',
@@ -271,9 +299,16 @@ export function CommandPalette() {
           }}
         />
 
-        <div ref={listRef} style={{ overflowY: 'auto', flex: 1 }}>
+        {catalogError && (
+          <div className="cmdk-recovery" role="alert">
+            <span>Some projects or libraries could not be searched.</span>
+            <button type="button" onClick={retryCatalogs}>Retry unavailable results</button>
+          </div>
+        )}
+
+        <div id="command-palette-results" ref={listRef} role="listbox" aria-label="Command results" style={{ overflowY: 'auto', flex: 1 }}>
           {filtered.length === 0 ? (
-            <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-muted)', textAlign: 'center' }}>
+            <div role="status" style={{ padding: 16, fontSize: 13, color: 'var(--fg-muted)', textAlign: 'center' }}>
               No matches
             </div>
           ) : (
@@ -320,7 +355,7 @@ function PaletteResults({
   // of what's available; otherwise render flat by score.
   if (!groupHeaders) {
     return (
-      <div>
+      <div role="presentation">
         {filtered.map((item, idx) => (
           <Row
             key={item.id}
@@ -338,15 +373,15 @@ function PaletteResults({
   const groups: PaletteItem['group'][] = ['Scenes', 'Projects', 'Brands', 'Voices', 'Pages'];
   let runningIdx = 0;
   return (
-    <div>
+    <div role="presentation">
       {groups.map((g) => {
         const items = filtered.filter((i) => i.group === g);
         if (items.length === 0) return null;
         const start = runningIdx;
         runningIdx += items.length;
         return (
-          <div key={g}>
-            <div style={{
+          <div key={g} role="group" aria-label={g}>
+            <div role="presentation" style={{
               padding: '6px 16px 4px',
               fontSize: 10,
               color: 'var(--fg-muted)',
@@ -388,6 +423,7 @@ function Row({
 }) {
   return (
     <div
+      id={`cmdk-option-${item.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
       role="option"
       aria-selected={active}
       data-palette-idx={idx}

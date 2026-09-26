@@ -54,7 +54,7 @@ export function GenerationModal({ open, title, phase, hint, progress, steps, onC
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 1100,
+        zIndex: 'var(--layer-modal)',
       }}
     >
       <div
